@@ -32,9 +32,9 @@ class Engine;
 class SwapChain;
 class View;
 
-namespace driver {
+namespace backend {
 class PixelBufferDescriptor;
-} // namespace driver
+} // namespace backend
 
 /**
  * A Renderer instance represents an operating system's window.
@@ -197,14 +197,14 @@ public:
      * @param buffer    Client-side buffer where the read-back will be written.
      *
      *                  The following format are always supported:
-     *                      - driver::PixelDataFormat::RGBA
-     *                      - driver::PixelDataFormat::RGBA_INTEGER
+     *                      - backend::PixelDataFormat::RGBA
+     *                      - backend::PixelDataFormat::RGBA_INTEGER
      *
      *                  The following types are always supported:
-     *                      - driver::PixelDataType::UBYTE
-     *                      - driver::PixelDataType::UINT
-     *                      - driver::PixelDataType::INT
-     *                      - driver::PixelDataType::FLOAT
+     *                      - backend::PixelDataType::UBYTE
+     *                      - backend::PixelDataType::UINT
+     *                      - backend::PixelDataType::INT
+     *                      - backend::PixelDataType::FLOAT
      *
      *                  Other combination of format/type may be supported. If a combination is
      *                  not supported, this operation may fail silently. Use a DEBUG build
@@ -243,7 +243,7 @@ public:
      *
      */
     void readPixels(uint32_t xoffset, uint32_t yoffset, uint32_t width, uint32_t height,
-            driver::PixelBufferDescriptor&& buffer);
+            backend::PixelBufferDescriptor&& buffer);
 
     /**
      * Set-up a frame for this Renderer.
@@ -288,6 +288,63 @@ public:
      * beginFrame()
      */
     void endFrame();
+
+    /**
+     * Returns the time in second of the last call to beginFrame(). This value is constant for all
+     * views rendered during a frame. The epoch is set with resetUserTime().
+     *
+     * In materials, this value can be queried using `vec4 getUserTime()`. The value returned
+     * is a highp vec4 encoded as follows:
+     *
+     *      time.x = (float)Renderer.getUserTime();
+     *      time.y = Renderer.getUserTime() - time.x;
+     *
+     * It follows that the following invariants are true:
+     *
+     *      (double)time.x + (double)time.y == Renderer.getUserTime()
+     *      time.x == (float)Renderer.getUserTime()
+     *
+     * This encoding allows the shader code to perform high precision (i.e. double) time
+     * calculations when needed despite the lack of double precision in the shader, for e.g.:
+     *
+     *      To compute (double)time * vertex in the material, use the following construct:
+     *
+     *              vec3 result = time.x * vertex + time.y * vertex;
+     *
+     *
+     * Most of the time, high precision computations are not required, but be aware that the
+     * precision of time.x rapidly diminishes as time passes:
+     *
+     *          time    | precision
+     *          --------+----------
+     *          16.7s   |    us
+     *          4h39    |    ms
+     *         77h      |   1/60s
+     *
+     *
+     * In other words, it only possible to get microsecond accuracy for about 16s or millisecond
+     * accuracy for just under 5h.
+     *
+     * This problem can be mitigated by calling resetUserTime(), or using high precision time as
+     * described above.
+     *
+     * @return The time is seconds since resetUserTime() was last called.
+     *
+     * @see
+     * resetUserTime()
+     */
+    double getUserTime() const;
+
+    /**
+     * Sets the user time epoch to now, i.e. resets the user time to zero.
+     *
+     * Use this method used to keep the precision of time high in materials, in practice it should
+     * be called at least when the application is paused, e.g. Activity.onPause() in Android.
+     *
+     * @see
+     * getUserTime()
+     */
+    void resetUserTime();
 };
 
 } // namespace filament

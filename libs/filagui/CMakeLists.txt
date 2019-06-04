@@ -7,10 +7,14 @@ set(PUBLIC_HDR_DIR include)
 # ==================================================================================================
 # Sources and headers
 # ==================================================================================================
-file(GLOB_RECURSE PUBLIC_HDRS ${PUBLIC_HDR_DIR}/${TARGET}/*.h)
+set(PUBLIC_HDRS
+        ${PUBLIC_HDR_DIR}/${TARGET}/ImGuiExtensions.h
+        ${PUBLIC_HDR_DIR}/${TARGET}/ImGuiHelper.h
+        ${PUBLIC_HDR_DIR}/${TARGET}/ImGuiMath.h)
 
 set(SRCS
         src/ImGuiHelper.cpp
+        src/ImGuiExtensions.cpp
 )
 
 # ==================================================================================================
@@ -37,8 +41,8 @@ endif()
 
 # Optimize materials for performance in Release mode.
 set(MATC_FLAGS -a all)
-if (CMAKE_BUILD_TYPE MATCHES Release)
-    set(MATC_FLAGS ${MATC_FLAGS} -O)
+if (NOT CMAKE_BUILD_TYPE MATCHES Release)
+    set(MATC_FLAGS ${MATC_FLAGS} -g)
 endif()
 
 foreach (mat_src ${MATERIAL_SRCS})

@@ -26,6 +26,7 @@
 #include <arm_neon.h>
 #endif
 
+namespace filament {
 namespace math {
 namespace fast {
 
@@ -46,7 +47,7 @@ constexpr T MATH_PURE cos(T x) noexcept {
 // x between -pi and pi
 template <typename T, typename = typename std::enable_if<std::is_floating_point<T>::value>::type>
 constexpr T MATH_PURE sin(T x) noexcept {
-    return math::fast::cos<T>(x - T(M_PI_2));
+    return filament::math::fast::cos<T>(x - T(M_PI_2));
 }
 
 constexpr inline float MATH_PURE ilog2(float x) noexcept {
@@ -119,6 +120,22 @@ constexpr float exp(float x) noexcept {
     return float(exp(double(x)));
 }
 
+inline float MATH_PURE pow(float a, float b) noexcept {
+    constexpr int fudgeMinRMSE = 486411;
+    constexpr int K = (127<<23) - fudgeMinRMSE;
+    union { float f; int x; } u = { a };
+    u.x = (int)(b * (u.x - K) + K);
+    return u.f;
+}
+
+// this is more precise than pow() above
+inline float MATH_PURE pow2dot2(float a) noexcept {
+    union { float f; int x; } u = { a };
+    constexpr int K = (127<<23);
+    u.x = (int)(0.2f * (u.x - K) + K);
+    return a * a * u.f; // a^2 * a^0.2
+}
+
 /*
  * unsigned saturated arithmetic
  */
@@ -164,5 +181,6 @@ inline T MATH_PURE qdec(T a)  noexcept {
 
 } // namespace fast
 } // namespace math
+} // namespace filament
 
 #endif // TNT_MATH_FAST_H

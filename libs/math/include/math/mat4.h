@@ -22,13 +22,13 @@
 #include <math/TMatHelpers.h>
 #include <math/vec3.h>
 #include <math/vec4.h>
+#include <math/compiler.h>
 
 #include <stdint.h>
 #include <sys/types.h>
 #include <limits>
 
-#define PURE __attribute__((pure))
-
+namespace filament {
 namespace math {
 // -------------------------------------------------------------------------------------
 namespace details {
@@ -320,26 +320,19 @@ public:
     }
 
     template <typename A>
-    static constexpr TMat44 translate(const TVec3<A>& t) {
+    static constexpr TMat44 translation(const TVec3<A>& t) {
         TMat44 r;
         r[3] = TVec4<T>{ t, 1 };
         return r;
     }
 
     template <typename A>
-    static constexpr TMat44 translate(A t) {
-        TMat44 r;
-        r[3] = TVec4<T>{ t, t, t, 1 };
-        return r;
-    }
-
-    template <typename A>
-    static constexpr TMat44 scale(const TVec3<A>& s) {
+    static constexpr TMat44 scaling(const TVec3<A>& s) {
         return TMat44{ TVec4<T>{ s, 1 } };
     }
 
     template <typename A>
-    static constexpr TMat44 scale(A s) {
+    static constexpr TMat44 scaling(A s) {
         return TMat44{ TVec4<T>{ s, s, s, 1 } };
     }
 };
@@ -353,10 +346,10 @@ public:
 
 template <typename T>
 constexpr TMat44<T>::TMat44() {
-    m_value[0] = col_type(1, 0, 0, 0);
-    m_value[1] = col_type(0, 1, 0, 0);
-    m_value[2] = col_type(0, 0, 1, 0);
-    m_value[3] = col_type(0, 0, 0, 1);
+    m_value[0] = col_type(1.0f, 0.0f, 0.0f, 0.0f);
+    m_value[1] = col_type(0.0f, 1.0f, 0.0f, 0.0f);
+    m_value[2] = col_type(0.0f, 0.0f, 1.0f, 0.0f);
+    m_value[3] = col_type(0.0f, 0.0f, 0.0f, 1.0f);
 }
 
 template <typename T>
@@ -510,7 +503,7 @@ constexpr TMat44<T> TMat44<T>::perspective(T fov, T aspect, T near, T far, TMat4
 
 /*
  * Returns a matrix representing the pose of a virtual camera looking towards -Z in its
- * local Y-up coordinate system. "eye" is where the camera is located, "center" is the points its
+ * local Y-up coordinate system. "eye" is where the camera is located, "center" is the point it's
  * looking at and "up" defines where the Y axis of the camera's local coordinate system is.
  */
 template <typename T>
@@ -545,7 +538,7 @@ constexpr TMat44<T> TMat44<T>::lookAt(const TVec3<A>& eye, const TVec3<B>& cente
 
 // matrix * column-vector, result is a vector of the same type than the input vector
 template <typename T, typename U>
-constexpr typename TMat44<T>::col_type PURE operator *(const TMat44<T>& lhs, const TVec4<U>& rhs) {
+constexpr typename TMat44<T>::col_type MATH_PURE operator *(const TMat44<T>& lhs, const TVec4<U>& rhs) {
     // Result is initialized to zero.
     typename TMat44<T>::col_type result = {};
     for (size_t col = 0; col < TMat44<T>::NUM_COLS; ++col) {
@@ -556,14 +549,14 @@ constexpr typename TMat44<T>::col_type PURE operator *(const TMat44<T>& lhs, con
 
 // mat44 * vec3, result is vec3( mat44 * {vec3, 1} )
 template <typename T, typename U>
-constexpr typename TMat44<T>::col_type PURE operator *(const TMat44<T>& lhs, const TVec3<U>& rhs) {
+constexpr typename TMat44<T>::col_type MATH_PURE operator *(const TMat44<T>& lhs, const TVec3<U>& rhs) {
     return lhs * TVec4<U>{ rhs, 1 };
 }
 
 
 // row-vector * matrix, result is a vector of the same type than the input vector
 template <typename T, typename U>
-constexpr typename TMat44<U>::row_type PURE operator *(const TVec4<U>& lhs, const TMat44<T>& rhs) {
+constexpr typename TMat44<U>::row_type MATH_PURE operator *(const TVec4<U>& lhs, const TMat44<T>& rhs) {
     typename TMat44<U>::row_type result;
     for (size_t col = 0; col < TMat44<T>::NUM_COLS; ++col) {
         result[col] = dot(lhs, rhs[col]);
@@ -573,14 +566,14 @@ constexpr typename TMat44<U>::row_type PURE operator *(const TVec4<U>& lhs, cons
 
 // matrix * scalar, result is a matrix of the same type than the input matrix
 template <typename T, typename U>
-constexpr typename std::enable_if<std::is_arithmetic<U>::value, TMat44<T>>::type PURE
+constexpr typename std::enable_if<std::is_arithmetic<U>::value, TMat44<T>>::type MATH_PURE
 operator *(TMat44<T> lhs, U rhs) {
     return lhs *= rhs;
 }
 
 // scalar * matrix, result is a matrix of the same type than the input matrix
 template <typename T, typename U>
-constexpr typename std::enable_if<std::is_arithmetic<U>::value, TMat44<T>>::type PURE
+constexpr typename std::enable_if<std::is_arithmetic<U>::value, TMat44<T>>::type MATH_PURE
 operator *(U lhs, const TMat44<T>& rhs) {
     return rhs * lhs;
 }
@@ -591,7 +584,7 @@ operator *(U lhs, const TMat44<T>& rhs) {
  * BASE<T>::col_type is not accessible from there (???)
  */
 template<typename T>
-constexpr typename TMat44<T>::col_type PURE diag(const TMat44<T>& m) {
+constexpr typename TMat44<T>::col_type MATH_PURE diag(const TMat44<T>& m) {
     return matrix::diag(m);
 }
 
@@ -604,16 +597,15 @@ typedef details::TMat44<float> mat4f;
 
 // ----------------------------------------------------------------------------------------
 }  // namespace math
-
-#undef PURE
+}  // namespace filament
 
 namespace std {
 template <typename T>
-constexpr void swap(math::details::TMat44<T>& lhs, math::details::TMat44<T>& rhs) noexcept {
+constexpr void swap( filament::math::details::TMat44<T>& lhs,  filament::math::details::TMat44<T>& rhs) noexcept {
     // This generates much better code than the default implementation
     // It's unclear why, I believe this is due to an optimization bug in the clang.
     //
-    //    math::details::TMat44<T> t(lhs);
+    //     filament::math::details::TMat44<T> t(lhs);
     //    lhs = rhs;
     //    rhs = t;
     //

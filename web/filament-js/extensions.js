@@ -43,12 +43,16 @@ Filament.loadClassExtensions = function() {
             alpha: false
         };
         options = Object.assign(defaults, options);
-        Filament.createContext(canvas, true, true, options);
+
+        // Create the WebGL 2.0 context and register it with emscripten.
+        const ctx = canvas.getContext("webgl2", options);
+        const handle = GL.registerContext(ctx, options);
+        GL.makeContextCurrent(handle);
 
         // Enable all desired extensions by calling getExtension on each one.
-        Filament.ctx.getExtension('WEBGL_compressed_texture_s3tc');
-        Filament.ctx.getExtension('WEBGL_compressed_texture_astc');
-        Filament.ctx.getExtension('WEBGL_compressed_texture_etc');
+        ctx.getExtension('WEBGL_compressed_texture_s3tc');
+        ctx.getExtension('WEBGL_compressed_texture_astc');
+        ctx.getExtension('WEBGL_compressed_texture_etc');
 
         return Filament.Engine._create();
     };
@@ -97,7 +101,7 @@ Filament.loadClassExtensions = function() {
 
     /// createTextureFromPng ::method:: Creates a 2D [Texture] from the raw contents of a PNG file.
     /// buffer ::argument:: asset string, or Uint8Array, or [Buffer] with PNG file contents
-    /// options ::argument:: JavaScript object with optional `rgbm`, `noalpha`, and `nomips` keys.
+    /// options ::argument:: object with optional `srgb`, `rgbm`, `noalpha`, and `nomips` keys.
     /// ::retval:: [Texture]
     Filament.Engine.prototype.createTextureFromPng = function(buffer, options) {
         buffer = getBufferDescriptor(buffer);
@@ -106,10 +110,23 @@ Filament.loadClassExtensions = function() {
         return result;
     };
 
+    /// createTextureFromJpeg ::method:: Creates a 2D [Texture] from a JPEG image.
+    /// image ::argument:: asset string or DOM Image that has already been loaded
+    /// options ::argument:: JavaScript object with optional `srgb` and `nomips` keys.
+    /// ::retval:: [Texture]
+    Filament.Engine.prototype.createTextureFromJpeg = function(image, options) {
+        if ('string' == typeof image || image instanceof String) {
+            image = Filament.assets[image];
+        }
+        return Filament._createTextureFromJpeg(image, this, options);
+    };
+
     /// loadFilamesh ::method:: Consumes the contents of a filamesh file and creates a renderable.
     /// buffer ::argument:: asset string, or Uint8Array, or [Buffer] with filamesh contents
     /// definstance ::argument:: Optional default [MaterialInstance]
-    /// matinstances ::argument:: Optional object that gets fukked with name => [MaterialInstance]
+    /// matinstances ::argument:: Optional in-out object that gets populated with a \
+    /// name-to-[MaterialInstance] mapping. Clients can also optionally provide individual \
+    /// material instances using this argument.
     /// ::retval:: JavaScript object with keys `renderable`, `vertexBuffer`, and `indexBuffer`. \
     /// These are of type [Entity], [VertexBuffer], and [IndexBuffer].
     Filament.Engine.prototype.loadFilamesh = function(buffer, definstance, matinstances) {
@@ -117,6 +134,16 @@ Filament.loadClassExtensions = function() {
         const result = Filament._loadFilamesh(this, buffer, definstance, matinstances);
         buffer.delete();
         return result;
+    };
+
+    /// createAssetLoader ::static method::
+    /// engine ::argument:: an instance of [Engine]
+    /// ::retval:: an instance of [AssetLoader]
+    /// Clients should create only one asset loader for the lifetime of their app, this prevents
+    /// memory leaks and duplication of Material objects.
+    Filament.Engine.prototype.createAssetLoader = function() {
+        const materials = new Filament.gltfio$UbershaderLoader(this);
+        return new Filament.gltfio$AssetLoader(this, materials);
     };
 
     /// VertexBuffer ::core class::
@@ -184,4 +211,74 @@ Filament.loadClassExtensions = function() {
         this._setImageCube(engine, level, pbd);
         pbd.delete();
     }
+
+    Filament.SurfaceOrientation$Builder.prototype.build = function() {
+        const result = this._build();
+        this.delete();
+        return result;
+    };
+
+    Filament.gltfio$AssetLoader.prototype.createAssetFromJson = function(buffer) {
+        buffer = getBufferDescriptor(buffer);
+        const result = this._createAssetFromJson(buffer);
+        buffer.delete();
+        return result;
+    };
+
+    Filament.gltfio$AssetLoader.prototype.createAssetFromBinary = function(buffer) {
+        buffer = getBufferDescriptor(buffer);
+        const result = this._createAssetFromBinary(buffer);
+        buffer.delete();
+        return result;
+    };
+
+    // See the C++ documentation for ResourceLoader and AssetLoader. The JavaScript API differs in
+    // that it takes two optional callbacks:
+    //
+    // - onDone is called after all resources have been downloaded, but before the
+    //   asset has been finalized. The onDone callback is passed the finalize function.
+    //
+    // - onFetched is called after each resource has finished downloading.
+    //
+    // "Finalization" refers to decoding texture data, converting the format of the
+    // vertex data if needed, and potentially computing tangents.
+    Filament.gltfio$FilamentAsset.prototype.loadResources = function(onDone, onFetched) {
+        const asset = this;
+        const engine = this.getEngine();
+        const urlkeys = this.getResourceUrls();
+        const urlset = new Set();
+        for (var i = 0; i < urlkeys.size(); i++) {
+            const url = urlkeys.get(i);
+            if (url) {
+                urlset.add(url);
+            }
+        }
+        const resourceLoader = new Filament.gltfio$ResourceLoader(engine);
+        Filament.fetch(Array.from(urlset), function() {
+            const finalize = function() {
+                resourceLoader.loadResources(asset);
+
+                // The buffer data won't get sent to the GPU until the next call to
+                // "renderer.render()", so wait two frames before freeing the CPU-side data.
+                window.requestAnimationFrame(function() {
+                    window.requestAnimationFrame(function() {
+                        resourceLoader.delete();
+                    });
+                });
+
+            };
+            if (onDone) {
+                onDone(finalize);
+            } else {
+                finalize();
+            }
+        }, function(name) {
+            var buffer = getBufferDescriptor(name);
+            resourceLoader.addResourceData(name, buffer);
+            buffer.delete();
+            if (onFetched) {
+                onFetched(name);
+            }
+        });
+    };
 };

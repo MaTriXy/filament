@@ -19,13 +19,12 @@
 
 #include <algorithm>
 
-#include "driver/DriverApi.h"
+#include "private/backend/DriverApi.h"
 
 #include <utils/compiler.h>
 #include <utils/Log.h>
 
-#include <private/filament/UniformInterfaceBlock.h>
-#include <filament/driver/BufferDescriptor.h>
+#include <backend/BufferDescriptor.h>
 
 #include <math/mat3.h>
 #include <math/mat4.h>
@@ -36,24 +35,21 @@
 
 namespace filament {
 
-class UniformBuffer {
+class UniformBuffer { // NOLINT(cppcoreguidelines-pro-type-member-init)
 public:
     UniformBuffer() noexcept = default;
 
     // create a uniform buffer of a given size in bytes
     explicit UniformBuffer(size_t size) noexcept;
-    explicit UniformBuffer(UniformInterfaceBlock const& uib) noexcept;
 
-    // can be copy-constructed. Needed to create temporary copies.
-    UniformBuffer(const UniformBuffer& rhs);
-
-    UniformBuffer(const UniformBuffer& rhs, size_t trim);
-
-    // can be moved
-    UniformBuffer(UniformBuffer&& rhs) noexcept;
+    // disallow copy-construction, since it's heavy.
+    UniformBuffer(const UniformBuffer& rhs) = delete;
 
     // we forbid copy, which makes UniformBuffer's allocation immutable
     UniformBuffer& operator=(const UniformBuffer& rhs) = delete;
+
+    // can be moved
+    UniformBuffer(UniformBuffer&& rhs) noexcept;
 
     // can be moved (e.g. assigned from a temporary)
     UniformBuffer& operator=(UniformBuffer&& rhs) noexcept;
@@ -67,11 +63,17 @@ public:
         }
     }
 
+    UniformBuffer& setUniforms(const UniformBuffer& rhs) noexcept;
+
     // invalidate a range of uniforms and return a pointer to it. offset and size given in bytes
     void* invalidateUniforms(size_t offset, size_t size) {
         assert(offset + size <= mSize);
         mSomethingDirty = true;
         return static_cast<char*>(mBuffer) + offset;
+    }
+
+    void* invalidate() noexcept {
+        return invalidateUniforms(0, mSize);
     }
 
     // pointer to the uniform buffer
@@ -149,29 +151,18 @@ public:
 
     // helper functions
 
-    // set uniform by name
-    template<typename T>
-    void setUniform(const UniformInterfaceBlock& uib, const char* name, size_t index, const T& v) {
-        ssize_t offset = uib.getUniformOffset(name, index);
-        if (offset >= 0) {
-            setUniform<T>(size_t(offset), v);  // handles specialization for mat3f
-        }
+    backend::BufferDescriptor toBufferDescriptor(backend::DriverApi& driver) const noexcept {
+        return toBufferDescriptor(driver, 0, getSize());
     }
 
-    driver::BufferDescriptor toBufferDescriptor(driver::DriverApi& driver) const noexcept {
-        driver::BufferDescriptor p;
-        p.size = getSize();
-        p.buffer = driver.allocate(p.size);
-        memcpy(p.buffer, getBuffer(), p.size);
-        return p;
-    }
-
-    driver::BufferDescriptor toBufferDescriptor(
-            driver::DriverApi& driver, size_t offset, size_t size) const noexcept {
-        driver::BufferDescriptor p;
+    // copy the UBO data and cleans the dirty bits
+    backend::BufferDescriptor toBufferDescriptor(
+            backend::DriverApi& driver, size_t offset, size_t size) const noexcept {
+        backend::BufferDescriptor p;
         p.size = size;
-        p.buffer = driver.allocate(p.size);
+        p.buffer = driver.allocate(p.size); // TODO: use out-of-line buffer if too large
         memcpy(p.buffer, static_cast<const char*>(getBuffer()) + offset, p.size);
+        clean();
         return p;
     }
 

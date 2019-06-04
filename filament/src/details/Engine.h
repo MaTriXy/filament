@@ -19,7 +19,6 @@
 
 #include "upcast.h"
 #include "PostProcessManager.h"
-#include "RenderTargetPool.h"
 
 #include "components/CameraManager.h"
 #include "components/LightManager.h"
@@ -32,28 +31,29 @@
 #include "details/ResourceList.h"
 #include "details/Skybox.h"
 
-#include "driver/CommandStream.h"
-#include "driver/CommandBufferQueue.h"
-#include "driver/DriverApi.h"
+#include "private/backend/CommandStream.h"
+#include "private/backend/CommandBufferQueue.h"
+#include "private/backend/DriverApi.h"
+
+#include <private/filament/EngineEnums.h>
 
 #include <filament/Engine.h>
 #include <filament/VertexBuffer.h>
 #include <filament/IndirectLight.h>
 #include <filament/Material.h>
+#include <filament/MaterialEnums.h>
 #include <filament/Texture.h>
 #include <filament/Skybox.h>
 #include <filament/Stream.h>
 
-#include <filaflat/MaterialParser.h>
+#include <private/filament/UniformInterfaceBlock.h>
+
 #include <filaflat/ShaderBuilder.h>
 
 #include <utils/compiler.h>
 #include <utils/Allocator.h>
 #include <utils/JobSystem.h>
 #include <utils/CountDownLatch.h>
-
-#include <math/mat4.h>
-#include <math/quat.h>
 
 #include <chrono>
 #include <memory>
@@ -62,8 +62,16 @@
 namespace filament {
 
 class Renderer;
+class MaterialParser;
+
+
+namespace backend {
+
 class Driver;
 class Program;
+
+} // namespac driver
+
 
 namespace details {
 
@@ -91,7 +99,7 @@ public:
         utils::aligned_free(p);
     }
 
-    using DriverApi = driver::DriverApi;
+    using DriverApi = backend::DriverApi;
     using clock = std::chrono::steady_clock;
     using Epoch = clock::time_point;
     using duration = clock::duration;
@@ -113,18 +121,9 @@ public:
 
     ~FEngine() noexcept;
 
-    Driver& getDriver() const noexcept { return *mDriver; }
+    backend::Driver& getDriver() const noexcept { return *mDriver; }
     DriverApi& getDriverApi() noexcept { return mCommandStream; }
     DFG* getDFG() const noexcept { return mDFG.get(); }
-
-
-    // Uniforms...
-    const UniformInterfaceBlock& getPerViewUib() const noexcept { return mPerViewUib; }
-    const UniformInterfaceBlock& getPerPostProcessUib() const noexcept { return mPostProcessUib; }
-
-    // Samplers...
-    const SamplerInterfaceBlock& getPerViewSib() const noexcept { return mPerViewSib; }
-    const SamplerInterfaceBlock& getPostProcessSib() const noexcept { return mPostProcessSib; }
 
     // the per-frame Area is used by all Renderer, so they must run in sequence and
     // have freed all allocated memory when done. If this needs to change in the future,
@@ -138,16 +137,16 @@ public:
     const FMaterial* getSkyboxMaterial(bool rgbm) const noexcept;
     const FIndirectLight* getDefaultIndirectLight() const noexcept { return mDefaultIbl; }
 
-    Handle <HwProgram> getPostProcessProgramSlow(PostProcessStage stage) const noexcept;
-    Handle<HwProgram> getPostProcessProgram(PostProcessStage stage) const noexcept {
-        Handle<HwProgram> program = mPostProcessPrograms[uint8_t(stage)];
+    backend::Handle<backend::HwProgram> getPostProcessProgramSlow(PostProcessStage stage) const noexcept;
+    backend::Handle<backend::HwProgram> getPostProcessProgram(PostProcessStage stage) const noexcept {
+        backend::Handle<backend::HwProgram> program = mPostProcessPrograms[uint8_t(stage)];
         if (UTILS_UNLIKELY(!program)) {
             return getPostProcessProgramSlow(stage);
         }
         return program;
     }
 
-    Handle<HwRenderPrimitive> getFullScreenRenderPrimitive() const noexcept {
+    backend::Handle<backend::HwRenderPrimitive> getFullScreenRenderPrimitive() const noexcept {
         return mFullScreenTriangleRph;
     }
 
@@ -165,14 +164,6 @@ public:
 
     PostProcessManager& getPostProcessManager() noexcept {
         return mPostProcessManager;
-    }
-
-    RenderTargetPool const& getRenderTargetPool() const noexcept {
-        return mRenderTargetPool;
-    }
-
-    RenderTargetPool& getRenderTargetPool() noexcept {
-        return mRenderTargetPool;
     }
 
     FRenderableManager& getRenderableManager() noexcept {
@@ -203,15 +194,15 @@ public:
         return mBackend;
     }
 
-    duration getTime() const noexcept {
-        return clock::now() - getEpoch();
-    }
-
     void* streamAlloc(size_t size, size_t alignment) noexcept;
 
     utils::JobSystem& getJobSystem() noexcept { return mJobSystem; }
 
-    Epoch getEpoch() const { return mEpoch; }
+
+    Epoch getEngineEpoch() const { return mEngineEpoch; }
+    duration getEngineTime() const noexcept {
+        return clock::now() - getEngineEpoch();
+    }
 
     void shutdown();
 
@@ -234,9 +225,13 @@ public:
 
     FScene* createScene() noexcept;
     FView* createView() noexcept;
-    FCamera* createCamera(utils::Entity entity) noexcept;
     FFence* createFence(Fence::Type type = Fence::Type::SOFT) noexcept;
     FSwapChain* createSwapChain(void* nativeWindow, uint64_t flags) noexcept;
+
+    FCamera* createCamera(utils::Entity entity) noexcept;
+    FCamera* getCameraComponent(utils::Entity entity) noexcept;
+    void destroyCameraComponent(utils::Entity entity) noexcept;
+
 
     void destroy(const FVertexBuffer* p);
     void destroy(const FFence* p);
@@ -259,11 +254,11 @@ public:
     void prepare();
     void gc();
 
-    filaflat::ShaderBuilder& getVertexShaderBuilder() noexcept {
+    filaflat::ShaderBuilder& getVertexShaderBuilder() const noexcept {
         return mVertexShaderBuilder;
     }
 
-    filaflat::ShaderBuilder& getFragmentShaderBuilder() noexcept {
+    filaflat::ShaderBuilder& getFragmentShaderBuilder() const noexcept {
         return mFragmentShaderBuilder;
     }
 
@@ -278,7 +273,7 @@ private:
     void init();
 
     int loop();
-    void flushCommandBuffer(CommandBufferQueue& commandBufferQueue);
+    void flushCommandBuffer(backend::CommandBufferQueue& commandBufferQueue);
 
     template<typename T, typename L>
     void terminateAndDestroy(const T* p, ResourceList<T, L>& list);
@@ -286,21 +281,21 @@ private:
     template<typename T, typename L>
     void cleanupResourceList(ResourceList<T, L>& list);
 
-    Handle<HwProgram> createPostProcessProgram(filaflat::MaterialParser& parser,
-            driver::ShaderModel model, PostProcessStage stage) const noexcept;
+    backend::Handle<backend::HwProgram> createPostProcessProgram(MaterialParser& parser,
+            backend::ShaderModel model, PostProcessStage stage) const noexcept;
 
-    Driver* mDriver = nullptr;
+    backend::Driver* mDriver = nullptr;
 
     Backend mBackend;
     Platform* mPlatform = nullptr;
+    bool mOwnPlatform = false;
     void* mSharedGLContext = nullptr;
     bool mTerminated = false;
-    Handle<HwRenderPrimitive> mFullScreenTriangleRph;
+    backend::Handle<backend::HwRenderPrimitive> mFullScreenTriangleRph;
     FVertexBuffer* mFullScreenTriangleVb = nullptr;
     FIndexBuffer* mFullScreenTriangleIb = nullptr;
 
     PostProcessManager mPostProcessManager;
-    RenderTargetPool mRenderTargetPool;
 
     utils::EntityManager& mEntityManager;
     FRenderableManager mRenderableManager;
@@ -328,18 +323,8 @@ private:
 
     std::unique_ptr<DFG> mDFG;
 
-    // Per-view Uniform interface block
-    UniformInterfaceBlock mPerViewUib;
-
-    // Per-view Sampler interface block
-    SamplerInterfaceBlock mPerViewSib;
-
-    // post-process interface blocks
-    UniformInterfaceBlock mPostProcessUib;
-    SamplerInterfaceBlock mPostProcessSib;
-
     std::thread mDriverThread;
-    CommandBufferQueue mCommandBufferQueue;
+    backend::CommandBufferQueue mCommandBufferQueue;
     DriverApi mCommandStream;
 
     LinearAllocatorArena mPerRenderPassAllocator;
@@ -347,7 +332,7 @@ private:
 
     utils::JobSystem mJobSystem;
 
-    Epoch mEpoch;
+    Epoch mEngineEpoch;
 
     mutable FMaterial const* mDefaultMaterial = nullptr;
     mutable FMaterial const* mSkyboxMaterials[2] = { nullptr, nullptr };
@@ -355,13 +340,13 @@ private:
     mutable FTexture* mDefaultIblTexture = nullptr;
     mutable FIndirectLight* mDefaultIbl = nullptr;
 
-    mutable Handle<HwProgram> mPostProcessPrograms[POST_PROCESS_STAGES_COUNT];
-    mutable std::unique_ptr<filaflat::MaterialParser> mPostProcessParser;
+    mutable backend::Handle<backend::HwProgram> mPostProcessPrograms[POST_PROCESS_STAGES_COUNT];
+    mutable std::unique_ptr<MaterialParser> mPostProcessParser;
 
     mutable utils::CountDownLatch mDriverBarrier;
 
-    filaflat::ShaderBuilder mVertexShaderBuilder;
-    filaflat::ShaderBuilder mFragmentShaderBuilder;
+    mutable filaflat::ShaderBuilder mVertexShaderBuilder;
+    mutable filaflat::ShaderBuilder mFragmentShaderBuilder;
     FDebugRegistry mDebugRegistry;
 
 public:
@@ -370,24 +355,21 @@ public:
         struct {
             bool far_uses_shadowcasters = true;
             bool focus_shadowcasters = true;
+            bool checkerboard = false;
             bool lispsm = true;
             float dzn = -1.0f;
             float dzf =  1.0f;
         } shadowmap;
+        struct {
+            bool enabled = true;
+        } ssao;
+        struct {
+            bool camera_at_origin = true;
+        } view;
     } debug;
 };
 
 FILAMENT_UPCAST(Engine)
-
-class UTILS_PUBLIC EnginePerformanceTest {
-public:
-    //! \privatesection
-    using PFN = void(*)(void *);
-    virtual void activateBigBang() noexcept;
-    void activateOmegaThirteen() noexcept;
-    PFN getDestroyUniverseApi();
-    virtual ~EnginePerformanceTest() noexcept;
-};
 
 } // namespace details
 } // namespace filament

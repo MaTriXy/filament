@@ -4,6 +4,9 @@
 # To run this script, you may need to do the following on Ubuntu:
 #     sudo apt-get install python3-pip
 #     pip3 install -r requirements.txt
+#
+# If CMake is choosing /usr/bin/python3, then do this instead:
+#     /usr/bin/python3 -m pip requirements.txt
 
 """Converts markdown into HTML and extracts JavaScript code blocks.
 
@@ -198,7 +201,7 @@ def tangle(name):
 def build_filamat(name):
     matsrc = SCRIPT_DIR + name + '.mat'
     matdst = os.path.join(OUTPUT_DIR, name + '.filamat')
-    flags = '-O -a opengl -p mobile'
+    flags = '-a opengl -p mobile'
     matc_exec = os.path.join(TOOLS_DIR, 'matc/matc')
     retval = os.system(f"{matc_exec} {flags} -o {matdst} {matsrc}")
     if retval != 0:
@@ -495,7 +498,7 @@ if __name__ == "__main__":
     ENABLE_EMBEDDED_DEMO = not args.disable_demo
     os.makedirs(os.path.realpath(OUTPUT_DIR), exist_ok=True)
 
-    for name in ["triangle", "redball"]:
+    for name in open(SCRIPT_DIR + 'tutorials.txt').read().split():
         weave(name)
         tangle(name)
         generate_demo_html(name)

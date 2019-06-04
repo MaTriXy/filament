@@ -27,6 +27,7 @@
 #include <math/compiler.h>
 #include <math/vec3.h>
 
+namespace filament {
 namespace math {
 namespace details {
 // -------------------------------------------------------------------------------------
@@ -54,7 +55,7 @@ public:
      * element type.
      */
     template <typename OTHER>
-    QUATERNION<T>& operator *= (const QUATERNION<OTHER>& r) {
+    constexpr QUATERNION<T>& operator *= (const QUATERNION<OTHER>& r) {
         QUATERNION<T>& q = static_cast<QUATERNION<T>&>(*this);
         q = q * r;
         return q;
@@ -62,14 +63,14 @@ public:
 
     /* compound assignment products by a scalar
      */
-    QUATERNION<T>& operator *= (T v) {
+    constexpr QUATERNION<T>& operator *= (T v) {
         QUATERNION<T>& lhs = static_cast<QUATERNION<T>&>(*this);
         for (size_t i = 0; i < QUATERNION<T>::size(); i++) {
             lhs[i] *= v;
         }
         return lhs;
     }
-    QUATERNION<T>& operator /= (T v) {
+    constexpr QUATERNION<T>& operator /= (T v) {
         QUATERNION<T>& lhs = static_cast<QUATERNION<T>&>(*this);
         for (size_t i = 0; i < QUATERNION<T>::size(); i++) {
             lhs[i] /= v;
@@ -172,12 +173,12 @@ public:
     }
 
     friend inline
-    constexpr T MATH_PURE norm(const QUATERNION<T>& q) {
+    T MATH_PURE norm(const QUATERNION<T>& q) {
         return std::sqrt( dot(q, q) );
     }
 
     friend inline
-    constexpr T MATH_PURE length(const QUATERNION<T>& q) {
+    T MATH_PURE length(const QUATERNION<T>& q) {
         return norm(q);
     }
 
@@ -187,8 +188,8 @@ public:
     }
 
     friend inline
-    constexpr QUATERNION<T> MATH_PURE normalize(const QUATERNION<T>& q) {
-        return length(q) ? q / length(q) : QUATERNION<T>(1);
+    QUATERNION<T> MATH_PURE normalize(const QUATERNION<T>& q) {
+        return length(q) ? q / length(q) : QUATERNION<T>(static_cast<T>(1));
     }
 
     friend inline
@@ -244,12 +245,21 @@ public:
     friend inline
     QUATERNION<T> MATH_PURE slerp(const QUATERNION<T>& p, const QUATERNION<T>& q, T t) {
         // could also be computed as: pow(q * inverse(p), t) * p;
-        const T d = dot(p, q);
+        const T d = std::abs(dot(p, q));
+        static constexpr T value_eps = T(10) * std::numeric_limits<T>::epsilon();
+        // Prevent blowing up when slerping between two quaternions that are very near each other.
+        if ((T(1) - d) < value_eps) {
+            return normalize(lerp(p, q, t));
+        }
         const T npq = sqrt(dot(p, p) * dot(q, q));  // ||p|| * ||q||
-        const T a = std::acos(std::abs(d) / npq);
+        const T a = std::acos(d / npq);
         const T a0 = a * (1 - t);
         const T a1 = a * t;
-        const T isina = 1 / sin(a);
+        const T sina = sin(a);
+        if (sina < value_eps) {
+            return normalize(lerp(p, q, t));
+        }
+        const T isina = 1 / sina;
         const T s0 = std::sin(a0) * isina;
         const T s1 = std::sin(a1) * isina;
         // ensure we're taking the "short" side
@@ -297,5 +307,6 @@ public:
 // -------------------------------------------------------------------------------------
 }  // namespace details
 }  // namespace math
+}  // namespace filament
 
 #endif  // MATH_TQUATHELPERS_H_

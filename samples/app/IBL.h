@@ -19,6 +19,8 @@
 
 #include <math/vec3.h>
 
+#include <string>
+
 namespace filament {
 class Engine;
 class IndexBuffer;
@@ -40,6 +42,7 @@ public:
     ~IBL();
 
     bool loadFromDirectory(const utils::Path& path);
+    bool loadFromKtx(const std::string& prefix);
 
     filament::IndirectLight* getIndirectLight() const noexcept {
         return mIndirectLight;
@@ -55,7 +58,7 @@ private:
 
     filament::Engine& mEngine;
 
-    math::float3 mBands[9] = {};
+    filament::math::float3 mBands[9] = {};
 
     filament::Texture* mTexture = nullptr;
     filament::IndirectLight* mIndirectLight = nullptr;

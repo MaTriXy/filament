@@ -1,18 +1,18 @@
 /*
-* Copyright (C) 2018 The Android Open Source Project
-*
-* Licensed under the Apache License, Version 2.0 (the "License");
-* you may not use this file except in compliance with the License.
-* You may obtain a copy of the License at
-*
-*      http://www.apache.org/licenses/LICENSE-2.0
-*
-* Unless required by applicable law or agreed to in writing, software
-* distributed under the License is distributed on an "AS IS" BASIS,
-* WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-* See the License for the specific language governing permissions and
-* limitations under the License.
-*/
+ * Copyright (C) 2019 The Android Open Source Project
+ *
+ * Licensed under the Apache License, Version 2.0 (the "License");
+ * you may not use this file except in compliance with the License.
+ * You may obtain a copy of the License at
+ *
+ *      http://www.apache.org/licenses/LICENSE-2.0
+ *
+ * Unless required by applicable law or agreed to in writing, software
+ * distributed under the License is distributed on an "AS IS" BASIS,
+ * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+ * See the License for the specific language governing permissions and
+ * limitations under the License.
+ */
 
 // ---------------
 // Buffer Wrappers
@@ -81,14 +81,14 @@ Filament.CompressedPixelBuffer = function(typedarray, cdatatype, faceSize) {
 
 Filament._loadFilamesh = function(engine, buffer, definstance, matinstances) {
     matinstances = matinstances || {};
-    const registry = new Filament.MeshIO$MaterialRegistry();
+    const registry = new Filament.MeshReader$MaterialRegistry();
     for (var key in matinstances) {
         registry.set(key, matinstances[key]);
     }
     if (definstance) {
         registry.set("DefaultMaterial", definstance);
     }
-    const mesh = Filament.MeshIO.loadMeshFromBuffer(engine, buffer, registry);
+    const mesh = Filament.MeshReader.loadMeshFromBuffer(engine, buffer, registry);
     const keys = registry.keys();
     for (var i = 0; i < keys.size(); i++) {
         const key = keys.get(i);
@@ -138,18 +138,31 @@ Filament.IcoSphere = function(nsubdivs) {
         }
     }
     const nverts = this.vertices.length / 3;
-    this.tangents = new Uint16Array(4 * nverts);
-    for (var i = 0; i < nverts; ++i) {
-        const src = this.vertices.subarray(i * 3, i * 3 + 3);
-        const dst = this.tangents.subarray(i * 4, i * 4 + 4);
-        const n = vec3.normalize(vec3.create(), src);
-        const b = vec3.cross(vec3.create(), n, [0, 1, 0]);
-        vec3.normalize(b, b);
-        const t = vec3.cross(vec3.create(), b, n);
-        const q = quat.fromMat3(quat.create(), [
-                t[0], t[1], t[2], b[0], b[1], b[2], n[0], n[1], n[2]]);
-        vec4.packSnorm16(dst, q);
-    }
+
+    // Allocate room for normals in the heap, and copy position data into it (yay for unit spheres)
+    const normals = Filament._malloc(this.vertices.length * this.vertices.BYTES_PER_ELEMENT);
+    Module.HEAPU8.set(new Uint8Array(this.vertices.buffer), normals);
+
+    // Perform computations, then free up the normals.
+    const sob = new Filament.SurfaceOrientation$Builder();
+    sob.vertexCount(nverts);
+    sob.normals(normals, 0)
+    const orientation = sob.build();
+
+    Filament._free(normals);
+
+    // Allocate room for quaternions then populate it.
+    const quatsBufferSize = 8 * nverts;
+    const quatsBuffer = Filament._malloc(quatsBufferSize);
+    orientation.getQuats(quatsBuffer, nverts, Filament.VertexBuffer$AttributeType.SHORT4);
+
+    // Create a JavaScript typed array and copy the quat data into it.
+    const tangentsMemory = Module.HEAPU8.subarray(quatsBuffer, quatsBuffer + quatsBufferSize).slice().buffer;
+    Filament._free(quatsBuffer);
+    this.tangents = new Int16Array(tangentsMemory);
+
+    // Free up the surface orientation helper now that we're done with it.
+    orientation.delete();
 }
 
 Filament.IcoSphere.prototype.subdivide = function() {
@@ -239,60 +252,10 @@ Filament.loadMathExtensions = function() {
 
 Filament._createTextureFromKtx = function(ktxdata, engine, options) {
     options = options || {};
-
-    const Sampler = Filament.Texture$Sampler;
     const ktx = options['ktx'] || new Filament.KtxBundle(ktxdata);
-    const nlevels = ktx.getNumMipLevels();
     const rgbm = !!options['rgbm'];
     const srgb = !!options['srgb'];
-
-    var texformat = ktx.getInternalFormat(srgb);
-    var pbformat = ktx.getPixelDataFormat(rgbm);
-    var cdatatype = ktx.getCompressedPixelDataType();
-    var datatype = ktx.getPixelDataType();
-
-    const tex = Filament.Texture.Builder()
-        .width(ktx.info().pixelWidth)
-        .height(ktx.info().pixelHeight)
-        .levels(nlevels)
-        .sampler(ktx.isCubemap() ? Sampler.SAMPLER_CUBEMAP : Sampler.SAMPLER_2D)
-        .format(texformat)
-        .rgbm(rgbm)
-        .build(engine);
-
-    if (ktx.isCompressed()) {
-        if (ktx.isCubemap()) {
-            for (var level = 0; level < nlevels; level++) {
-                const uint8array = ktx.getCubeBlob(level);
-                const facesize = uint8array.length / 6;
-                const pixelbuffer = Filament.CompressedPixelBuffer(uint8array, cdatatype, facesize);
-                tex.setImageCube(engine, level, pixelbuffer);
-            }
-            return tex;
-        }
-        for (var level = 0; level < nlevels; level++) {
-            const uint8array = ktx.getBlob([level, 0, 0]);
-            const pixelbuffer = Filament.CompressedPixelBuffer(uint8array, cdatatype);
-            tex.setImage(engine, level, pixelbuffer);
-        }
-        return tex;
-    }
-
-    if (ktx.isCubemap()) {
-        for (var level = 0; level < nlevels; level++) {
-            const uint8array = ktx.getCubeBlob(level);
-            const pixelbuffer = Filament.PixelBuffer(uint8array, pbformat, datatype);
-            tex.setImageCube(engine, level, pixelbuffer);
-        }
-    } else {
-        for (var level = 0; level < nlevels; level++) {
-            const uint8array = ktx.getBlob([level, 0, 0]);
-            const pixelbuffer = Filament.PixelBuffer(uint8array, pbformat, datatype);
-            tex.setImage(engine, level, pixelbuffer);
-        }
-    }
-
-    return tex;
+    return Filament.KtxUtility$createTexture(engine, ktx, srgb, rgbm);
 };
 
 Filament._createIblFromKtx = function(ktxdata, engine, options) {
@@ -341,6 +304,44 @@ Filament._createTextureFromPng = function(pngdata, engine, options) {
         .build(engine);
 
     const pixelbuffer = Filament.PixelBuffer(decodedpng.data.getBytes(), pbformat, pbtype);
+    tex.setImage(engine, 0, pixelbuffer);
+    if (!nomips) {
+        tex.generateMipmaps(engine);
+    }
+    return tex;
+};
+
+Filament._createTextureFromJpeg = function(image, engine, options) {
+
+    options = options || {};
+    const srgb = !!options['srgb'];
+    const nomips = !!options['nomips'];
+
+    var context2d = document.createElement('canvas').getContext('2d');
+    context2d.canvas.width = image.width;
+    context2d.canvas.height = image.height;
+    context2d.width = image.width;
+    context2d.height = image.height;
+    context2d.globalCompositeOperation = 'copy';
+    context2d.drawImage(image, 0, 0);
+
+    var imgdata = context2d.getImageData(0, 0, image.width, image.height).data.buffer;
+    var decodedjpeg = new Uint8Array(imgdata);
+
+    const TF = Filament.Texture$InternalFormat;
+    const texformat = srgb ? TF.SRGB8_A8 : TF.RGBA8;
+    const pbformat = Filament.PixelDataFormat.RGBA;
+    const pbtype = Filament.PixelDataType.UBYTE;
+
+    const tex = Filament.Texture.Builder()
+        .width(image.width)
+        .height(image.height)
+        .levels(nomips ? 1 : 0xff)
+        .sampler(Filament.Texture$Sampler.SAMPLER_2D)
+        .format(texformat)
+        .build(engine);
+
+    const pixelbuffer = Filament.PixelBuffer(decodedjpeg, pbformat, pbtype);
     tex.setImage(engine, 0, pixelbuffer);
     if (!nomips) {
         tex.generateMipmaps(engine);

@@ -39,7 +39,7 @@
 
 using std::string;
 using utils::Path;
-using namespace math;
+using namespace filament::math;
 
 using namespace image;
 
@@ -104,7 +104,7 @@ static void processEnvMap(string inputPath, string resultPath, string goldenPath
     ASSERT_EQ(resultImage.isValid(), true);
     ASSERT_EQ(resultImage.getChannels(), 4);
     LinearImage resultLImage = toLinearFromRGBM(
-            reinterpret_cast<math::float4 const*>(resultImage.getPixelRef()),
+            reinterpret_cast<filament::math::float4 const*>(resultImage.getPixelRef()),
             resultImage.getWidth(), resultImage.getHeight());
 
     std::cout << "Golden image is at " << goldenPath << std::endl;
@@ -142,7 +142,7 @@ TEST_F(CmgenTest, SphericalHarmonics) { // NOLINT
 TEST_F(CmgenTest, HdrLatLong) { // NOLINT
     const string inputPath = "assets/environments/white_furnace/white_furnace.exr";
     const string resultPath = "white_furnace/nx.rgbm";
-    const string goldenPath = "samples/envs/white_furnace/nx.rgbm";
+    const string goldenPath = "tools/cmgen/tests/white_furnace_nx.rgbm";
     processEnvMap(inputPath, resultPath, goldenPath);
 }
 
