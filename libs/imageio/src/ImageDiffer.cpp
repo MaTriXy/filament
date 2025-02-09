@@ -51,8 +51,8 @@ void updateOrCompare(LinearImage limgResult, const utils::Path& fnameGolden,
 
     // Load the PNG file at the given path.
     std::ifstream in(fnameGolden, std::ios::binary);
-    ASSERT_PRECONDITION(in, "Unable to open: %s", fnameGolden.c_str());
-    LinearImage limgGolden = ImageDecoder::decode(in, fnameGolden, ImageDecoder::ColorSpace::LINEAR);
+    FILAMENT_CHECK_PRECONDITION(in) << "Unable to open: " << fnameGolden.c_str();
+    LinearImage limgGolden = ImageDecoder::decode(in, fnameGolden);
 
     // Convert 4-channel RGBM into proper RGB.
     if (fnameGolden.getExtension() == "rgbm" && limgGolden.getChannels() == 4) {
@@ -67,7 +67,7 @@ void updateOrCompare(LinearImage limgResult, const utils::Path& fnameGolden,
     }
 
     // Perform a simple comparison of the two images.
-    ASSERT_PRECONDITION(compare(limgResult, limgGolden, epsilon) == 0, "Image mismatch.");
+    FILAMENT_CHECK_PRECONDITION(compare(limgResult, limgGolden, epsilon) == 0) << "Image mismatch.";
 }
 
 }

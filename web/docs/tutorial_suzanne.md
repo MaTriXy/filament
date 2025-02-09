@@ -23,27 +23,26 @@ non-compressed variants for each texture, since not all platforms support the sa
 formats. First copy over the PNG files from the [monkey folder], then do:
 
 ```bash
-# Create mipmaps for base color and two compressed variants.
-mipgen albedo.png albedo.ktx
-mipgen --compression=astc_fast_ldr_4x4 albedo.png albedo_astc.ktx
-mipgen --compression=s3tc_rgb_dxt1 albedo.png albedo_s3tc.ktx
+# Create mipmaps for base color
+mipgen albedo.png albedo.ktx2
+mipgen --compression=uastc albedo.png albedo.ktx2
 
 # Create mipmaps for the normal map and a compressed variant.
 mipgen --strip-alpha --kernel=NORMALS --linear normal.png normal.ktx
-mipgen --strip-alpha --kernel=NORMALS --linear --compression=etc_rgb8_normalxyz_40 \
-    normal.png normal_etc.ktx
+mipgen --strip-alpha --kernel=NORMALS --linear --compression=uastc_normals \
+    normal.png normal.ktx2
 
 # Create mipmaps for the single-component roughness map and a compressed variant.
 mipgen --grayscale roughness.png roughness.ktx
-mipgen --grayscale --compression=etc_r11_numeric_40 roughness.png roughness_etc.ktx
+mipgen --grayscale --compression=uastc roughness.png roughness.ktx2
 
 # Create mipmaps for the single-component metallic map and a compressed variant.
 mipgen --grayscale metallic.png metallic.ktx
-mipgen --grayscale --compression=etc_r11_numeric_40 metallic.png metallic_etc.ktx
+mipgen --grayscale --compression=uastc metallic.png metallic.ktx2
 
 # Create mipmaps for the single-component occlusion map and a compressed variant.
 mipgen --grayscale ao.png ao.ktx
-mipgen --grayscale --compression=etc_r11_numeric_40 ao.png ao_etc.ktx
+mipgen --grayscale --compression=uastc ao.png ao.ktx2
 ```
 
 For more information on mipgen's arguments and supported formats, do `mipgen --help`.
@@ -52,28 +51,17 @@ In a production setting, you'd want to invoke these commands with a script or bu
 
 ## Bake environment map
 
-Much like the [previous tutorial] we need to use Filament's `cmgen` tool to produce cubemap files,
-but this time we'll create compressed variants.
+Much like the [previous tutorial] we need to use Filament's `cmgen` tool to produce cubemap files.
 
-Download [syferfontein_18d_clear_2k.hdr], then invoke the following commands in your terminal.
+Download [venetian_crossroads_2k.hdr], then invoke the following commands in your terminal.
 
 ```bash
-# Create S3TC variant of the IBL, then rename it to have a _s3tc suffix.
-cmgen -x . --format=ktx --size=256 --extract-blur=0.1 --compression=s3tc_rgba_dxt5 \
-    syferfontein_18d_clear_2k.hdr
-cd syfer* ; mv syfer*_ibl.ktx syferfontein_18d_clear_2k_ibl_s3tc.ktx ; cd -
+cmgen -x . --format=ktx --size=64 --extract-blur=0.1 venetian_crossroads_2k.hdr
+cd venetian* ; mv venetian*_ibl.ktx venetian_crossroads_2k_skybox_tiny.ktx ; cd -
 
-# Create ETC variant of the IBL, then rename it to have a _s3tc suffix.
-cmgen -x . --format=ktx --size=256 --extract-blur=0.1 --compression=etc_rgba8_rgba_40 \
-    syferfontein_18d_clear_2k.hdr
-cd syfer* ; mv syfer*_ibl.ktx syferfontein_18d_clear_2k_ibl_etc.ktx ; cd -
-
-# Create small uncompressed Skybox variant, then rename it to have a _tiny suffix.
-cmgen -x . --format=ktx --size=64 --extract-blur=0.1 syferfontein_18d_clear_2k.hdr
-cd syfer* ; mv syfer*_ibl.ktx syferfontein_18d_clear_2k_skybox_tiny.ktx ; cd -
-
-# Create full-size uncompressed Skybox and IBL
-cmgen -x . --format=ktx --size=256 --extract-blur=0.1 syferfontein_18d_clear_2k.hdr
+cmgen -x . --format=ktx --size=256 --extract-blur=0.1 venetian_crossroads_2k.hdr
+cmgen -x . --format=ktx --size=256 --extract-blur=0.1 venetian_crossroads_2k.hdr
+cmgen -x . --format=ktx --size=256 --extract-blur=0.1 venetian_crossroads_2k.hdr
 ```
 
 ## Define textured material
@@ -153,7 +141,7 @@ class App {
 
         this.swapChain = this.engine.createSwapChain();
         this.renderer = this.engine.createRenderer();
-        this.camera = this.engine.createCamera();
+        this.camera = this.engine.createCamera(Filament.EntityManager.get().create());
         this.view = this.engine.createView();
         this.view.setCamera(this.camera);
         this.view.setScene(this.scene);
@@ -187,9 +175,9 @@ class App {
 }
 ```
 
-Our app will use 10 downloaded assets, but it only requires 4 of them to be present for `App`
-construction. We'll download the other 6 assets after construction. By using a progressive loading
-strategy, we can reduce the perceived load time.
+Our app will only require a subset of assets to be present for `App` construction. We'll download
+the other assets after construction. By using a progressive loading strategy, we can reduce the
+perceived load time.
 
 Next we need to supply the URLs for various assets. This is actually a bit tricky, because different
 clients have different capabilities for compressed textures.
@@ -200,18 +188,16 @@ To help you download only the texture assets that you need, Filament provides a
 performs an intersection of the *desired* set with the *supported* set, then returns an appropriate
 string -- which might be empty.
 
-In our case, we know that our web server will have `etc` and `s3tc` variants for the IBL, `astc` and
-`s3tc` variants for albedo, and `etc` variants for the other textures. The uncompressed variants
-(empty string) are always available as a last resort. Go ahead and replace the **declare asset
-URLs** comment with the following snippet.
+In our case, we know that our web server will have `astc` and `s3tc` variants for albedo, and `etc`
+variants for the other textures. The uncompressed variants (empty string) are always available as a
+last resort. Go ahead and replace the **declare asset URLs** comment with the following snippet.
 
 ```js {fragment="declare asset URLs"}
-const ibl_suffix = Filament.getSupportedFormatSuffix('etc s3tc');
-const albedo_suffix = Filament.getSupportedFormatSuffix('astc s3tc');
+const albedo_suffix = Filament.getSupportedFormatSuffix('astc s3tc_srgb');
 const texture_suffix = Filament.getSupportedFormatSuffix('etc');
 
-const environ = 'syferfontein_18d_clear_2k'
-const ibl_url = `${environ}/${environ}_ibl${ibl_suffix}.ktx`;
+const environ = 'venetian_crossroads_2k'
+const ibl_url = `${environ}/${environ}_ibl.ktx`;
 const sky_small_url = `${environ}/${environ}_skybox_tiny.ktx`;
 const sky_large_url = `${environ}/${environ}_skybox.ktx`;
 const albedo_url = `albedo${albedo_suffix}.ktx`;
@@ -228,9 +214,9 @@ const filamesh_url = 'suzanne.filamesh';
 Next, let's create the low-resolution skybox and IBL in the `App` constructor.
 
 ```js {fragment="create sky box and IBL"}
-this.skybox = this.engine.createSkyFromKtx(sky_small_url);
+this.skybox = this.engine.createSkyFromKtx1(sky_small_url);
 this.scene.setSkybox(this.skybox);
-this.indirectLight = this.engine.createIblFromKtx(ibl_url);
+this.indirectLight = this.engine.createIblFromKtx1(ibl_url);
 this.indirectLight.setIntensity(100000);
 this.scene.setIndirectLight(this.indirectLight);
 ```
@@ -250,11 +236,11 @@ was created in the app constructor.
 
 ```js {fragment="fetch larger assets"}
 Filament.fetch([sky_large_url, albedo_url, roughness_url, metallic_url, normal_url, ao_url], () => {
-    const albedo = this.engine.createTextureFromKtx(albedo_url, {srgb: true});
-    const roughness = this.engine.createTextureFromKtx(roughness_url);
-    const metallic = this.engine.createTextureFromKtx(metallic_url);
-    const normal = this.engine.createTextureFromKtx(normal_url);
-    const ao = this.engine.createTextureFromKtx(ao_url);
+    const albedo = this.engine.createTextureFromKtx2(albedo_url, {srgb: true});
+    const roughness = this.engine.createTextureFromKtx2(roughness_url);
+    const metallic = this.engine.createTextureFromKtx2(metallic_url);
+    const normal = this.engine.createTextureFromKtx2(normal_url);
+    const ao = this.engine.createTextureFromKtx2(ao_url);
 
     const sampler = new Filament.TextureSampler(
         Filament.MinFilter.LINEAR_MIPMAP_LINEAR,
@@ -269,7 +255,7 @@ Filament.fetch([sky_large_url, albedo_url, roughness_url, metallic_url, normal_u
 
     // Replace low-res skybox with high-res skybox.
     this.engine.destroySkybox(this.skybox);
-    this.skybox = this.engine.createSkyFromKtx(sky_large_url);
+    this.skybox = this.engine.createSkyFromKtx1(sky_large_url);
     this.scene.setSkybox(this.skybox);
 
     this.scene.addEntity(this.suzanne);
@@ -282,7 +268,7 @@ Add the following script tag to your HTML file. This imports a small third-party
 listens for drag events and computes a rotation matrix.
 
 ```html
-<script src="https://unpkg.com/gltumble"></script>
+<script src="//unpkg.com/gltumble"></script>
 ```
 
 Next, replace the **initialize gltumble** and **apply gltumble matrix** comments with the following
@@ -305,8 +291,8 @@ That's it, we now have a fast-loading interactive demo. The complete JavaScript 
 [Filament release]: //github.com/google/filament/releases
 [previous tutorial]: tutorial_redball.html
 [Filament Material System]: https://google.github.io/filament/Materials.md.html
-[this OBJ file]: https://github.com/google/filament/blob/master/assets/models/monkey/monkey.obj
-[monkey folder]: https://github.com/google/filament/blob/master/assets/models/monkey
+[this OBJ file]: https://github.com/google/filament/blob/main/assets/models/monkey/monkey.obj
+[monkey folder]: https://github.com/google/filament/blob/main/assets/models/monkey
 
-[syferfontein_18d_clear_2k.hdr]:
-//github.com/google/filament/blob/master/third_party/environments/syferfontein_18d_clear_2k.hdr
+[venetian_crossroads_2k.hdr]:
+//github.com/google/filament/blob/main/third_party/environments/venetian_crossroads_2k.hdr

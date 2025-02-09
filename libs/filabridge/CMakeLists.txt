@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.19)
 project(filabridge)
 
 set(TARGET         filabridge)
@@ -10,11 +10,10 @@ set(PUBLIC_HDR_DIR include)
 file(GLOB_RECURSE PUBLIC_HDRS ${PUBLIC_HDR_DIR}/**/*.h)
 
 set(SRCS
-        src/SamplerBindingMap.cpp
+        src/BufferInterfaceBlock.cpp
+        src/DescriptorSets.cpp
         src/SamplerInterfaceBlock.cpp
-        src/UniformInterfaceBlock.cpp
-        src/UibGenerator.cpp
-        src/SibGenerator.cpp
+        src/Variant.cpp
 )
 
 # ==================================================================================================
@@ -24,17 +23,11 @@ include_directories(${PUBLIC_HDR_DIR})
 
 add_library(${TARGET} STATIC ${PUBLIC_HDRS} ${SRCS})
 target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
+set_target_properties(${TARGET} PROPERTIES FOLDER Libs)
 
 target_link_libraries(${TARGET} utils)
 target_link_libraries(${TARGET} math)
-target_link_libraries(${TARGET} backend)
-
-# ==================================================================================================
-# Compiler flags
-# ==================================================================================================
-if (NOT WIN32)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
-endif()
+target_link_libraries(${TARGET} backend_headers)
 
 # ==================================================================================================
 # Installation

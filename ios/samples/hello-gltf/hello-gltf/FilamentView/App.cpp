@@ -18,17 +18,23 @@
 
 #include <filament/LightManager.h>
 #include <filament/TransformManager.h>
+#include <filament/Viewport.h>
 
-#include <image/KtxUtility.h>
+#include <ktxreader/Ktx1Reader.h>
 #include <gltfio/AssetLoader.h>
 #include <gltfio/ResourceLoader.h>
+#include <gltfio/TextureProvider.h>
+#include <gltfio/materials/uberarchive.h>
 
 #include <fstream>
+#include <iostream>
 #include <sstream>
 
 // This file is generated via the "Run Script" build phase and contains the IBL and skybox
 // textures this app uses.
 #include "resources.h"
+
+using namespace ktxreader;
 
 App::App(void* nativeLayer, uint32_t width, uint32_t height, const utils::Path& resourcePath)
         : nativeLayer(nativeLayer), width(width), height(height), resourcePath(resourcePath) {
@@ -57,12 +63,14 @@ App::~App() {
     app.assetLoader->destroyAsset(app.asset);
     app.materialProvider->destroyMaterials();
     delete app.materialProvider;
-    gltfio::AssetLoader::destroy(&app.assetLoader);
+    filament::gltfio::AssetLoader::destroy(&app.assetLoader);
 
     engine->destroy(renderer);
     engine->destroy(scene);
     engine->destroy(view);
-    engine->destroy(camera);
+    Entity c = camera->getEntity();
+    engine->destroyCameraComponent(c);
+    EntityManager::get().destroy(c);
     engine->destroy(swapChain);
     engine->destroy(&engine);
 }
@@ -76,7 +84,8 @@ void App::setupFilament() {
     swapChain = engine->createSwapChain(nativeLayer);
     renderer = engine->createRenderer();
     scene = engine->createScene();
-    camera = engine->createCamera();
+    Entity c = EntityManager::get().create();
+    camera = engine->createCamera(c);
     cameraManipulator.setCamera(camera);
     cameraManipulator.setViewport(width, height);
     cameraManipulator.lookAt(filament::math::double3(0, 0, 3), filament::math::double3(0, 0, 0));
@@ -84,15 +93,15 @@ void App::setupFilament() {
 }
 
 void App::setupIbl() {
-    image::KtxBundle* iblBundle = new image::KtxBundle(RESOURCES_VENETIAN_CROSSROADS_IBL_DATA,
-                                                       RESOURCES_VENETIAN_CROSSROADS_IBL_SIZE);
+    image::Ktx1Bundle* iblBundle = new image::Ktx1Bundle(RESOURCES_VENETIAN_CROSSROADS_2K_IBL_DATA,
+                                                       RESOURCES_VENETIAN_CROSSROADS_2K_IBL_SIZE);
     float3 harmonics[9];
-    parseSphereHarmonics(iblBundle->getMetadata("sh"), harmonics);
-    app.iblTexture = image::KtxUtility::createTexture(engine, iblBundle, false, true);
+    iblBundle->getSphericalHarmonics(harmonics);
+    app.iblTexture = Ktx1Reader::createTexture(engine, iblBundle, false);
 
-    image::KtxBundle* skyboxBundle = new image::KtxBundle(RESOURCES_VENETIAN_CROSSROADS_SKYBOX_DATA,
-                                                          RESOURCES_VENETIAN_CROSSROADS_SKYBOX_SIZE);
-    app.skyboxTexture = image::KtxUtility::createTexture(engine, skyboxBundle, false, true);
+    image::Ktx1Bundle* skyboxBundle = new image::Ktx1Bundle(RESOURCES_VENETIAN_CROSSROADS_2K_SKYBOX_DATA,
+                                                          RESOURCES_VENETIAN_CROSSROADS_2K_SKYBOX_SIZE);
+    app.skyboxTexture = Ktx1Reader::createTexture(engine, skyboxBundle, false);
 
     app.skybox = Skybox::Builder()
         .environment(app.skyboxTexture)
@@ -115,8 +124,9 @@ void App::setupIbl() {
 }
 
 void App::setupMesh() {
-    app.materialProvider = gltfio::createUbershaderLoader(engine);
-    app.assetLoader = gltfio::AssetLoader::create({engine, app.materialProvider, nullptr});
+    app.materialProvider = filament::gltfio::createUbershaderProvider(engine,
+            UBERARCHIVE_DEFAULT_DATA, UBERARCHIVE_DEFAULT_SIZE);
+    app.assetLoader = filament::gltfio::AssetLoader::create({engine, app.materialProvider, nullptr});
 
     // Load the glTF file.
     std::ifstream in(resourcePath.concat(utils::Path("DamagedHelmet.glb")), std::ifstream::in);
@@ -125,42 +135,36 @@ void App::setupMesh() {
     in.seekg(0);
     std::vector<uint8_t> buffer(size);
     if (!in.read((char*) buffer.data(), size)) {
-        std::cerr << "Unable to read scene.gltf" << std::endl;
+        std::cerr << "Unable to read glTF" << std::endl;
         exit(1);
     }
-    app.asset = app.assetLoader->createAssetFromBinary(buffer.data(), static_cast<uint32_t>(size));
+    app.asset = app.assetLoader->createAsset(buffer.data(), static_cast<uint32_t>(size));
 
-    gltfio::ResourceLoader({
+    auto resourceLoader = new filament::gltfio::ResourceLoader({
         .engine = engine,
-        .normalizeSkinningWeights = true,
-        .recomputeBoundingBoxes = false
-    }).loadResources(app.asset);
+        .normalizeSkinningWeights = true
+    });
+    auto stbDecoder = filament::gltfio::createStbProvider(engine);
+    auto ktxDecoder = filament::gltfio::createKtx2Provider(engine);
+
+    resourceLoader->addTextureProvider("image/png", stbDecoder);
+    resourceLoader->addTextureProvider("image/jpeg", stbDecoder);
+    resourceLoader->addTextureProvider("image/ktx2", ktxDecoder);
+    resourceLoader->loadResources(app.asset);
+
+    delete resourceLoader;
+    delete stbDecoder;
+    delete ktxDecoder;
 
     scene->addEntities(app.asset->getEntities(), app.asset->getEntityCount());
 }
 
 void App::setupView() {
     view = engine->createView();
-    view->setDepthPrepass(filament::View::DepthPrepass::DISABLED);
     view->setScene(scene);
     view->setCamera(camera);
     view->setViewport(Viewport(0, 0, width, height));
 
     // Even FXAA anti-aliasing is overkill on iOS retina screens. This saves a few ms.
     view->setAntiAliasing(View::AntiAliasing::NONE);
-}
-
-void App::parseSphereHarmonics(const char* str, float3 harmonics[9]) {
-    std::istringstream iss(str);
-    std::string read;
-    for (int i = 0; i < 9; i++) {
-        float3 harmonic;
-        iss >> read;
-        harmonic.x = std::stof(read);
-        iss >> read;
-        harmonic.y = std::stof(read);
-        iss >> read;
-        harmonic.z = std::stof(read);
-        harmonics[i] = std::move(harmonic);
-    }
 }

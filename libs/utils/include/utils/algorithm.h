@@ -19,55 +19,95 @@
 
 #include <utils/compiler.h>
 
-#include <functional>
+#include <type_traits>      // for std::enable_if
 
 #include <limits.h>
+#include <stddef.h>
 #include <stdint.h>
 
 namespace utils {
 
 namespace details {
+
 template<typename T>
 constexpr inline T popcount(T v) noexcept {
-    static_assert(sizeof(T) * 8 <= 128, "details::popcount() only support up to 128 bits");
+    static_assert(sizeof(T) * CHAR_BIT <= 128, "details::popcount() only support up to 128 bits");
     constexpr T ONES = ~T(0);
-    v = v - ((v >> 1) & ONES / 3);
-    v = (v & ONES / 15 * 3) + ((v >> 2) & ONES / 15 * 3);
-    v = (v + (v >> 4)) & ONES / 255 * 15;
+    v = v - ((v >> 1u) & ONES / 3);
+    v = (v & ONES / 15 * 3) + ((v >> 2u) & ONES / 15 * 3);
+    v = (v + (v >> 4u)) & ONES / 255 * 15;
     return (T) (v * (ONES / 255)) >> (sizeof(T) - 1) * CHAR_BIT;
 }
 
-template<typename T>
+template<typename T, typename = std::enable_if_t<std::is_unsigned_v<T>>>
 constexpr inline T clz(T x) noexcept {
-    static_assert(sizeof(T) <= sizeof(uint64_t), "details::clz() only support up to 64 bits");
-    x |= (x >> 1);
-    x |= (x >> 2);
-    x |= (x >> 4);
-    x |= (x >> 8);
-    x |= (x >> 16);
-    if (sizeof(T) * 8 > 32) { // if() only needed to quash compiler warnings
-        x |= (x >> 32);
+    static_assert(sizeof(T) * CHAR_BIT <= 128, "details::clz() only support up to 128 bits");
+    x |= (x >> 1u);
+    x |= (x >> 2u);
+    if constexpr (sizeof(T) * CHAR_BIT >= 8) {   // just to silence compiler warning
+        x |= (x >> 4u);
     }
-    return (sizeof(T) * CHAR_BIT) - details::popcount(x);
+    if constexpr (sizeof(T) * CHAR_BIT >= 16) {   // just to silence compiler warning
+        x |= (x >> 8u);
+    }
+    if constexpr (sizeof(T) * CHAR_BIT >= 32) {   // just to silence compiler warning
+        x |= (x >> 16u);
+    }
+    if constexpr (sizeof(T) * CHAR_BIT >= 64) {   // just to silence compiler warning
+        x |= (x >> 32u);
+    }
+    if constexpr (sizeof(T) * CHAR_BIT >= 128) {   // just to silence compiler warning
+        x |= (x >> 64u);
+    }
+    return T(sizeof(T) * CHAR_BIT) - details::popcount(x);
 }
 
-template<typename T>
+template<typename T, typename = std::enable_if_t<std::is_unsigned_v<T>>>
 constexpr inline T ctz(T x) noexcept {
-    static_assert(sizeof(T) <= sizeof(uint64_t), "details::ctz() only support up to 64 bits");
-    T c = sizeof(T) * 8;
-    x &= -signed(x);
+    static_assert(sizeof(T) * CHAR_BIT <= 64, "details::ctz() only support up to 64 bits");
+    T c = sizeof(T) * CHAR_BIT;
+#if defined(_MSC_VER)
+    // equivalent to x & -x, but MSVC yield a warning for using unary minus operator on unsigned types
+    x &= (~x + 1);
+#else
+    // equivalent to x & (~x + 1), but some compilers generate a better sequence on ARM
+    x &= -x;
+#endif
     if (x) c--;
-    if (sizeof(T) * 8 > 32) { // if() only needed to quash compiler warnings
-        if (x & 0x00000000FFFFFFFF) c -= 32;
+    if constexpr (sizeof(T) * CHAR_BIT >= 64) {
+        if (x & T(0x00000000FFFFFFFF)) c -= 32;
     }
-    if (x & 0x0000FFFF) c -= 16;
-    if (x & 0x00FF00FF) c -= 8;
-    if (x & 0x0F0F0F0F) c -= 4;
-    if (x & 0x33333333) c -= 2;
-    if (x & 0x55555555) c -= 1;
+    if constexpr (sizeof(T) * CHAR_BIT >= 32) {
+        if (x & T(0x0000FFFF0000FFFF)) c -= 16;
+    }
+    if constexpr (sizeof(T) * CHAR_BIT >= 16) {
+        if (x & T(0x00FF00FF00FF00FF)) c -= 8;
+    }
+    if (x & T(0x0F0F0F0F0F0F0F0F)) c -= 4;
+    if (x & T(0x3333333333333333)) c -= 2;
+    if (x & T(0x5555555555555555)) c -= 1;
     return c;
 }
+
 } // namespace details
+
+constexpr inline UTILS_PUBLIC UTILS_PURE
+unsigned int UTILS_ALWAYS_INLINE clz(unsigned char x) noexcept {
+#if __has_builtin(__builtin_clz)
+    return __builtin_clz((unsigned int)x) - 24;
+#else
+    return details::clz(x);
+#endif
+}
+
+constexpr inline UTILS_PUBLIC UTILS_PURE
+unsigned int UTILS_ALWAYS_INLINE clz(unsigned short x) noexcept {
+#if __has_builtin(__builtin_clz)
+    return __builtin_clz((unsigned int)x) - 16;
+#else
+    return details::clz(x);
+#endif
+}
 
 constexpr inline UTILS_PUBLIC UTILS_PURE
 unsigned int UTILS_ALWAYS_INLINE clz(unsigned int x) noexcept {
@@ -93,6 +133,24 @@ unsigned long long UTILS_ALWAYS_INLINE clz(unsigned long long x) noexcept {
     return __builtin_clzll(x);
 #else
     return details::clz(x);
+#endif
+}
+
+constexpr inline UTILS_PUBLIC UTILS_PURE
+unsigned int UTILS_ALWAYS_INLINE ctz(unsigned char x) noexcept {
+#if __has_builtin(__builtin_ctz)
+    return __builtin_ctz(x);
+#else
+    return details::ctz(x);
+#endif
+}
+
+constexpr inline UTILS_PUBLIC UTILS_PURE
+unsigned int UTILS_ALWAYS_INLINE ctz(unsigned short x) noexcept {
+#if __has_builtin(__builtin_ctz)
+    return __builtin_ctz(x);
+#else
+    return details::ctz(x);
 #endif
 }
 
@@ -124,6 +182,24 @@ unsigned long long UTILS_ALWAYS_INLINE ctz(unsigned long long x) noexcept {
 }
 
 constexpr inline UTILS_PUBLIC UTILS_PURE
+unsigned int UTILS_ALWAYS_INLINE popcount(unsigned char x) noexcept {
+#if __has_builtin(__builtin_popcount)
+    return __builtin_popcount(x);
+#else
+    return details::popcount(x);
+#endif
+}
+
+constexpr inline UTILS_PUBLIC UTILS_PURE
+unsigned int UTILS_ALWAYS_INLINE popcount(unsigned short x) noexcept {
+#if __has_builtin(__builtin_popcount)
+    return __builtin_popcount(x);
+#else
+    return details::popcount(x);
+#endif
+}
+
+constexpr inline UTILS_PUBLIC UTILS_PURE
 unsigned int UTILS_ALWAYS_INLINE popcount(unsigned int x) noexcept {
 #if __has_builtin(__builtin_popcount)
     return __builtin_popcount(x);
@@ -150,84 +226,11 @@ unsigned long long UTILS_ALWAYS_INLINE popcount(unsigned long long x) noexcept {
 #endif
 }
 
-constexpr inline UTILS_PUBLIC UTILS_PURE
-uint8_t UTILS_ALWAYS_INLINE popcount(uint8_t x) noexcept {
-    return (uint8_t)popcount((unsigned int)x);
-}
-
 template<typename T,
-        typename = std::enable_if_t<std::is_integral<T>::value && std::is_unsigned<T>::value>>
+        typename = std::enable_if_t<std::is_integral_v<T> && std::is_unsigned_v<T>>>
 constexpr inline UTILS_PUBLIC UTILS_PURE
 T log2i(T x) noexcept {
     return (sizeof(x) * 8 - 1u) - clz(x);
-}
-
-/*
- * branch-less version of std::lower_bound and std::upper_bound.
- * These versions are intended to be fully inlined, which only happens when the size
- * of the array is known at compile time. This code also performs better if the
- * array is a power-of-two in size.
- *
- * These code works even if the conditions above are not met, and becomes a less-branches
- * algorithm instead of a branch-less one!
- */
-
-template<typename RandomAccessIterator, typename T, typename COMPARE = typename std::less<T>>
-inline UTILS_PUBLIC
-RandomAccessIterator lower_bound(
-        RandomAccessIterator first, RandomAccessIterator last, const T& value,
-        COMPARE comp = std::less<T>(),
-        bool assume_power_of_two = false) {
-    size_t len = last - first;
-
-    if (!assume_power_of_two) {
-        // handle non power-of-two sized arrays. If it's POT, the next line is a no-op
-        // and gets optimized out if the size is known at compile time.
-        len = 1u << (31 - clz(uint32_t(len)));     // next power of two length / 2
-        size_t difference = (last - first) - len;
-        // If len was already a POT, then difference will be 0.
-        // We need to explicitly check this case to avoid dereferencing past the end of the array
-        first += !difference || comp(first[len], value) ? difference : 0;
-    }
-
-    while (len) {
-        // The number of repetitions here doesn't affect the result. We manually unroll the loop
-        // twice, to guarantee we have at least two iterations without branches (for the case
-        // where the size is not known at compile time
-        first += comp(first[len>>=1], value) ? len : 0;
-        first += comp(first[len>>=1], value) ? len : 0;
-    }
-    first += comp(*first, value);
-    return first;
-}
-
-template<typename RandomAccessIterator, typename T, typename COMPARE = typename std::less<T>>
-inline UTILS_PUBLIC
-RandomAccessIterator upper_bound(
-        RandomAccessIterator first, RandomAccessIterator last,
-        const T& value, COMPARE comp = std::less<T>(),
-        bool assume_power_of_two = false) {
-    size_t len = last - first;
-
-    if (!assume_power_of_two) {
-        // handle non power-of-two sized arrays. If it's POT, the next line is a no-op
-        // and gets optimized out if the size is known at compile time.
-        len = 1u << (31 - clz(uint32_t(len)));     // next power of two length / 2
-        size_t difference = (last - first) - len;
-        // If len was already a POT, then difference will be 0.
-        // We need to explicitly check this case to avoid dereferencing past the end of the array
-        first += !difference || comp(value, first[len]) ? 0 : difference;
-    }
-
-    while (len) {
-        // The number of repetitions here doesn't affect the result. We manually unroll the loop
-        // twice, to guarantee we have at least two iterations without branches (for the case
-        // where the size is not known at compile time
-        first += !comp(value, first[len>>=1]) ? len : 0;
-        first += !comp(value, first[len>>=1]) ? len : 0;
-    }
-    first += !comp(value, *first);
-    return first;
 }
 
 template<typename RandomAccessIterator, typename COMPARE>
@@ -241,30 +244,41 @@ RandomAccessIterator partition_point(
         // handle non power-of-two sized arrays. If it's POT, the next line is a no-op
         // and gets optimized out if the size is known at compile time.
         len = 1u << (31 - clz(uint32_t(len)));     // next power of two length / 2
-        first += pred(first[len]) ? ((last - first) - len) : 0;
+        size_t difference = (last - first) - len;
+        first += !difference || pred(first[len]) ? difference : 0;
     }
 
     while (len) {
         // The number of repetitions here doesn't affect the result. We manually unroll the loop
         // twice, to guarantee we have at least two iterations without branches (for the case
         // where the size is not known at compile time
-        first += pred(first[len>>=1]) ? len : 0;
-        first += pred(first[len>>=1]) ? len : 0;
+        first += pred(first[len>>=1u]) ? len : 0;
+        first += pred(first[len>>=1u]) ? len : 0;
     }
     first += pred(*first);
     return first;
 }
 
-template <class To, class From>
-typename std::enable_if_t<
-    (sizeof(To) == sizeof(From)) &&
-    std::is_trivially_copyable<From>::value &&
-    std::is_trivial<To>::value,
-    // this implementation requires that To is trivially default constructible
-    To>
-// constexpr support needs compiler magic
-bit_cast(const From &src) noexcept {
-    return reinterpret_cast<const To&>(src);
+template <class Dest, class Source>
+#if __has_builtin(__builtin_bit_cast)
+constexpr
+#else
+inline
+#endif
+Dest bit_cast(const Source& source) noexcept {
+#if __has_builtin(__builtin_bit_cast)
+    return __builtin_bit_cast(Dest, source);
+#else
+    static_assert(sizeof(Dest) == sizeof(Source),
+            "bit_cast requires source and destination to be the same size");
+    static_assert(std::is_trivially_copyable_v<Dest>,
+            "bit_cast requires the destination type to be copyable");
+    static_assert(std::is_trivially_copyable_v<Source>,
+            "bit_cast requires the source type to be copyable");
+    Dest dest;
+    memcpy(&dest, &source, sizeof(dest));
+    return dest;
+#endif
 }
 
 } // namespace utils

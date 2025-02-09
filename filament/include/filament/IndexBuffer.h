@@ -27,13 +27,12 @@
 
 #include <utils/compiler.h>
 
+#include <stdint.h>
 #include <stddef.h>
 
 namespace filament {
 
-namespace details {
 class FIndexBuffer;
-} // namespace details
 
 class Engine;
 
@@ -42,7 +41,7 @@ class Engine;
  * The buffer itself is a GPU resource, therefore mutating the data can be relatively slow.
  * Typically these buffers are constant.
  *
- * It is possible, and even encouraged, to use a single index buffer for several Renderable.
+ * It is possible, and even encouraged, to use a single index buffer for several Renderables.
  *
  * @see VertexBuffer, RenderableManager
  */
@@ -60,7 +59,7 @@ public:
         UINT = uint8_t(backend::ElementType::UINT),      //!< 32-bit indices
     };
 
-    class Builder : public BuilderBase<BuilderDetails> {
+    class Builder : public BuilderBase<BuilderDetails>, public BuilderNameMixin<Builder> {
         friend struct BuilderDetails;
     public:
         Builder() noexcept;
@@ -71,7 +70,7 @@ public:
         Builder& operator=(Builder&& rhs) noexcept;
 
         /**
-         * Size of the index buffer in element.
+         * Size of the index buffer in elements.
          * @param indexCount Number of indices the IndexBuffer can hold.
          * @return A reference to this Builder for chaining calls.
          */
@@ -85,13 +84,27 @@ public:
         Builder& bufferType(IndexType indexType) noexcept;
 
         /**
+         * Associate an optional name with this IndexBuffer for debugging purposes.
+         *
+         * name will show in error messages and should be kept as short as possible. The name is
+         * truncated to a maximum of 128 characters.
+         *
+         * The name string is copied during this method so clients may free its memory after
+         * the function returns.
+         *
+         * @param name A string to identify this IndexBuffer
+         * @param len Length of name, should be less than or equal to 128
+         * @return This Builder, for chaining calls.
+         */
+        Builder& name(const char* UTILS_NONNULL name, size_t len) noexcept;
+
+        /**
          * Creates the IndexBuffer object and returns a pointer to it. After creation, the index
-         * buffer is uninitialized. Use IndexBuffer::setBuffer() to initialized the IndexBuffer.
+         * buffer is uninitialized. Use IndexBuffer::setBuffer() to initialize the IndexBuffer.
          *
          * @param engine Reference to the filament::Engine to associate this IndexBuffer with.
          *
-         * @return pointer to the newly created object or nullptr if exceptions are disabled and
-         *         an error occurred.
+         * @return pointer to the newly created object.
          *
          * @exception utils::PostConditionPanic if a runtime error occurred, such as running out of
          *            memory or other resources.
@@ -99,9 +112,9 @@ public:
          *
          * @see IndexBuffer::setBuffer
          */
-        IndexBuffer* build(Engine& engine);
+        IndexBuffer* UTILS_NONNULL build(Engine& engine);
     private:
-        friend class details::FIndexBuffer;
+        friend class FIndexBuffer;
     };
 
     /**
@@ -110,7 +123,7 @@ public:
      * @param engine Reference to the filament::Engine to associate this IndexBuffer with.
      * @param buffer A BufferDescriptor representing the data used to initialize the IndexBuffer.
      *               BufferDescriptor points to raw, untyped data that will be interpreted as
-     *               either 16-bit or 32-bits indices baed on the Type of this IndexBuffer.
+     *               either 16-bit or 32-bits indices based on the Type of this IndexBuffer.
      * @param byteOffset Offset in *bytes* into the IndexBuffer
      */
     void setBuffer(Engine& engine, BufferDescriptor&& buffer, uint32_t byteOffset = 0);
@@ -120,6 +133,10 @@ public:
      * @return The number of indices the IndexBuffer holds.
      */
     size_t getIndexCount() const noexcept;
+
+protected:
+    // prevent heap allocation
+    ~IndexBuffer() = default;
 };
 
 } // namespace filament

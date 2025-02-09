@@ -18,6 +18,8 @@
 
 #include <filament/Skybox.h>
 
+#include <math/vec4.h>
+
 using namespace filament;
 
 extern "C" JNIEXPORT jlong JNICALL
@@ -47,6 +49,20 @@ Java_com_google_android_filament_Skybox_nBuilderShowSun(JNIEnv *env, jclass type
     builder->showSun(show);
 }
 
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_Skybox_nBuilderIntensity(JNIEnv *env, jclass clazz,
+        jlong nativeSkyBoxBuilder, jfloat intensity) {
+    Skybox::Builder *builder = (Skybox::Builder *) nativeSkyBoxBuilder;
+    builder->intensity(intensity);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_Skybox_nBuilderColor(JNIEnv *,  jclass,
+        jlong nativeSkyBoxBuilder, jfloat r, jfloat g, jfloat b, jfloat a) {
+    Skybox::Builder *builder = (Skybox::Builder *) nativeSkyBoxBuilder;
+    builder->color({r, g, b, a});
+}
+
 extern "C" JNIEXPORT jlong JNICALL
 Java_com_google_android_filament_Skybox_nBuilderBuild(JNIEnv *env, jclass type,
         jlong nativeSkyBoxBuilder, jlong nativeEngine) {
@@ -67,4 +83,26 @@ Java_com_google_android_filament_Skybox_nGetLayerMask(JNIEnv *env, jclass type,
         jlong nativeSkybox) {
     Skybox *skybox = (Skybox *) nativeSkybox;
     return static_cast<jint>(skybox->getLayerMask());
+}
+
+extern "C" JNIEXPORT jfloat JNICALL
+Java_com_google_android_filament_Skybox_nGetIntensity(JNIEnv *env, jclass clazz,
+        jlong nativeSkybox) {
+    Skybox *skybox = (Skybox *) nativeSkybox;
+    return static_cast<jint>(skybox->getIntensity());
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_Skybox_nSetColor(JNIEnv *, jclass,
+        jlong nativeSkybox, jfloat r, jfloat g, jfloat b, jfloat a) {
+    Skybox *skybox = (Skybox *) nativeSkybox;
+    skybox->setColor({r, g, b, a});
+}
+
+extern "C" JNIEXPORT jlong JNICALL
+Java_com_google_android_filament_Skybox_nGetTexture(JNIEnv* env, jclass,
+        jlong nativeSkybox) {
+    Skybox *skybox = (Skybox *) nativeSkybox;
+    Texture const *tex = skybox->getTexture();
+    return (jlong) tex;
 }

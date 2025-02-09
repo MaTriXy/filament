@@ -1,5 +1,9 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.19)
 project(websamples)
+
+if (FILAMENT_SKIP_SAMPLES)
+    return()
+endif()
 
 set(SERVER_DIR ${PROJECT_BINARY_DIR})
 set(ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../..)
@@ -13,13 +17,12 @@ endif()
 # ==================================================================================================
 
 set(MATERIAL_NAMES
-    helmet
     parquet
     sandbox
     textured
     nonlit)
 
-set(MATC_FLAGS -a opengl -m material -p mobile)
+set(MATC_FLAGS -a opengl -p mobile)
 if (NOT CMAKE_BUILD_TYPE MATCHES Release)
     set(MATC_FLAGS -g ${MATC_FLAGS})
 endif()
@@ -52,7 +55,7 @@ function(add_ktxfiles SOURCE TARGET EXTRA_ARGS)
     set(target_textures ${target_textures} ${target_path} PARENT_SCOPE)
     add_custom_command(
         OUTPUT ${target_path}
-        COMMAND mipgen --strip-alpha ${EXTRA_ARGS} ${source_path} ${target_path}
+        COMMAND mipgen --quiet --strip-alpha ${EXTRA_ARGS} ${source_path} ${target_path}
         MAIN_DEPENDENCY ${source_path}
         DEPENDS mipgen)
 endfunction()
@@ -64,26 +67,15 @@ function(add_rawfile SOURCE TARGET)
     set(target_textures ${target_textures} ${target_path} PARENT_SCOPE)
     add_custom_command(
         OUTPUT ${target_path}
-        COMMAND cmake -E copy ${source_path} ${target_path}
+        COMMAND ${CMAKE_COMMAND} -E copy ${source_path} ${target_path}
         MAIN_DEPENDENCY ${source_path})
 endfunction()
 
-set(ETC_R11_ARGS "--grayscale;--compression=etc_r11_numeric_40")
-
-# TODO: Instead of "rgb8" we should be using "rg11", but that causes an assertion in etc2comp.
-set(ETC_NORMALS_ARGS "--kernel=NORMALS;--linear;--compression=etc_rgb8_normalxyz_40")
-
-add_ktxfiles("assets/models/monkey/albedo.png" "albedo.ktx" "")
-add_ktxfiles("assets/models/monkey/albedo.png" "albedo_astc.ktx" "--compression=astc_fast_ldr_4x4")
-add_ktxfiles("assets/models/monkey/albedo.png" "albedo_s3tc.ktx" "--compression=s3tc_rgb_dxt1")
-add_ktxfiles("assets/models/monkey/normal.png" "normal.ktx" "--kernel=NORMALS;--linear")
-add_ktxfiles("assets/models/monkey/normal.png" "normal_etc.ktx" "${ETC_NORMALS_ARGS}")
-add_ktxfiles("assets/models/monkey/roughness.png" "roughness.ktx" "--grayscale")
-add_ktxfiles("assets/models/monkey/roughness.png" "roughness_etc.ktx" "${ETC_R11_ARGS}")
-add_ktxfiles("assets/models/monkey/metallic.png" "metallic.ktx" "--grayscale")
-add_ktxfiles("assets/models/monkey/metallic.png" "metallic_etc.ktx" "${ETC_R11_ARGS}")
-add_ktxfiles("assets/models/monkey/ao.png" "ao.ktx" "--grayscale")
-add_ktxfiles("assets/models/monkey/ao.png" "ao_etc.ktx" "${ETC_R11_ARGS}")
+add_ktxfiles("assets/models/monkey/color.png" "albedo.ktx2" "--compression=uastc")
+add_ktxfiles("assets/models/monkey/normal.png" "normal.ktx2" "--compression=uastc_normals;--kernel=NORMALS;--linear")
+add_ktxfiles("assets/models/monkey/roughness.png" "roughness.ktx2" "--compression=uastc;--grayscale;--linear")
+add_ktxfiles("assets/models/monkey/metallic.png" "metallic.ktx2" "--compression=uastc;--grayscale;--linear")
+add_ktxfiles("assets/models/monkey/ao.png" "ao.ktx2" "--compression=uastc;--grayscale;--linear")
 
 add_rawfile("third_party/models/FlightHelmet/FlightHelmet_baseColor.png" "FlightHelmet_baseColor.png")
 add_rawfile("third_party/models/FlightHelmet/FlightHelmet_baseColor1.png" "FlightHelmet_baseColor1.png")
@@ -101,7 +93,13 @@ add_rawfile("third_party/models/FlightHelmet/FlightHelmet_occlusionRoughnessMeta
 add_rawfile("third_party/models/FlightHelmet/FlightHelmet_occlusionRoughnessMetallic3.png" "FlightHelmet_occlusionRoughnessMetallic3.png")
 add_rawfile("third_party/models/FlightHelmet/FlightHelmet_occlusionRoughnessMetallic4.png" "FlightHelmet_occlusionRoughnessMetallic4.png")
 add_rawfile("third_party/models/FlightHelmet/FlightHelmet.bin" "FlightHelmet.bin")
-add_rawfile("third_party/models/FlightHelmet/FlightHelmet.gltf" "helmet.gltf")
+add_rawfile("third_party/models/FlightHelmet/FlightHelmet.gltf" "FlightHelmet.gltf")
+
+add_rawfile("third_party/models/AnimatedTriangle/simpleTriangle.bin" "simpleTriangle.bin")
+add_rawfile("third_party/models/AnimatedTriangle/animation.bin" "animation.bin")
+add_rawfile("third_party/models/AnimatedTriangle/AnimatedTriangle.gltf" "AnimatedTriangle.gltf")
+
+add_rawfile("third_party/models/AnimatedMorphCube/AnimatedMorphCube.glb" "AnimatedMorphCube.glb")
 
 # Convert OBJ files into filamesh files.
 function(add_mesh SOURCE TARGET)
@@ -119,10 +117,8 @@ add_mesh("assets/models/monkey/monkey.obj" "suzanne.filamesh")
 add_mesh("third_party/models/shader_ball/shader_ball.obj" "shader_ball.filamesh")
 
 # Generate IBL and skybox images using cmgen.
-set(CMGEN_ARGS -x . --format=ktx --size=256 --extract-blur=0.1)
-set(CMGEN_ARGS_TINY -x . --format=ktx --size=64 --extract-blur=0.1)
-set(CMGEN_ARGS_S3TC ${CMGEN_ARGS} --compression=s3tc_rgba_dxt5)
-set(CMGEN_ARGS_ETC ${CMGEN_ARGS} --compression=etc_rgba8_rgba_40)
+set(CMGEN_ARGS --quiet --format=ktx --size=256 --extract-blur=0.1)
+set(CMGEN_ARGS_TINY --quiet --format=ktx --size=64 --extract-blur=0.1)
 function(add_envmap SOURCE TARGET)
     set(source_envmap "${ROOT_DIR}/${SOURCE}")
 
@@ -131,41 +127,29 @@ function(add_envmap SOURCE TARGET)
     set(target_skybox "${SERVER_DIR}/${TARGET}/${TARGET}_skybox.ktx")
     set(target_envmap "${SERVER_DIR}/${TARGET}/${TARGET}_ibl.ktx")
 
-    set(target_envmap_etc "${SERVER_DIR}/${TARGET}/${TARGET}_ibl_etc.ktx")
-    set(target_envmap_s3tc "${SERVER_DIR}/${TARGET}/${TARGET}_ibl_s3tc.ktx")
-
     set(target_skybox_tiny "${SERVER_DIR}/${TARGET}/${TARGET}_skybox_tiny.ktx")
 
     set(target_skyboxes ${target_skyboxes} ${target_skybox} ${target_skybox_tiny} PARENT_SCOPE)
 
-    set(target_envmaps ${target_envmaps}
-            ${target_envmap} ${target_envmap_etc} ${target_envmap_s3tc} PARENT_SCOPE)
+    set(target_envmaps ${target_envmaps} ${target_envmap} PARENT_SCOPE)
 
-    add_custom_command(OUTPUT ${target_skybox} ${target_skybox_tiny}
-                ${target_envmap} ${target_envmap_etc} ${target_envmap_s3tc}
+    add_custom_command(OUTPUT ${target_skybox} ${target_skybox_tiny} ${target_envmap}
 
-        # First create an S3TC-encoded envmap, then rename it.
-        COMMAND cmgen ${CMGEN_ARGS_S3TC} ${source_envmap}
-        COMMAND mv ${target_envmap} ${target_envmap_s3tc}
+        # Create a low-resolution skybox.
+        COMMAND cmgen -x ${TARGET} ${CMGEN_ARGS_TINY} ${source_envmap}
+        COMMAND ${CMAKE_COMMAND} -E rename ${target_skybox} ${target_skybox_tiny}
 
-        # Now create an ETC-encoded envmap, then rename it.
-        COMMAND cmgen ${CMGEN_ARGS_ETC} ${source_envmap}
-        COMMAND mv ${target_envmap} ${target_envmap_etc}
-
-        # Create a low-resolution skybox, then rename it.
-        COMMAND cmgen ${CMGEN_ARGS_TINY} ${source_envmap}
-        COMMAND mv ${target_skybox} ${target_skybox_tiny}
-
-        # Finally, create KTX files for the uncompressed envmap.
-        COMMAND cmgen ${CMGEN_ARGS} ${source_envmap}
+        # Create KTX files for the full-size envmap.
+        COMMAND cmgen -x ${TARGET} ${CMGEN_ARGS} ${source_envmap}
 
         MAIN_DEPENDENCY ${source_envmap}
         DEPENDS cmgen)
 endfunction()
 
-add_envmap("third_party/environments/syferfontein_18d_clear_2k.hdr" "syferfontein_18d_clear_2k")
-add_envmap("third_party/environments/venetian_crossroads_2k.hdr" "venetian_crossroads_2k")
-add_envmap("third_party/environments/pillars_2k.hdr" "pillars_2k")
+# The pillars envmap is used only when building new HTML for the tutorials.
+# add_envmap("third_party/environments/pillars_2k.hdr" "pillars_2k")
+
+add_envmap("third_party/environments/lightroom_14b.hdr" "default_env")
 
 add_custom_target(sample_assets DEPENDS
     ${target_textures}
@@ -180,50 +164,79 @@ add_custom_target(sample_assets DEPENDS
 add_custom_command(
     OUTPUT ${SERVER_DIR}/filament.js
     DEPENDS filament-js
-    COMMAND cmake -E copy ${PROJECT_BINARY_DIR}/../filament-js/filament.js ${SERVER_DIR})
+    COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/../filament-js/filament.js ${SERVER_DIR})
 
 add_custom_command(
     OUTPUT ${SERVER_DIR}/filament.wasm
     DEPENDS filament-js
-    COMMAND cmake -E copy ${PROJECT_BINARY_DIR}/../filament-js/filament.wasm ${SERVER_DIR})
+    COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/../filament-js/filament.wasm ${SERVER_DIR})
 
-add_custom_target(filamentjs_public DEPENDS ${SERVER_DIR}/filament.js ${SERVER_DIR}/filament.wasm)
+add_custom_command(
+    OUTPUT ${SERVER_DIR}/filament-viewer.js
+    DEPENDS ${PROJECT_BINARY_DIR}/../filament-js/filament-viewer.js
+    COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/../filament-js/filament-viewer.js ${SERVER_DIR})
+
+add_custom_target(filamentjs_public DEPENDS
+    ${SERVER_DIR}/filament.js
+    ${SERVER_DIR}/filament.wasm
+    ${SERVER_DIR}/filament-viewer.js)
+
+if (WEBGL_PTHREADS)
+    add_custom_command(
+        OUTPUT ${SERVER_DIR}/filament.worker.js
+        DEPENDS filament-js
+        COMMAND ${CMAKE_COMMAND} -E copy ${PROJECT_BINARY_DIR}/../filament-js/filament.worker.js ${SERVER_DIR})
+
+    add_dependencies(filamentjs_public ${SERVER_DIR}/filament.worker.js)
+endif()
 
 # ==================================================================================================
 # The websamples target depends on all HTML files, assets, and filament.{js,wasm}
 # ==================================================================================================
 
 set(HTML_FILES
+    animation.html
     helmet.html
-    leaks.html
+    morphing.html
     parquet.html
+    remote.html
     skinning.html
     suzanne.html
+    test-filament-viewer.html
     triangle.html)
 
+set(ASSET_FILES
+    assets/favicon.png)
+
 set(DEMO_ASSETS)
-foreach (NAME ${HTML_FILES})
+foreach (NAME ${HTML_FILES} ${ASSET_FILES})
     add_custom_command(
         OUTPUT ${SERVER_DIR}/${NAME}
-        COMMAND cmake -E copy ${CMAKE_CURRENT_SOURCE_DIR}/${NAME} ${SERVER_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/${NAME} ${SERVER_DIR}
         MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/${NAME})
     list(APPEND DEMO_ASSETS ${SERVER_DIR}/${NAME})
 endforeach()
 
-set(TEXTURE_FILES floor_ao_roughness_metallic.png floor_basecolor.png floor_normal.png)
+set(TEXTURE_FILES floor_ao_roughness_metallic.png floor_basecolor.jpg floor_normal.png)
 foreach (NAME ${TEXTURE_FILES})
     add_custom_command(
         OUTPUT ${SERVER_DIR}/${NAME}
-        COMMAND cmake -E copy ${CMAKE_CURRENT_SOURCE_DIR}/textures/${NAME} ${SERVER_DIR}
+        COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/textures/${NAME} ${SERVER_DIR}
         MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/textures/${NAME})
     list(APPEND DEMO_ASSETS ${SERVER_DIR}/${NAME})
 endforeach()
 
 add_custom_command(
     OUTPUT ${SERVER_DIR}/gl-matrix-min.js
-    COMMAND cmake -E copy ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/gl-matrix/gl-matrix-min.js ${SERVER_DIR}/gl-matrix-min.js
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/gl-matrix/gl-matrix-min.js ${SERVER_DIR}/gl-matrix-min.js
     MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/gl-matrix/gl-matrix-min.js)
 list(APPEND DEMO_ASSETS ${SERVER_DIR}/gl-matrix-min.js)
+
+add_custom_command(
+    OUTPUT ${SERVER_DIR}/gltumble.min.js
+    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/gltumble/gltumble.min.js ${SERVER_DIR}/gltumble.min.js
+    MAIN_DEPENDENCY ${CMAKE_CURRENT_SOURCE_DIR}/../../third_party/gltumble/gltumble.min.js)
+list(APPEND DEMO_ASSETS ${SERVER_DIR}/gltumble.min.js)
 
 add_custom_target(${PROJECT_NAME} ALL DEPENDS
     ${DEMO_ASSETS}

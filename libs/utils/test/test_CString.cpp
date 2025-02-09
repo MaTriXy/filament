@@ -25,17 +25,93 @@ TEST(CString, EmptyString) {
     EXPECT_STREQ("", emptyString.c_str_safe());
 }
 
-TEST(StaticString, hash) {
-    StaticString a("Hello World!");
-    StaticString b = StaticString::make("Hello World!");
-    StaticString c("Hello World");
-    StaticString d("Hello World!");
+TEST(CString, Replace) {
+    {
+        CString str("foo bar baz");
+        str.replace(0, 0, CString("lkj"));
+        EXPECT_STREQ("lkjfoo bar baz", str.c_str());
+    }
+    {
+        CString str("foo bar baz");
+        str.replace(4, 3, CString("dpa"));
+        EXPECT_STREQ("foo dpa baz", str.c_str());
+    }
+    {
+        CString str("foo bar baz");
+        str.replace(4, 3, CString(""));
+        EXPECT_STREQ("foo  baz", str.c_str());
+    }
+    {
+        CString str("foo bar baz");
+        str.replace(4, 3, CString("a"));
+        EXPECT_STREQ("foo a baz", str.c_str());
+    }
+    {
+        CString str("foo bar baz");
+        str.replace(4, 3, CString("abcdef"));
+        EXPECT_STREQ("foo abcdef baz", str.c_str());
+    }
+    {
+        CString str("foo bar baz");
+        str.replace(0, 3, CString("abcdef"));
+        EXPECT_STREQ("abcdef bar baz", str.c_str());
+    }
+    {
+        CString str("foo bar baz");
+        str.replace(8, 3, CString("abcdef"));
+        EXPECT_STREQ("foo bar abcdef", str.c_str());
+    }
+    {
+        CString str("foo bar baz");
+        str.replace(0, 11, CString("abcdef"));
+        EXPECT_STREQ("abcdef", str.c_str());
+    }
+}
 
-    EXPECT_EQ(a.getHash(), b.getHash());
-    EXPECT_EQ(a.getHash(), d.getHash());
-    EXPECT_NE(a.getHash(), c.getHash());
-    EXPECT_NE(b.getHash(), c.getHash());
+TEST(CString, ReplaceZeroLength) {
+    {
+        std::string str("foobar");
+        str.replace(6, 0, "abc");
+        EXPECT_STREQ("foobarabc", str.c_str());
+    }
+    {
+        CString str;
+        str.replace(0, 0, CString("far"));
+        EXPECT_STREQ("far", str.c_str());
+    }
+}
 
-    std::hash<StaticString> ha;
-    EXPECT_EQ(ha(a), a.getHash());
+TEST(CString, ReplacePastEndOfString) {
+    {
+        CString str("foo bar baz");
+        str.replace(0, 100, CString("bat"));
+        EXPECT_STREQ("bat", str.c_str());
+    }
+    {
+        CString str("foo bar baz");
+        str.replace(8, 100, CString("bat"));
+        EXPECT_STREQ("foo bar bat", str.c_str());
+    }
+}
+
+TEST(FixedSizeString, EmptyString) {
+    {
+        FixedSizeString<32> str;
+        EXPECT_STREQ("", str.c_str());
+    }
+    {
+        FixedSizeString<32> str("");
+        EXPECT_STREQ("", str.c_str());
+    }
+}
+
+TEST(FixedSizeString, Constructors) {
+    {
+        FixedSizeString<32> str("short string");
+        EXPECT_STREQ("short string", str.c_str());
+    }
+    {
+        FixedSizeString<16> str("a long string abcdefghijklmnopqrst");
+        EXPECT_STREQ("a long string a", str.c_str());
+    }
 }

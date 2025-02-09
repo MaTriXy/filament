@@ -1,14 +1,11 @@
 name: hello-ar
 options:
-    bundleIdPrefix: google.filament
+    bundleIdPrefix: ${SAMPLE_CODE_DISAMBIGUATOR}.google.filament
 include: ../app-template.yml
 targets:
     hello-ar:
         templates:
             - FilamentApp
-        scheme:
-            configVariants:REPLACE:
-                - Metal
         dependencies:
             - sdk: ARKit.framework
         settings:

@@ -1,19 +1,17 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.19)
 project(stb)
 
 set(TARGET stb)
 
-set(OUR_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
+set(PUBLIC_HDR_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
 
-set(PUBLIC_HDR_DIR ${OUR_DIR})
+set(PUBLIC_HDRS ../stb_image.h)
 
-file(GLOB_RECURSE PUBLIC_HDRS ${PUBLIC_HDR_DIR}/*.h)
-include_directories(${PUBLIC_HDR_DIR})
+set(SRCS ../stb_image.cpp)
 
-add_library(${TARGET} STATIC)
-
-# The stb.c file is made a public source, so static libraries that link against stb will contain it
-# within their archive. This is helpful for libraries like gltfio that are used externally.
-target_sources(${TARGET} PUBLIC ${PUBLIC_HDRS} ${OUR_DIR}/stb.c)
+add_library(${TARGET} STATIC ${PUBLIC_HDRS} ${SRCS})
 
 target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
+set_target_properties(${TARGET} PROPERTIES FOLDER ThirdParty)
+
+install(TARGETS stb ARCHIVE DESTINATION lib/${DIST_DIR})

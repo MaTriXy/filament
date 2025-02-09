@@ -17,7 +17,7 @@
 #ifndef TNT_FILAMENT_DETAILS_FENCE_H
 #define TNT_FILAMENT_DETAILS_FENCE_H
 
-#include "upcast.h"
+#include "downcast.h"
 
 #include <filament/Fence.h>
 
@@ -29,15 +29,11 @@
 
 namespace filament {
 
-struct HwFence;
-
-namespace details {
-
 class FEngine;
 
 class FFence : public Fence {
 public:
-    FFence(FEngine& engine, Type type);
+    FFence(FEngine& engine);
 
     void terminate(FEngine& engine) noexcept;
 
@@ -52,25 +48,20 @@ private:
     static utils::Condition sCondition;
 
     struct FenceSignal {
-        explicit FenceSignal(Type type) noexcept : mType(type) { }
+        explicit FenceSignal() noexcept = default;
         enum State : uint8_t { UNSIGNALED, SIGNALED, DESTROYED };
-        // we store mType here instead of in FFence, because it allows sizeof(FFence) to be
-        // much smaller (since it needs to be multiple of 8 on 64 bits architectures)
-        const Type mType;
         State mState = UNSIGNALED;
         void signal(State s = SIGNALED) noexcept;
         FenceStatus wait(uint64_t timeout) noexcept;
     };
 
     FEngine& mEngine;
-    backend::Handle<backend::HwFence> mFenceHandle;
     // TODO: use custom allocator for these small objects
     std::shared_ptr<FenceSignal> mFenceSignal;
 };
 
-FILAMENT_UPCAST(Fence)
+FILAMENT_DOWNCAST(Fence)
 
-} // namespace details
 } // namespace filament
 
 #endif // TNT_FILAMENT_DETAILS_FENCE_H

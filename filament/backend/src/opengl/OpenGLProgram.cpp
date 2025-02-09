@@ -16,229 +16,306 @@
 
 #include "OpenGLProgram.h"
 
+#include "GLUtils.h"
+#include "GLTexture.h"
 #include "OpenGLDriver.h"
+#include "ShaderCompilerService.h"
 
-#include <utils/Log.h>
+#include <backend/DriverEnums.h>
+#include <backend/Program.h>
+#include <backend/Handle.h>
+
+#include <utils/BitmaskEnum.h>
 #include <utils/compiler.h>
-#include <utils/Panic.h>
+#include <utils/debug.h>
+#include <utils/FixedCapacityVector.h>
+#include <utils/Log.h>
+#include <utils/Systrace.h>
 
-#include <cctype>
+#include <algorithm>
+#include <array>
+#include <algorithm>
+#include <new>
+#include <string_view>
+#include <utility>
 
-namespace filament {
+#include <stddef.h>
+#include <stdint.h>
+
+namespace filament::backend {
 
 using namespace filament::math;
 using namespace utils;
 using namespace backend;
 
-OpenGLProgram::OpenGLProgram(OpenGLDriver* gl, const Program& programBuilder) noexcept
-        :  HwProgram(programBuilder.getName()), mIsValid(false) {
+struct OpenGLProgram::LazyInitializationData {
+    Program::DescriptorSetInfo descriptorBindings;
+    Program::BindingUniformsInfo bindingUniformInfo;
+    utils::FixedCapacityVector<Program::PushConstant> vertexPushConstants;
+    utils::FixedCapacityVector<Program::PushConstant> fragmentPushConstants;
+};
 
-    using Shader = Program::Shader;
 
-    const auto& shadersSource = programBuilder.getShadersSource();
+OpenGLProgram::OpenGLProgram() noexcept = default;
 
-    // build all shaders
-    #pragma nounroll
-    for (size_t i = 0; i < Program::SHADER_TYPE_COUNT; i++) {
-        GLenum glShaderType;
-        Shader type = (Shader)i;
-        switch (type) {
-            case Shader::VERTEX:
-                glShaderType = GL_VERTEX_SHADER;
-                break;
-            case Shader::FRAGMENT:
-                glShaderType = GL_FRAGMENT_SHADER;
-                break;
-        }
-
-        if (!shadersSource[i].empty()) {
-            GLint status;
-            char const* const source = (const char*)shadersSource[i].data();
-
-            GLuint shaderId = glCreateShader(glShaderType);
-            glShaderSource(shaderId, 1, &source, nullptr);
-            glCompileShader(shaderId);
-
-            glGetShaderiv(shaderId, GL_COMPILE_STATUS, &status);
-            if (UTILS_UNLIKELY(status != GL_TRUE)) {
-                logCompilationError(slog.e, shaderId, source);
-                glDeleteShader(shaderId);
-                return;
-            }
-            this->gl.shaders[i] = shaderId;
-            mValidShaderSet |= 1U << i;
-        }
+OpenGLProgram::OpenGLProgram(OpenGLDriver& gld, Program&& program) noexcept
+        : HwProgram(std::move(program.getName())), mRec709Location(-1) {
+    auto* const lazyInitializationData = new(std::nothrow) LazyInitializationData();
+    if (UTILS_UNLIKELY(gld.getContext().isES2())) {
+        lazyInitializationData->bindingUniformInfo = std::move(program.getBindingUniformInfo());
     }
+    lazyInitializationData->vertexPushConstants = std::move(program.getPushConstants(ShaderStage::VERTEX));
+    lazyInitializationData->fragmentPushConstants = std::move(program.getPushConstants(ShaderStage::FRAGMENT));
+    lazyInitializationData->descriptorBindings = std::move(program.getDescriptorBindings());
 
-    // we need at least a vertex and fragment program
-    const uint8_t validShaderSet = mValidShaderSet;
-    const uint8_t mask = VERTEX_SHADER_BIT | FRAGMENT_SHADER_BIT;
-    if (UTILS_LIKELY((mValidShaderSet & mask) == mask)) {
-        GLint status;
-        GLuint program = glCreateProgram();
-        for (size_t i = 0; i < Program::SHADER_TYPE_COUNT; i++) {
-            if (validShaderSet & (1U << i)) {
-                glAttachShader(program, this->gl.shaders[i]);
-            }
-        }
-        glLinkProgram(program);
+    ShaderCompilerService& compiler = gld.getShaderCompilerService();
+    mToken = compiler.createProgram(name, std::move(program));
 
-        glGetProgramiv(program, GL_LINK_STATUS, &status);
-        if (UTILS_UNLIKELY(status != GL_TRUE)) {
-            char error[512];
-            glGetProgramInfoLog(program, sizeof(error), nullptr, error);
-
-            slog.e << "LINKING: " << error << io::endl;
-            glDeleteProgram(program);
-            return;
-        }
-        this->gl.program = program;
-
-        // Associate each UniformBlock in the program to a known binding.
-        auto const& uniformBlockInfo = programBuilder.getUniformBlockInfo();
-        #pragma nounroll
-        for (GLuint binding = 0, n = uniformBlockInfo.size(); binding < n; binding++) {
-            auto const& name = uniformBlockInfo[binding];
-            if (!name.empty()) {
-                GLint index = glGetUniformBlockIndex(program, name.c_str());
-                if (index >= 0) {
-                    glUniformBlockBinding(program, GLuint(index), binding);
-                }
-                CHECK_GL_ERROR(utils::slog.e)
-            }
-        }
-
-        if (programBuilder.hasSamplers()) {
-            // if we have samplers, we need to do a bit of extra work
-            // activate this program so we can set all its samplers once and for all (glUniform1i)
-            gl->useProgram(program);
-
-            auto const& samplerGroupInfo = programBuilder.getSamplerGroupInfo();
-            auto& indicesRun = mIndicesRuns;
-            uint8_t numUsedBindings = 0;
-            uint8_t tmu = 0;
-
-            #pragma nounroll
-            for (size_t i = 0, c = samplerGroupInfo.size(); i < c; i++) {
-                auto const& groupInfo = samplerGroupInfo[i];
-                if (!groupInfo.empty()) {
-                    // Cache the sampler uniform locations for each interface block
-                    BlockInfo& info = mBlockInfos[numUsedBindings];
-                    info.binding = uint8_t(i);
-                    uint8_t count = 0;
-                    for (uint8_t j = 0, m = uint8_t(groupInfo.size()); j < m; ++j) {
-                        // find its location and associate a TMU to it
-                        GLint loc = glGetUniformLocation(program, groupInfo[j].name.c_str());
-                        if (loc >= 0) {
-                            glUniform1i(loc, tmu);
-                            indicesRun[tmu] = j;
-                            count++;
-                            tmu++;
-                        } else {
-                            // glGetUniformLocation could fail if the uniform is not used
-                            // in the program. We should just ignore the error in that case.
-                        }
-                    }
-                    if (count > 0) {
-                        numUsedBindings++;
-                        info.count = uint8_t(count - 1);
-                    }
-                }
-            }
-            mUsedBindingsCount = numUsedBindings;
-        }
-        mIsValid = true;
-    }
-
-    // failing to compile a program can't be fatal, because this will happen a lot in
-    // the material tools. We need to have a better way to handle these errors and
-    // return to the editor.
-    if (UTILS_UNLIKELY(!isValid())) {
-        PANIC_LOG("failed to compile glsl program");
-    }
+    ShaderCompilerService::setUserData(mToken, lazyInitializationData);
 }
 
 OpenGLProgram::~OpenGLProgram() noexcept {
-    const size_t validShaderSet = mValidShaderSet;
-    const bool isValid = mIsValid;
-    GLuint program = gl.program;
-    if (validShaderSet) {
-        #pragma nounroll
-        for (size_t i = 0; i < Program::SHADER_TYPE_COUNT; i++) {
-            if (validShaderSet & (1U << i)) {
-                const GLuint shader = gl.shaders[i];
-                if (isValid) {
-                    glDetachShader(program, shader);
-                }
-                glDeleteShader(shader);
-            }
-        }
+    if (mToken) {
+        // if the token is non-nullptr it means the program has not been used, and
+        // we need to clean-up.
+        assert_invariant(gl.program == 0);
+
+        LazyInitializationData* const lazyInitializationData =
+                (LazyInitializationData *)ShaderCompilerService::getUserData(mToken);
+        delete lazyInitializationData;
+
+        ShaderCompilerService::terminate(mToken);
     }
-    if (isValid) {
+
+    delete [] mUniformsRecords;
+    const GLuint program = gl.program;
+    if (program) {
         glDeleteProgram(program);
     }
 }
 
-void OpenGLProgram::updateSamplers(OpenGLDriver* gl) noexcept {
-    using GLTexture = OpenGLDriver::GLTexture;
+void OpenGLProgram::initialize(OpenGLDriver& gld) {
 
-    // cache a few member variable locally, outside of the loop
-    auto const& UTILS_RESTRICT samplerBindings = gl->getSamplerBindings();
-    auto const& UTILS_RESTRICT indicesRun = mIndicesRuns;
-    auto const& UTILS_RESTRICT blockInfos = mBlockInfos;
+    SYSTRACE_CALL();
 
-    UTILS_ASSUME(mUsedBindingsCount > 0);
-    for (uint8_t i = 0, tmu = 0, n = mUsedBindingsCount; i < n; i++) {
-        BlockInfo blockInfo = blockInfos[i];
-        HwSamplerGroup const * const UTILS_RESTRICT hwsb = samplerBindings[blockInfo.binding];
-        SamplerGroup const& UTILS_RESTRICT sb = *(hwsb->sb);
-        SamplerGroup::Sampler const* const UTILS_RESTRICT samplers = sb.getSamplers();
-        for (uint8_t j = 0, m = blockInfo.count ; j <= m; ++j, ++tmu) { // "<=" on purpose here
-            const uint8_t index = indicesRun[tmu];
-            assert(index < sb.getSize());
+    assert_invariant(gl.program == 0);
+    assert_invariant(mToken);
 
-            Handle<HwTexture> th = samplers[index].t;
-            if (UTILS_UNLIKELY(!th)) {
-                continue; // this can happen if the SamplerGroup isn't initialized
+    LazyInitializationData* const lazyInitializationData =
+            (LazyInitializationData *)ShaderCompilerService::getUserData(mToken);
+
+    ShaderCompilerService& compiler = gld.getShaderCompilerService();
+    gl.program = compiler.getProgram(mToken);
+
+    assert_invariant(mToken == nullptr);
+    if (gl.program) {
+        assert_invariant(lazyInitializationData);
+        initializeProgramState(gld.getContext(), gl.program, *lazyInitializationData);
+        delete lazyInitializationData;
+    }
+}
+
+/*
+ * Initializes our internal state from a valid program. This must only be called after
+ * checkProgramStatus() has been successfully called.
+ */
+void OpenGLProgram::initializeProgramState(OpenGLContext& context, GLuint program,
+        LazyInitializationData& lazyInitializationData) noexcept {
+
+    SYSTRACE_CALL();
+
+    // from the pipeline layout we compute a mapping from {set, binding} to {binding}
+    // for both buffers and textures
+
+    for (auto&& entry: lazyInitializationData.descriptorBindings) {
+        std::sort(entry.begin(), entry.end(),
+                [](Program::Descriptor const& lhs, Program::Descriptor const& rhs) {
+                    return lhs.binding < rhs.binding;
+                });
+    }
+
+    GLuint tmu = 0;
+    GLuint binding = 0;
+
+    // needed for samplers
+    context.useProgram(program);
+
+    UTILS_NOUNROLL
+    for (backend::descriptor_set_t set = 0; set < MAX_DESCRIPTOR_SET_COUNT; set++) {
+        for (Program::Descriptor const& entry: lazyInitializationData.descriptorBindings[set]) {
+            switch (entry.type) {
+                case DescriptorType::UNIFORM_BUFFER:
+                case DescriptorType::SHADER_STORAGE_BUFFER: {
+                    if (!entry.name.empty()) {
+#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
+                        if (UTILS_LIKELY(!context.isES2())) {
+                            GLuint const index = glGetUniformBlockIndex(program,
+                                    entry.name.c_str());
+                            if (index != GL_INVALID_INDEX) {
+                                // this can fail if the program doesn't use this descriptor
+                                glUniformBlockBinding(program, index, binding);
+                                mBindingMap.insert(set, entry.binding,
+                                        { binding, entry.type });
+                                ++binding;
+                            }
+                        } else
+#endif
+                        {
+                            auto pos = std::find_if(lazyInitializationData.bindingUniformInfo.begin(),
+                                    lazyInitializationData.bindingUniformInfo.end(),
+                                    [&name = entry.name](const auto& item) {
+                                return std::get<1>(item) == name;
+                            });
+                            if (pos != lazyInitializationData.bindingUniformInfo.end()) {
+                                binding = std::get<0>(*pos);
+                                mBindingMap.insert(set, entry.binding, { binding, entry.type });
+                            }
+                        }
+                    }
+                    break;
+                }
+                case DescriptorType::SAMPLER:
+                case DescriptorType::SAMPLER_EXTERNAL: {
+                    if (!entry.name.empty()) {
+                        GLint const loc = glGetUniformLocation(program, entry.name.c_str());
+                        if (loc >= 0) {
+                            // this can fail if the program doesn't use this descriptor
+                            mBindingMap.insert(set, entry.binding, { tmu, entry.type });
+                            glUniform1i(loc, GLint(tmu));
+                            ++tmu;
+                        }
+                    }
+                    break;
+                }
+                case DescriptorType::INPUT_ATTACHMENT:
+                    break;
             }
-
-            const GLTexture* const UTILS_RESTRICT t = gl->handle_cast<const GLTexture*>(th);
-            if (UTILS_UNLIKELY(t->gl.fence)) {
-                glWaitSync(t->gl.fence, 0, GL_TIMEOUT_IGNORED);
-                glDeleteSync(t->gl.fence);
-                t->gl.fence = nullptr;
-            }
-
-            gl->bindTexture(tmu, t);
-
-            // FIXME: getSampler() is expensive because it's a hashmap lookup
-            GLuint sampler = gl->getSampler(samplers[index].s);
-            gl->bindSampler(tmu, sampler);
+            CHECK_GL_ERROR(utils::slog.e)
         }
     }
-    CHECK_GL_ERROR(utils::slog.e)
-}
 
-void UTILS_NOINLINE OpenGLProgram::logCompilationError(
-        io::ostream& out, GLuint shaderId, char const* source) noexcept {
-    char error[512];
-    glGetShaderInfoLog(shaderId, sizeof(error), nullptr, error);
-    out << "COMPILE ERROR: " << io::endl << error << io::endl;
-
-    size_t lc = 1;
-    char* shader = strdup(source);
-    char* start = shader;
-    char* endl = strchr(start, '\n');
-
-    while (endl != nullptr) {
-        *endl = '\0';
-        out << lc++ << ":   ";
-        out << start << io::endl;
-        start = endl + 1;
-        endl = strchr(start, '\n');
+    if (context.isES2()) {
+        // ES2 initialization of (fake) UBOs
+        UniformsRecord* const uniformsRecords = new(std::nothrow) UniformsRecord[Program::UNIFORM_BINDING_COUNT];
+        UTILS_NOUNROLL
+        for (auto&& [index, name, uniforms] : lazyInitializationData.bindingUniformInfo) {
+            uniformsRecords[index].locations.reserve(uniforms.size());
+            uniformsRecords[index].locations.resize(uniforms.size());
+            for (size_t j = 0, c = uniforms.size(); j < c; j++) {
+                GLint const loc = glGetUniformLocation(program, uniforms[j].name.c_str());
+                uniformsRecords[index].locations[j] = loc;
+                if (UTILS_UNLIKELY(index == 0)) {
+                    // This is a bit of a gross hack here, we stash the location of
+                    // "frameUniforms.rec709", which obviously the backend shouldn't know about,
+                    // which is used for emulating the "rec709" colorspace in the shader.
+                    // The backend also shouldn't know that binding 0 is where frameUniform is.
+                    std::string_view const uniformName{
+                            uniforms[j].name.data(), uniforms[j].name.size() };
+                    if (uniformName == "frameUniforms.rec709") {
+                        mRec709Location = loc;
+                    }
+                }
+            }
+            uniformsRecords[index].uniforms = std::move(uniforms);
+        }
+        mUniformsRecords = uniformsRecords;
     }
 
-    free(shader);
+    auto& vertexConstants = lazyInitializationData.vertexPushConstants;
+    auto& fragmentConstants = lazyInitializationData.fragmentPushConstants;
+
+    size_t const totalConstantCount = vertexConstants.size() + fragmentConstants.size();
+    if (totalConstantCount > 0) {
+        mPushConstants.reserve(totalConstantCount);
+        mPushConstantFragmentStageOffset = vertexConstants.size();
+        auto const transformAndAdd = [&](Program::PushConstant const& constant) {
+            GLint const loc = glGetUniformLocation(program, constant.name.c_str());
+            mPushConstants.push_back({loc, constant.type});
+        };
+        std::for_each(vertexConstants.cbegin(), vertexConstants.cend(), transformAndAdd);
+        std::for_each(fragmentConstants.cbegin(), fragmentConstants.cend(), transformAndAdd);
+    }
 }
 
-} // namespace filament
+void OpenGLProgram::updateUniforms(
+        uint32_t index, GLuint id, void const* buffer, uint16_t age) const noexcept {
+    assert_invariant(mUniformsRecords);
+    assert_invariant(buffer);
+
+    // only update the uniforms if the UBO has changed since last time we updated
+    UniformsRecord const& records = mUniformsRecords[index];
+    if (records.id == id && records.age == age) {
+        return;
+    }
+    records.id = id;
+    records.age = age;
+
+    assert_invariant(records.uniforms.size() == records.locations.size());
+
+    for (size_t i = 0, c = records.uniforms.size(); i < c; i++) {
+        Program::Uniform const& u = records.uniforms[i];
+        GLint const loc = records.locations[i];
+        // mRec709Location is special, it is handled by setRec709ColorSpace() and the corresponding
+        // entry in `buffer` is typically not initialized, so we skip it.
+        if (loc < 0 || loc == mRec709Location) {
+            continue;
+        }
+        // u.offset is in 'uint32_t' units
+        GLfloat const* const bf = reinterpret_cast<GLfloat const*>(buffer) + u.offset;
+        GLint const* const bi = reinterpret_cast<GLint const*>(buffer) + u.offset;
+
+        switch(u.type) {
+            case UniformType::FLOAT:
+                glUniform1fv(loc, u.size, bf);
+                break;
+            case UniformType::FLOAT2:
+                glUniform2fv(loc, u.size, bf);
+                break;
+            case UniformType::FLOAT3:
+                glUniform3fv(loc, u.size, bf);
+                break;
+            case UniformType::FLOAT4:
+                glUniform4fv(loc, u.size, bf);
+                break;
+
+            case UniformType::BOOL:
+            case UniformType::INT:
+            case UniformType::UINT:
+                glUniform1iv(loc, u.size, bi);
+                break;
+            case UniformType::BOOL2:
+            case UniformType::INT2:
+            case UniformType::UINT2:
+                glUniform2iv(loc, u.size, bi);
+                break;
+            case UniformType::BOOL3:
+            case UniformType::INT3:
+            case UniformType::UINT3:
+                glUniform3iv(loc, u.size, bi);
+                break;
+            case UniformType::BOOL4:
+            case UniformType::INT4:
+            case UniformType::UINT4:
+                glUniform4iv(loc, u.size, bi);
+                break;
+
+            case UniformType::MAT3:
+                glUniformMatrix3fv(loc, u.size, GL_FALSE, bf);
+                break;
+            case UniformType::MAT4:
+                glUniformMatrix4fv(loc, u.size, GL_FALSE, bf);
+                break;
+
+            case UniformType::STRUCT:
+                // not supported
+                break;
+        }
+    }
+}
+
+void OpenGLProgram::setRec709ColorSpace(bool rec709) const noexcept {
+    glUniform1i(mRec709Location, rec709);
+}
+
+
+} // namespace filament::backend

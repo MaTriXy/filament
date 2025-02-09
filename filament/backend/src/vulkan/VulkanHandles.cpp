@@ -14,559 +14,549 @@
  * limitations under the License.
  */
 
-#include "vulkan/VulkanHandles.h"
+#include "VulkanHandles.h"
 
-#include "DataReshaper.h"
+#include "VulkanConstants.h"
 
-#include <utils/Panic.h>
+// TODO: remove this by moving DebugUtils out of VulkanDriver
+#include "VulkanDriver.h"
 
-#define FILAMENT_VULKAN_VERBOSE 0
+#include "VulkanMemory.h"
+#include "vulkan/memory/ResourcePointer.h"
+#include "vulkan/utils/Conversion.h"
+#include "vulkan/utils/Definitions.h"
+#include "vulkan/utils/Image.h"
+#include "vulkan/utils/Spirv.h"
 
-namespace filament {
-namespace backend {
+#include <backend/platforms/VulkanPlatform.h>
 
-static void flipVertically(VkRect2D* rect, uint32_t framebufferHeight) {
-    rect->offset.y = framebufferHeight - rect->offset.y - rect->extent.height;
-}
+#include <utils/Panic.h>    // ASSERT_POSTCONDITION
 
-static void flipVertically(VkViewport* rect, uint32_t framebufferHeight) {
+using namespace bluevk;
+
+namespace filament::backend {
+
+namespace {
+
+void flipVertically(VkViewport* rect, uint32_t framebufferHeight) {
     rect->y = framebufferHeight - rect->y - rect->height;
 }
 
-static void clampToFramebuffer(VkRect2D* rect, uint32_t fbWidth, uint32_t fbHeight) {
+void clampToFramebuffer(VkRect2D* rect, uint32_t fbWidth, uint32_t fbHeight) {
+    rect->offset.y = fbHeight - rect->offset.y - rect->extent.height;
     int32_t x = std::max(rect->offset.x, 0);
     int32_t y = std::max(rect->offset.y, 0);
     int32_t right = std::min(rect->offset.x + (int32_t) rect->extent.width, (int32_t) fbWidth);
     int32_t top = std::min(rect->offset.y + (int32_t) rect->extent.height, (int32_t) fbHeight);
-    rect->offset.x = x;
-    rect->offset.y = y;
-    rect->extent.width = right - x;
-    rect->extent.height = top - y;
+    rect->offset.x = std::min(x, (int32_t) fbWidth);
+    rect->offset.y = std::min(y, (int32_t) fbHeight);
+    rect->extent.width = std::max(right - x, 0);
+    rect->extent.height = std::max(top - y, 0);
 }
 
-VulkanProgram::VulkanProgram(VulkanContext& context, const Program& builder) noexcept :
-        HwProgram(builder.getName()), context(context) {
-    auto const& blobs = builder.getShadersSource();
-    VkShaderModule* modules[2] = { &bundle.vertex, &bundle.fragment };
-    bool missing = false;
-    for (size_t i = 0; i < Program::SHADER_TYPE_COUNT; i++) {
-        const auto& blob = blobs[i];
-        VkShaderModule* module = modules[i];
-        if (blob.empty()) {
-            missing = true;
+template<typename Bitmask>
+inline void fromStageFlags(backend::ShaderStageFlags stage, descriptor_binding_t binding,
+        Bitmask& mask) {
+    if ((bool) (stage & ShaderStageFlags::VERTEX)) {
+        mask.set(binding + fvkutils::getVertexStageShift<Bitmask>());
+    }
+    if ((bool) (stage & ShaderStageFlags::FRAGMENT)) {
+        mask.set(binding + fvkutils::getFragmentStageShift<Bitmask>());
+    }
+}
+
+inline VkShaderStageFlags getVkStage(backend::ShaderStage stage) {
+    switch(stage) {
+        case backend::ShaderStage::VERTEX:
+            return VK_SHADER_STAGE_VERTEX_BIT;
+        case backend::ShaderStage::FRAGMENT:
+            return VK_SHADER_STAGE_FRAGMENT_BIT;
+        case backend::ShaderStage::COMPUTE:
+            PANIC_POSTCONDITION("Unsupported stage");
+    }
+}
+
+using BitmaskGroup = VulkanDescriptorSetLayout::Bitmask;
+BitmaskGroup fromBackendLayout(DescriptorSetLayout const& layout) {
+    BitmaskGroup mask;
+    for (auto const& binding: layout.bindings) {
+        switch (binding.type) {
+            case DescriptorType::UNIFORM_BUFFER: {
+                if ((binding.flags & DescriptorFlags::DYNAMIC_OFFSET) != DescriptorFlags::NONE) {
+                    fromStageFlags(binding.stageFlags, binding.binding, mask.dynamicUbo);
+                } else {
+                    fromStageFlags(binding.stageFlags, binding.binding, mask.ubo);
+                }
+                break;
+            }
+            // TODO: properly handle external sampler
+            case DescriptorType::SAMPLER_EXTERNAL:
+            case DescriptorType::SAMPLER: {
+                fromStageFlags(binding.stageFlags, binding.binding, mask.sampler);
+                break;
+            }
+            case DescriptorType::INPUT_ATTACHMENT: {
+                fromStageFlags(binding.stageFlags, binding.binding, mask.inputAttachment);
+                break;
+            }
+            case DescriptorType::SHADER_STORAGE_BUFFER:
+                PANIC_POSTCONDITION("Shader storage is not supported");
+                break;
+        }
+    }
+    return mask;
+}
+
+fvkmemory::resource_ptr<VulkanTexture> initMsaaTexture(
+        fvkmemory::resource_ptr<VulkanTexture> texture, VkDevice device,
+        VkPhysicalDevice physicalDevice, VulkanContext const& context, VmaAllocator allocator,
+        VulkanCommands* commands, fvkmemory::ResourceManager* resManager, uint8_t levels,
+        uint8_t samples, VulkanStagePool& stagePool) {
+    assert_invariant(texture);
+    auto msTexture = texture->getSidecar();
+    if (UTILS_UNLIKELY(!msTexture)) {
+        // Clear all usage flags that are not related to attachments, so that we can
+        // use the transient usage flag.
+        const TextureUsage usage = texture->usage & TextureUsage::ALL_ATTACHMENTS;
+        assert_invariant(static_cast<uint16_t>(usage) != 0U);
+
+        msTexture = resource_ptr<VulkanTexture>::construct(resManager, device, physicalDevice,
+                context, allocator, resManager, commands, texture->target, levels, texture->format,
+                samples, texture->width, texture->height, texture->depth, usage, stagePool);
+        texture->setSidecar(msTexture);
+    }
+    return msTexture;
+}
+
+} // anonymous namespace
+
+void VulkanDescriptorSet::acquire(fvkmemory::resource_ptr<VulkanTexture> texture) {
+    mResources.push_back(texture);
+}
+
+void VulkanDescriptorSet::acquire(fvkmemory::resource_ptr<VulkanBufferObject> obj) {
+    mResources.push_back(obj);
+}
+
+VulkanDescriptorSetLayout::VulkanDescriptorSetLayout(DescriptorSetLayout const& layout)
+    : bitmask(fromBackendLayout(layout)),
+      count(Count::fromLayoutBitmask(bitmask)) {}
+
+PushConstantDescription::PushConstantDescription(backend::Program const& program) noexcept {
+    mRangeCount = 0;
+    for (auto stage : { ShaderStage::VERTEX, ShaderStage::FRAGMENT, ShaderStage::COMPUTE }) {
+        auto const& constants = program.getPushConstants(stage);
+        if (constants.empty()) {
             continue;
         }
-        VkShaderModuleCreateInfo moduleInfo = {};
-        moduleInfo.sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO;
-        moduleInfo.codeSize = blob.size();
-        moduleInfo.pCode = (uint32_t*) blob.data();
-        VkResult result = vkCreateShaderModule(context.device, &moduleInfo, VKALLOC, module);
-        ASSERT_POSTCONDITION(result == VK_SUCCESS, "Unable to create shader module.");
+
+        // We store the type of the constant for type-checking when writing.
+        auto& types = mTypes[(uint8_t) stage];
+        types.reserve(constants.size());
+        std::for_each(constants.cbegin(), constants.cend(), [&types] (Program::PushConstant t) {
+            types.push_back(t.type);
+        });
+
+        mRanges[mRangeCount++] = {
+            .stageFlags = getVkStage(stage),
+            .offset = 0,
+            .size = (uint32_t) constants.size() * ENTRY_SIZE,
+        };
+    }
+}
+
+void PushConstantDescription::write(VkCommandBuffer cmdbuf, VkPipelineLayout layout,
+        backend::ShaderStage stage, uint8_t index, backend::PushConstantVariant const& value) {
+
+    uint32_t binaryValue = 0;
+    UTILS_UNUSED_IN_RELEASE auto const& types = mTypes[(uint8_t) stage];
+    if (std::holds_alternative<bool>(value)) {
+        assert_invariant(types[index] == ConstantType::BOOL);
+        bool const bval = std::get<bool>(value);
+        binaryValue = static_cast<uint32_t const>(bval ? VK_TRUE : VK_FALSE);
+    } else if (std::holds_alternative<float>(value)) {
+        assert_invariant(types[index] == ConstantType::FLOAT);
+        float const fval = std::get<float>(value);
+        binaryValue = *reinterpret_cast<uint32_t const*>(&fval);
+    } else {
+        assert_invariant(types[index] == ConstantType::INT);
+        int const ival = std::get<int>(value);
+        binaryValue = *reinterpret_cast<uint32_t const*>(&ival);
+    }
+    vkCmdPushConstants(cmdbuf, layout, getVkStage(stage), index * ENTRY_SIZE, ENTRY_SIZE,
+            &binaryValue);
+}
+
+VulkanProgram::VulkanProgram(VkDevice device, Program const& builder) noexcept
+    : HwProgram(builder.getName()),
+      mInfo(new(std::nothrow) PipelineInfo(builder)),
+      mDevice(device) {
+
+    Program::ShaderSource const& blobs = builder.getShadersSource();
+    auto& modules = mInfo->shaders;
+    auto const& specializationConstants = builder.getSpecializationConstants();
+    std::vector<uint32_t> shader;
+
+    static_assert(static_cast<ShaderStage>(0) == ShaderStage::VERTEX &&
+            static_cast<ShaderStage>(1) == ShaderStage::FRAGMENT &&
+            MAX_SHADER_MODULES == 2);
+
+    for (size_t i = 0; i < MAX_SHADER_MODULES; i++) {
+        Program::ShaderBlob const& blob = blobs[i];
+
+        uint32_t* data = (uint32_t*) blob.data();
+        size_t dataSize = blob.size();
+
+        if (!specializationConstants.empty()) {
+            fvkutils::workaroundSpecConstant(blob, specializationConstants, shader);
+            data = (uint32_t*) shader.data();
+            dataSize = shader.size() * 4;
+        }
+
+        VkShaderModule& module = modules[i];
+        VkShaderModuleCreateInfo moduleInfo = {
+            .sType = VK_STRUCTURE_TYPE_SHADER_MODULE_CREATE_INFO,
+            .codeSize = dataSize,
+            .pCode = data,
+        };
+        VkResult result = vkCreateShaderModule(mDevice, &moduleInfo, VKALLOC, &module);
+        FILAMENT_CHECK_POSTCONDITION(result == VK_SUCCESS)
+                << "Unable to create shader module."
+                << " error=" << static_cast<int32_t>(result);
+
+#if FVK_ENABLED(FVK_DEBUG_DEBUG_UTILS)
+        std::string name{ builder.getName().c_str(), builder.getName().size() };
+        switch (static_cast<ShaderStage>(i)) {
+            case ShaderStage::VERTEX:
+                name += "_vs";
+                break;
+            case ShaderStage::FRAGMENT:
+                name += "_fs";
+                break;
+            default:
+                PANIC_POSTCONDITION("Unexpected stage");
+                break;
+        }
+        VulkanDriver::DebugUtils::setName(VK_OBJECT_TYPE_SHADER_MODULE,
+                reinterpret_cast<uint64_t>(module), name.c_str());
+#endif
     }
 
-    // Output a warning because it's okay to encounter empty blobs, but it's not okay to use
-    // this program handle in a draw call.
-    if (missing) {
-        utils::slog.w << "Missing SPIR-V shader: " << builder.getName().c_str() << utils::io::endl;
-        return;
-    }
-
-    // Make a copy of the binding map
-    samplerGroupInfo = builder.getSamplerGroupInfo();
-#if FILAMENT_VULKAN_VERBOSE
-    utils::slog.d << "Created VulkanProgram " << builder.getName().c_str()
-                << ", variant = (" << utils::io::hex
-                << builder.getVariant() << utils::io::dec << "), "
-                << "shaders = (" << bundle.vertex << ", " << bundle.fragment << ")"
-                << utils::io::endl;
+#if FVK_ENABLED(FVK_DEBUG_SHADER_MODULE)
+    FVK_LOGD << "Created VulkanProgram " << builder << ", shaders = (" << modules[0]
+             << ", " << modules[1] << ")" << utils::io::endl;
 #endif
 }
 
 VulkanProgram::~VulkanProgram() {
-    vkDestroyShaderModule(context.device, bundle.vertex, VKALLOC);
-    vkDestroyShaderModule(context.device, bundle.fragment, VKALLOC);
+    for (auto shader: mInfo->shaders) {
+        vkDestroyShaderModule(mDevice, shader, VKALLOC);
+    }
+    delete mInfo;
 }
 
-VulkanRenderTarget::~VulkanRenderTarget() {
-    if (!mSharedColorImage) {
-        vkDestroyImageView(mContext.device, mColor.view, VKALLOC);
-        vkDestroyImage(mContext.device, mColor.image, VKALLOC);
-        vkFreeMemory(mContext.device, mColor.memory, VKALLOC);
+// Creates a special "default" render target (i.e. associated with the swap chain)
+VulkanRenderTarget::VulkanRenderTarget()
+    : HwRenderTarget(0, 0),
+      mOffscreen(false),
+      mProtected(false),
+      mInfo(std::make_unique<Auxiliary>()) {
+    mInfo->rpkey.samples = mInfo->fbkey.samples = 1;
+}
+
+VulkanRenderTarget::~VulkanRenderTarget() = default;
+
+void VulkanRenderTarget::bindToSwapChain(fvkmemory::resource_ptr<VulkanSwapChain> swapchain) {
+    assert_invariant(!mOffscreen);
+
+    VkExtent2D const extent = swapchain->getExtent();
+    width = extent.width;
+    height = extent.height;
+    mProtected = swapchain->isProtected();
+
+    VulkanAttachment color = {};
+    color.texture = swapchain->getCurrentColor();
+    mInfo->attachments = {color};
+
+    auto& fbkey = mInfo->fbkey;
+    auto& rpkey = mInfo->rpkey;
+
+    rpkey.colorFormat[0] = color.getFormat();
+    fbkey.width = width;
+    fbkey.height = height;
+    fbkey.color[0] = color.getImageView();
+    fbkey.resolve[0] = VK_NULL_HANDLE;
+
+    if (swapchain->getDepth()) {
+        VulkanAttachment depth = {};
+        depth.texture = swapchain->getDepth();
+        mInfo->attachments.push_back(depth);
+        mInfo->depthIndex = 1;
+
+        rpkey.depthFormat = depth.getFormat();
+        fbkey.depth = depth.getImageView();
+    } else {
+        rpkey.depthFormat = VK_FORMAT_UNDEFINED;
+        fbkey.depth = VK_NULL_HANDLE;
     }
-    if (!mSharedDepthImage) {
-        vkDestroyImageView(mContext.device, mDepth.view, VKALLOC);
-        vkDestroyImage(mContext.device, mDepth.image, VKALLOC);
-        vkFreeMemory(mContext.device, mDepth.memory, VKALLOC);
+    mInfo->colors.set(0);
+}
+
+VulkanRenderTarget::VulkanRenderTarget(VkDevice device, VkPhysicalDevice physicalDevice,
+        VulkanContext const& context, fvkmemory::ResourceManager* resourceManager,
+        VmaAllocator allocator, VulkanCommands* commands, uint32_t width, uint32_t height,
+        uint8_t samples, VulkanAttachment color[MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT],
+        VulkanAttachment depthStencil[2], VulkanStagePool& stagePool, uint8_t layerCount)
+    : HwRenderTarget(width, height),
+      mOffscreen(true),
+      mProtected(false),
+      mInfo(std::make_unique<Auxiliary>()) {
+    auto& depth = depthStencil[0];
+
+    // Constrain the sample count according to both kinds of sample count masks obtained from
+    // VkPhysicalDeviceProperties. This is consistent with the VulkanTexture constructor.
+    auto const& limits = context.getPhysicalDeviceLimits();
+    samples = samples = fvkutils::reduceSampleCount(samples,
+            limits.framebufferDepthSampleCounts & limits.framebufferColorSampleCounts);
+
+    auto& rpkey = mInfo->rpkey;
+    rpkey.samples = samples;
+    rpkey.depthFormat = depth.getFormat();
+    rpkey.viewCount = layerCount;
+
+    auto& fbkey = mInfo->fbkey;
+    fbkey.width = width;
+    fbkey.height = height;
+    fbkey.samples = samples;
+
+    std::vector<VulkanAttachment>& attachments = mInfo->attachments;
+    std::vector<VulkanAttachment> msaa;
+
+    for (int index = 0; index < MRT::MAX_SUPPORTED_RENDER_TARGET_COUNT; index++) {
+        VulkanAttachment& attachment = color[index];
+        auto texture = attachment.texture;
+        if (!texture) {
+            rpkey.colorFormat[index] = VK_FORMAT_UNDEFINED;
+            continue;
+        }
+
+        mProtected |= texture->getIsProtected();
+
+        attachments.push_back(attachment);
+        mInfo->colors.set(index);
+
+        rpkey.colorFormat[index] = attachment.getFormat();
+        fbkey.color[index] = attachment.getImageView();
+        fbkey.resolve[index] = VK_NULL_HANDLE;
+
+        if (samples > 1) {
+            VulkanAttachment msaaAttachment = {};
+            if (texture->samples == 1) {
+                auto msaaTexture = initMsaaTexture(texture, device, physicalDevice, context,
+                        allocator, commands, resourceManager, texture->levels, samples, stagePool);
+                if (msaaTexture && msaaTexture->isTransientAttachment()) {
+                    rpkey.usesLazilyAllocatedMemory |= (1 << index);
+                }
+                if (attachment.texture->samples == 1) {
+                    rpkey.needsResolveMask |= (1 << index);
+                }
+                msaaAttachment = {
+                    .texture = msaaTexture,
+                    .layerCount = layerCount,
+                };
+
+                fbkey.resolve[index] = attachment.getImageView();
+            } else {
+                msaaAttachment = {
+                    .texture = texture,
+                    .layerCount = layerCount,
+                };
+            }
+            fbkey.color[index] = msaaAttachment.getImageView();
+            msaa.push_back(msaaAttachment);
+        }
+    }
+
+    if (attachments.size() > 0 && samples > 1 && msaa.size() > 0) {
+        mInfo->msaaIndex = (uint8_t) attachments.size();
+        attachments.insert(attachments.end(), msaa.begin(), msaa.end());
+    }
+
+    if (depth.texture) {
+        auto depthTexture = depth.texture;
+        mInfo->depthIndex = (uint8_t) attachments.size();
+        attachments.push_back(depth);
+        fbkey.depth = depth.getImageView();
+        if (samples > 1) {
+            mInfo->msaaDepthIndex = mInfo->depthIndex;
+            if (depthTexture->samples == 1) {
+                // MSAA depth texture must have the mipmap count of 1
+                uint8_t const msLevel = 1;
+                // Create sidecar MSAA texture for the depth attachment if it does not already
+                // exist.
+                auto msaa = initMsaaTexture(depthTexture, device, physicalDevice, context,
+                        allocator, commands, resourceManager, msLevel, samples, stagePool);
+                mInfo->msaaDepthIndex = (uint8_t) attachments.size();
+                attachments.push_back({ .texture = msaa, .layerCount = layerCount });
+            }
+        }
     }
 }
 
 void VulkanRenderTarget::transformClientRectToPlatform(VkRect2D* bounds) const {
-    // For the backbuffer, there are corner cases where the platform's surface resolution does not
-    // match what Filament expects, so we need to make an appropriate transformation (e.g. create a
-    // VkSurfaceKHR on a high DPI display, then move it to a low DPI display).
-    if (!mOffscreen) {
-        const VkExtent2D platformSize = mContext.currentSurface->surfaceCapabilities.currentExtent;
-        const VkExtent2D clientSize = mContext.currentSurface->clientSize;
-
-        // Because these types of coordinates are pixel-addressable, we purposefully use integer
-        // math and rely on left-to-right evaluation.
-        bounds->offset.x = bounds->offset.x * platformSize.width / clientSize.width;
-        bounds->offset.y = bounds->offset.y * platformSize.height / clientSize.height;
-        bounds->extent.width = bounds->extent.width * platformSize.width / clientSize.width;
-        bounds->extent.height = bounds->extent.height * platformSize.height / clientSize.height;
-    }
-    const auto& extent = getExtent();
-    flipVertically(bounds, extent.height);
+    auto const& extent = getExtent();
     clampToFramebuffer(bounds, extent.width, extent.height);
 }
 
-void VulkanRenderTarget::transformClientRectToPlatform(VkViewport* bounds) const {
-    // For the backbuffer, we must check if platform size and client size differ, then scale
-    // appropriately. Note the +2 correction factor. This prevents the platform from lerping pixels
-    // along the edge of the viewport with pixels that live outside the viewport. Luckily this
-    // correction factor only applies in obscure conditions (e.g. after dragging a high-DPI window
-    // to a low-DPI display).
-    if (!mOffscreen) {
-        const VkExtent2D platformSize = mContext.currentSurface->surfaceCapabilities.currentExtent;
-        const VkExtent2D clientSize = mContext.currentSurface->clientSize;
-        if (platformSize.width != clientSize.width) {
-            const float xscale = float(platformSize.width + 2) / float(clientSize.width);
-            bounds->x *= xscale;
-            bounds->width *= xscale;
-        }
-        if (platformSize.height != clientSize.height) {
-            const float yscale = float(platformSize.height + 2) / float(clientSize.height);
-            bounds->y *= yscale;
-            bounds->height *= yscale;
-        }
-    }
+void VulkanRenderTarget::transformViewportToPlatform(VkViewport* bounds) const {
     flipVertically(bounds, getExtent().height);
 }
 
-VkExtent2D VulkanRenderTarget::getExtent() const {
-    if (mOffscreen) {
-        return {width, height};
+uint8_t VulkanRenderTarget::getColorTargetCount(const VulkanRenderPass& pass) const {
+    if (!mOffscreen) {
+        return 1;
     }
-    return mContext.currentSurface->surfaceCapabilities.currentExtent;
+    if (pass.currentSubpass == 1) {
+        return mInfo->colors.count();
+    }
+    uint8_t count = 0;
+    mInfo->colors.forEachSetBit([&count, &pass](size_t index) {
+        if (!(pass.params.subpassMask & (1 << index))) {
+            count++;
+        }
+    });
+    return count;
 }
 
-VulkanAttachment VulkanRenderTarget::getColor() const {
-    return mOffscreen ? mColor : getSwapContext(mContext).attachment;
+void VulkanRenderTarget::emitBarriersBeginRenderPass(VulkanCommandBuffer& commands) {
+    auto& attachments = mInfo->attachments;
+    auto samples = mInfo->fbkey.samples;
+    auto barrier = [&commands](VulkanAttachment& attachment, VulkanLayout const layout) {
+        auto tex = attachment.texture;
+        auto const& range = attachment.getSubresourceRange();
+        if (tex->getLayout(range.baseMipLevel, range.baseArrayLayer) != layout &&
+                !tex->transitionLayout(&commands, range, layout)) {
+            // If the layout transition did not emit a barrier, we do it manually here.
+            tex->samplerToAttachmentBarrier(&commands, range);
+        }
+    };
+
+    for (size_t i = 0, count = mInfo->colors.count(); i < count; ++i) {
+        auto& attachment = attachments[i];
+        auto tex = attachment.texture;
+        if (samples == 1 || tex->samples == 1) {
+            barrier(attachment, VulkanLayout::COLOR_ATTACHMENT);
+        }
+    }
+    if (mInfo->msaaIndex != Auxiliary::UNDEFINED_INDEX) {
+        for (size_t i = mInfo->msaaIndex, count = mInfo->msaaIndex + mInfo->colors.count();
+                i < count; ++i) {
+            barrier(attachments[i], VulkanLayout::COLOR_ATTACHMENT);
+        }
+    }
+    if (mInfo->depthIndex != Auxiliary::UNDEFINED_INDEX) {
+        barrier(attachments[mInfo->depthIndex], VulkanLayout::DEPTH_ATTACHMENT);
+    }
+    if (mInfo->msaaDepthIndex != Auxiliary::UNDEFINED_INDEX) {
+        barrier(attachments[mInfo->msaaDepthIndex], VulkanLayout::DEPTH_ATTACHMENT);
+    }
 }
 
-VulkanAttachment VulkanRenderTarget::getDepth() const {
-    return mOffscreen ? mDepth : VulkanAttachment {};
+void VulkanRenderTarget::emitBarriersEndRenderPass(VulkanCommandBuffer& commands) {
+    if (isSwapChain()) {
+        return;
+    }
+
+    for (auto& attachment: mInfo->attachments) {
+        auto const& range = attachment.getSubresourceRange();
+        bool const isDepth = attachment.isDepth();
+        auto texture = attachment.texture;
+        if (isDepth) {
+            texture->setLayout(range, VulkanFboCache::FINAL_DEPTH_ATTACHMENT_LAYOUT);
+            if (!texture->transitionLayout(&commands, range, VulkanLayout::DEPTH_SAMPLER)) {
+                texture->attachmentToSamplerBarrier(&commands, range);
+            }
+        } else {
+            texture->setLayout(range, VulkanFboCache::FINAL_COLOR_ATTACHMENT_LAYOUT);
+            if (!texture->transitionLayout(&commands, range, VulkanLayout::READ_WRITE)) {
+                texture->attachmentToSamplerBarrier(&commands, range);
+            }
+        }
+    }
 }
 
-void VulkanRenderTarget::setColorImage(VulkanAttachment c) {
-    assert(mOffscreen);
-    mColor = c;
-}
+VulkanVertexBufferInfo::VulkanVertexBufferInfo(
+        uint8_t bufferCount, uint8_t attributeCount, AttributeArray const& attributes)
+    : HwVertexBufferInfo(bufferCount, attributeCount),
+      mInfo(attributes.size()) {
+    auto attribDesc = mInfo.mSoa.data<PipelineInfo::ATTRIBUTE_DESCRIPTION>();
+    auto bufferDesc = mInfo.mSoa.data<PipelineInfo::BUFFER_DESCRIPTION>();
+    auto offsets = mInfo.mSoa.data<PipelineInfo::OFFSETS>();
+    auto attribToBufferIndex = mInfo.mSoa.data<PipelineInfo::ATTRIBUTE_TO_BUFFER_INDEX>();
+    std::fill(mInfo.mSoa.begin<PipelineInfo::ATTRIBUTE_TO_BUFFER_INDEX>(),
+            mInfo.mSoa.end<PipelineInfo::ATTRIBUTE_TO_BUFFER_INDEX>(), -1);
 
-void VulkanRenderTarget::setDepthImage(VulkanAttachment d) {
-    assert(mOffscreen);
-    mDepth = d;
+    for (uint32_t attribIndex = 0; attribIndex < attributes.size(); attribIndex++) {
+        Attribute attrib = attributes[attribIndex];
+        bool const isInteger = attrib.flags & Attribute::FLAG_INTEGER_TARGET;
+        bool const isNormalized = attrib.flags & Attribute::FLAG_NORMALIZED;
+        VkFormat vkformat = fvkutils::getVkFormat(attrib.type, isNormalized, isInteger);
+
+        // HACK: Re-use the positions buffer as a dummy buffer for disabled attributes. Filament's
+        // vertex shaders declare all attributes as either vec4 or uvec4 (the latter for bone
+        // indices), and positions are always at least 32 bits per element. Therefore we can assign
+        // a dummy type of either R8G8B8A8_UINT or R8G8B8A8_SNORM, depending on whether the shader
+        // expects to receive floats or ints.
+        if (attrib.buffer == Attribute::BUFFER_UNUSED) {
+            vkformat = isInteger ? VK_FORMAT_R8G8B8A8_UINT : VK_FORMAT_R8G8B8A8_SNORM;
+            attrib = attributes[0];
+        }
+        offsets[attribIndex] = attrib.offset;
+        attribDesc[attribIndex] = {
+            .location = attribIndex,// matches the GLSL layout specifier
+            .binding = attribIndex, // matches the position within vkCmdBindVertexBuffers
+            .format = vkformat,
+        };
+        bufferDesc[attribIndex] = {
+            .binding = attribIndex,
+            .stride = attrib.stride,
+        };
+        attribToBufferIndex[attribIndex] = attrib.buffer;
+    }
 }
 
 VulkanVertexBuffer::VulkanVertexBuffer(VulkanContext& context, VulkanStagePool& stagePool,
-        uint8_t bufferCount, uint8_t attributeCount, uint32_t elementCount,
-        AttributeArray const& attributes) :
-        HwVertexBuffer(bufferCount, attributeCount, elementCount, attributes) {
-    buffers.reserve(bufferCount);
-    for (uint8_t bufferIndex = 0; bufferIndex < bufferCount; ++bufferIndex) {
-        uint32_t size = 0;
-        for (auto const& item : attributes) {
-            if (item.buffer == bufferIndex) {
-              uint32_t end = item.offset + elementCount * item.stride;
-                size = std::max(size, end);
-            }
+        uint32_t vertexCount, fvkmemory::resource_ptr<VulkanVertexBufferInfo> vbi)
+    : HwVertexBuffer(vertexCount),
+      vbi(vbi),
+      // TODO: Seems a bit wasteful. can we do better here?
+      mBuffers(MAX_VERTEX_BUFFER_COUNT) {
+}
+
+void VulkanVertexBuffer::setBuffer(fvkmemory::resource_ptr<VulkanBufferObject> bufferObject,
+        uint32_t index) {
+    size_t const count = vbi->getAttributeCount();
+    VkBuffer* const vkbuffers = getVkBuffers();
+    int8_t const* const attribToBuffer = vbi->getAttributeToBuffer();
+    for (uint8_t attribIndex = 0; attribIndex < count; attribIndex++) {
+        if (attribToBuffer[attribIndex] == static_cast<int8_t>(index)) {
+            vkbuffers[attribIndex] = bufferObject->buffer.getGpuBuffer();
         }
-        buffers.emplace_back(new VulkanBuffer(context, stagePool, VK_BUFFER_USAGE_VERTEX_BUFFER_BIT,
-                size));
     }
+    mResources.push_back(bufferObject);
 }
 
-VulkanUniformBuffer::VulkanUniformBuffer(VulkanContext& context, VulkanStagePool& stagePool,
-        uint32_t numBytes, backend::BufferUsage usage)
-        : mContext(context), mStagePool(stagePool) {
-    // Create the VkBuffer.
-    VkBufferCreateInfo bufferInfo {
-        .sType = VK_STRUCTURE_TYPE_BUFFER_CREATE_INFO,
-        .size = numBytes,
-        .usage = VK_BUFFER_USAGE_UNIFORM_BUFFER_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT,
-    };
-    VmaAllocationCreateInfo allocInfo {
-        .usage = VMA_MEMORY_USAGE_GPU_ONLY
-    };
-    vmaCreateBuffer(mContext.allocator, &bufferInfo, &allocInfo, &mGpuBuffer, &mGpuMemory, nullptr);
-}
+VulkanBufferObject::VulkanBufferObject(VmaAllocator allocator, VulkanStagePool& stagePool,
+        uint32_t byteCount, BufferObjectBinding bindingType)
+    : HwBufferObject(byteCount),
+      buffer(allocator, stagePool, getBufferObjectUsage(bindingType), byteCount),
+      bindingType(bindingType) {}
 
-void VulkanUniformBuffer::loadFromCpu(const void* cpuData, uint32_t numBytes) {
-    VulkanStage const* stage = mStagePool.acquireStage(numBytes);
-    void* mapped;
-    vmaMapMemory(mContext.allocator, stage->memory, &mapped);
-    memcpy(mapped, cpuData, numBytes);
-    vmaUnmapMemory(mContext.allocator, stage->memory);
-    vmaFlushAllocation(mContext.allocator, stage->memory, 0, numBytes);
+VulkanRenderPrimitive::VulkanRenderPrimitive(PrimitiveType pt,
+        fvkmemory::resource_ptr<VulkanVertexBuffer> vb,
+        fvkmemory::resource_ptr<VulkanIndexBuffer> ib)
+    : HwRenderPrimitive{.type = pt},
+      vertexBuffer(vb),
+      indexBuffer(ib) {}
 
-    auto copyToDevice = [this, numBytes, stage] (VulkanCommandBuffer& commands) {
-        VkBufferCopy region { .size = numBytes };
-        vkCmdCopyBuffer(commands.cmdbuffer, stage->buffer, mGpuBuffer, 1, &region);
-
-        // Ensure that the copy finishes before the next draw call.
-        VkBufferMemoryBarrier barrier {
-            .sType = VK_STRUCTURE_TYPE_BUFFER_MEMORY_BARRIER,
-            .srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT,
-            .dstAccessMask = VK_ACCESS_VERTEX_ATTRIBUTE_READ_BIT | VK_ACCESS_INDEX_READ_BIT,
-            .srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED,
-            .buffer = mGpuBuffer,
-            .size = VK_WHOLE_SIZE
-        };
-        vkCmdPipelineBarrier(commands.cmdbuffer, VK_PIPELINE_STAGE_TRANSFER_BIT,
-                VK_PIPELINE_STAGE_VERTEX_INPUT_BIT, 0, 0, nullptr, 1, &barrier, 0, nullptr);
-
-        mStagePool.releaseStage(stage, commands);
-    };
-
-    // If inside beginFrame / endFrame, use the swap context, otherwise use the work cmdbuffer.
-    if (mContext.currentCommands) {
-        copyToDevice(*mContext.currentCommands);
-    } else {
-        acquireWorkCommandBuffer(mContext);
-        copyToDevice(mContext.work);
-        flushWorkCommandBuffer(mContext);
-    }
-}
-
-VulkanUniformBuffer::~VulkanUniformBuffer() {
-    vmaDestroyBuffer(mContext.allocator, mGpuBuffer, mGpuMemory);
-}
-
-VulkanTexture::VulkanTexture(VulkanContext& context, SamplerType target, uint8_t levels,
-        TextureFormat tformat, uint8_t samples, uint32_t w, uint32_t h, uint32_t depth,
-        TextureUsage usage, VulkanStagePool& stagePool) :
-        HwTexture(target, levels, samples, w, h, depth, tformat, usage),
-        vkformat(getVkFormat(tformat)), mContext(context), mStagePool(stagePool) {
-
-    // Vulkan does not support 24-bit depth, use the official fallback format.
-    if (tformat == TextureFormat::DEPTH24) {
-        vkformat = mContext.depthFormat;
-    }
-
-    // Create an appropriately-sized device-only VkImage, but do not fill it yet.
-    VkImageCreateInfo imageInfo {
-        .sType = VK_STRUCTURE_TYPE_IMAGE_CREATE_INFO,
-        .imageType = VK_IMAGE_TYPE_2D,
-        .extent.width = w,
-        .extent.height = h,
-        .extent.depth = depth,
-        .format = vkformat,
-        .mipLevels = levels,
-        .arrayLayers = 1,
-        .usage = 0,
-        .samples = VK_SAMPLE_COUNT_1_BIT,
-    };
-    if (target == SamplerType::SAMPLER_CUBEMAP) {
-        imageInfo.arrayLayers = 6;
-        imageInfo.flags = VK_IMAGE_CREATE_CUBE_COMPATIBLE_BIT;
-    }
-    if (usage & TextureUsage::SAMPLEABLE) {
-        imageInfo.usage |= VK_IMAGE_USAGE_SAMPLED_BIT;
-    }
-    if (usage & TextureUsage::COLOR_ATTACHMENT) {
-        imageInfo.usage |= VK_IMAGE_USAGE_COLOR_ATTACHMENT_BIT;
-    }
-    if (usage & TextureUsage::STENCIL_ATTACHMENT) {
-        imageInfo.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    }
-    if (usage & TextureUsage::UPLOADABLE) {
-        // Uploadable textures can be used as a blit source (e.g. for mipmap generation)
-        // therefore we must set both the TRANSFER_DST and TRANSFER_SRC flags.
-        imageInfo.usage |= VK_IMAGE_USAGE_TRANSFER_DST_BIT | VK_IMAGE_USAGE_TRANSFER_SRC_BIT;
-    }
-    if (usage & TextureUsage::DEPTH_ATTACHMENT) {
-        imageInfo.usage |= VK_IMAGE_USAGE_DEPTH_STENCIL_ATTACHMENT_BIT;
-    }
-
-    VkResult error = vkCreateImage(context.device, &imageInfo, VKALLOC, &textureImage);
-    if (error) {
-        utils::slog.d << "vkCreateImage: "
-            << "result = " << error << ", "
-            << "extent = " << w << "x" << h << "x"<< depth << ", "
-            << "mipLevels = " << levels << ", "
-            << "format = " << vkformat << utils::io::endl;
-    }
-    ASSERT_POSTCONDITION(!error, "Unable to create image.");
-
-    // Allocate memory for the VkImage and bind it.
-    VkMemoryRequirements memReqs = {};
-    vkGetImageMemoryRequirements(context.device, textureImage, &memReqs);
-    VkMemoryAllocateInfo allocInfo = {
-        .sType = VK_STRUCTURE_TYPE_MEMORY_ALLOCATE_INFO,
-        .allocationSize = memReqs.size,
-        .memoryTypeIndex = selectMemoryType(context, memReqs.memoryTypeBits,
-                VK_MEMORY_PROPERTY_DEVICE_LOCAL_BIT)
-    };
-    error = vkAllocateMemory(context.device, &allocInfo, nullptr, &textureImageMemory);
-    ASSERT_POSTCONDITION(!error, "Unable to allocate image memory.");
-    error = vkBindImageMemory(context.device, textureImage, textureImageMemory, 0);
-    ASSERT_POSTCONDITION(!error, "Unable to bind image.");
-
-    // Create a VkImageView so that shaders can sample from the image.
-    VkImageViewCreateInfo viewInfo = {};
-    viewInfo.sType = VK_STRUCTURE_TYPE_IMAGE_VIEW_CREATE_INFO;
-    viewInfo.image = textureImage;
-    viewInfo.format = vkformat;
-    viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    viewInfo.subresourceRange.baseMipLevel = 0;
-    viewInfo.subresourceRange.levelCount = levels;
-    viewInfo.subresourceRange.baseArrayLayer = 0;
-    if (target == SamplerType::SAMPLER_CUBEMAP) {
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_CUBE;
-        viewInfo.subresourceRange.layerCount = 6;
-    } else {
-        viewInfo.viewType = VK_IMAGE_VIEW_TYPE_2D;
-        viewInfo.subresourceRange.layerCount = 1;
-    }
-    if (usage == TextureUsage::DEPTH_ATTACHMENT) {
-        viewInfo.subresourceRange.aspectMask = VK_IMAGE_ASPECT_DEPTH_BIT;
-    }
-    error = vkCreateImageView(context.device, &viewInfo, VKALLOC, &imageView);
-    ASSERT_POSTCONDITION(!error, "Unable to create image view.");
-}
-
-VulkanTexture::~VulkanTexture() {
-    vkDestroyImage(mContext.device, textureImage, VKALLOC);
-    vkDestroyImageView(mContext.device, imageView, VKALLOC);
-    vkFreeMemory(mContext.device, textureImageMemory, VKALLOC);
-}
-
-void VulkanTexture::update2DImage(const PixelBufferDescriptor& data, uint32_t width,
-        uint32_t height, int miplevel) {
-    assert(width <= this->width && height <= this->height);
-    const uint32_t srcBytesPerTexel = getBytesPerPixel(format);
-    const bool reshape = srcBytesPerTexel == 3 || srcBytesPerTexel == 6;
-    const void* cpuData = data.buffer;
-    const uint32_t numSrcBytes = data.size;
-    const uint32_t numDstBytes = reshape ? (4 * numSrcBytes / 3) : numSrcBytes;
-
-    // Create and populate the staging buffer.
-    VulkanStage const* stage = mStagePool.acquireStage(numDstBytes);
-    void* mapped;
-    vmaMapMemory(mContext.allocator, stage->memory, &mapped);
-    switch (srcBytesPerTexel) {
-        case 3:
-            // Morph the data from 3 bytes per texel to 4 bytes per texel and set alpha to 1.
-            DataReshaper::reshape<uint8_t, 3, 4>(mapped, cpuData, numSrcBytes);
-            break;
-        case 6:
-            // Morph the data from 6 bytes per texel to 8 bytes per texel. Note that this does not
-            // set alpha to 1 for half-float formats, but in practice that's fine since alpha is
-            // just a dummy channel in this situation.
-            DataReshaper::reshape<uint16_t, 3, 4>(mapped, cpuData, numSrcBytes);
-            break;
-        default:
-            memcpy(mapped, cpuData, numSrcBytes);
-    }
-    vmaUnmapMemory(mContext.allocator, stage->memory);
-    vmaFlushAllocation(mContext.allocator, stage->memory, 0, numDstBytes);
-
-    // Create a copy-to-device functor.
-    auto copyToDevice = [this, stage, width, height, miplevel] (VulkanCommandBuffer& commands) {
-        transitionImageLayout(commands.cmdbuffer, textureImage, VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, miplevel, 1);
-        copyBufferToImage(commands.cmdbuffer, stage->buffer, textureImage, width, height, nullptr,
-                miplevel);
-        transitionImageLayout(commands.cmdbuffer, textureImage,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, miplevel, 1);
-
-        mStagePool.releaseStage(stage, commands);
-    };
-
-    // If inside beginFrame / endFrame, use the swap context, otherwise use the work cmdbuffer.
-    if (mContext.currentCommands) {
-        copyToDevice(*mContext.currentCommands);
-    } else {
-        acquireWorkCommandBuffer(mContext);
-        copyToDevice(mContext.work);
-        flushWorkCommandBuffer(mContext);
-    }
-}
-
-void VulkanTexture::updateCubeImage(const PixelBufferDescriptor& data,
-        const FaceOffsets& faceOffsets, int miplevel) {
-    assert(this->target == SamplerType::SAMPLER_CUBEMAP);
-    const bool reshape = getBytesPerPixel(format) == 3;
-    const void* cpuData = data.buffer;
-    const uint32_t numSrcBytes = data.size;
-    const uint32_t numDstBytes = reshape ? (4 * numSrcBytes / 3) : numSrcBytes;
-
-    // Create and populate the staging buffer.
-    VulkanStage const* stage = mStagePool.acquireStage(numDstBytes);
-    void* mapped;
-    vmaMapMemory(mContext.allocator, stage->memory, &mapped);
-    if (reshape) {
-        DataReshaper::reshape<uint8_t, 3, 4>(mapped, cpuData, numSrcBytes);
-    } else {
-        memcpy(mapped, cpuData, numSrcBytes);
-    }
-    vmaUnmapMemory(mContext.allocator, stage->memory);
-    vmaFlushAllocation(mContext.allocator, stage->memory, 0, numDstBytes);
-
-    // Create a copy-to-device functor.
-    auto copyToDevice = [this, faceOffsets, stage, miplevel] (VulkanCommandBuffer& commands) {
-        uint32_t width = std::max(1u, this->width >> miplevel);
-        uint32_t height = std::max(1u, this->height >> miplevel);
-        transitionImageLayout(commands.cmdbuffer, textureImage, VK_IMAGE_LAYOUT_UNDEFINED,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, miplevel, 6);
-        copyBufferToImage(commands.cmdbuffer, stage->buffer, textureImage, width, height,
-                &faceOffsets, miplevel);
-        transitionImageLayout(commands.cmdbuffer, textureImage,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL,
-                VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL, miplevel, 6);
-
-        mStagePool.releaseStage(stage, commands);
-    };
-
-    // If inside beginFrame / endFrame, use the swap context, otherwise use the work cmdbuffer.
-    if (mContext.currentCommands) {
-        copyToDevice(*mContext.currentCommands);
-    } else {
-        acquireWorkCommandBuffer(mContext);
-        copyToDevice(mContext.work);
-        flushWorkCommandBuffer(mContext);
-    }
-}
-
-void VulkanTexture::transitionImageLayout(VkCommandBuffer cmd, VkImage image,
-        VkImageLayout oldLayout, VkImageLayout newLayout, uint32_t miplevel, uint32_t layerCount) {
-    VkImageMemoryBarrier barrier = {};
-    barrier.sType = VK_STRUCTURE_TYPE_IMAGE_MEMORY_BARRIER;
-    barrier.oldLayout = oldLayout;
-    barrier.newLayout = newLayout;
-    barrier.srcQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.dstQueueFamilyIndex = VK_QUEUE_FAMILY_IGNORED;
-    barrier.image = image;
-    barrier.subresourceRange.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    barrier.subresourceRange.baseMipLevel = miplevel;
-    barrier.subresourceRange.levelCount = 1;
-    barrier.subresourceRange.baseArrayLayer = 0;
-    barrier.subresourceRange.layerCount = layerCount;
-    VkPipelineStageFlags sourceStage;
-    VkPipelineStageFlags destinationStage;
-    switch (newLayout) {
-        case VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL:
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            break;
-        case VK_IMAGE_LAYOUT_TRANSFER_SRC_OPTIMAL:
-            barrier.srcAccessMask = 0;
-            barrier.dstAccessMask = VK_ACCESS_TRANSFER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_TOP_OF_PIPE_BIT;
-            destinationStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            break;
-        case VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL:
-            barrier.srcAccessMask = VK_ACCESS_TRANSFER_WRITE_BIT;
-            barrier.dstAccessMask = VK_ACCESS_SHADER_READ_BIT;
-            sourceStage = VK_PIPELINE_STAGE_TRANSFER_BIT;
-            destinationStage = VK_PIPELINE_STAGE_FRAGMENT_SHADER_BIT;
-            break;
-        default:
-           PANIC_POSTCONDITION("Unsupported layout transition.");
-    }
-    vkCmdPipelineBarrier(cmd, sourceStage, destinationStage, 0, 0, nullptr, 0, nullptr, 1,
-            &barrier);
-}
-
-void VulkanTexture::copyBufferToImage(VkCommandBuffer cmd, VkBuffer buffer, VkImage image,
-        uint32_t width, uint32_t height, FaceOffsets const* faceOffsets, uint32_t miplevel) {
-    VkExtent3D extent { width, height, 1 };
-    if (target == SamplerType::SAMPLER_CUBEMAP) {
-        assert(faceOffsets);
-        VkBufferImageCopy regions[6] = {{}};
-        for (size_t face = 0; face < 6; face++) {
-            auto& region = regions[face];
-            region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-            region.imageSubresource.baseArrayLayer = face;
-            region.imageSubresource.layerCount = 1;
-            region.imageSubresource.mipLevel = miplevel;
-            region.imageExtent = extent;
-            region.bufferOffset = faceOffsets->offsets[face];
-        }
-        vkCmdCopyBufferToImage(cmd, buffer, image,
-                VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 6, regions);
-        return;
-    }
-    VkBufferImageCopy region = {};
-    region.imageSubresource.aspectMask = VK_IMAGE_ASPECT_COLOR_BIT;
-    region.imageSubresource.mipLevel = miplevel;
-    region.imageSubresource.layerCount = 1;
-    region.imageExtent = extent;
-    vkCmdCopyBufferToImage(cmd, buffer, image, VK_IMAGE_LAYOUT_TRANSFER_DST_OPTIMAL, 1, &region);
-}
-
-void VulkanRenderPrimitive::setPrimitiveType(backend::PrimitiveType pt) {
-    this->type = pt;
-    switch (pt) {
-        case backend::PrimitiveType::NONE:
-        case backend::PrimitiveType::POINTS:
-            primitiveTopology = VK_PRIMITIVE_TOPOLOGY_POINT_LIST;
-            break;
-        case backend::PrimitiveType::LINES:
-            primitiveTopology = VK_PRIMITIVE_TOPOLOGY_LINE_LIST;
-            break;
-        case backend::PrimitiveType::TRIANGLES:
-            primitiveTopology = VK_PRIMITIVE_TOPOLOGY_TRIANGLE_LIST;
-            break;
-    }
-}
-
-void VulkanRenderPrimitive::setBuffers(VulkanVertexBuffer* vertexBuffer,
-        VulkanIndexBuffer* indexBuffer, uint32_t enabledAttributes) {
-    this->vertexBuffer = vertexBuffer;
-    this->indexBuffer = indexBuffer;
-    const size_t nattrs = vertexBuffer->attributes.size();
-
-    // These vectors are passed to vkCmdBindVertexBuffers at every draw call. This binds the
-    // VkBuffer objects, but does not describe the structure of a vertex.
-    buffers.clear();
-    buffers.reserve(nattrs);
-    offsets.clear();
-    offsets.reserve(nattrs);
-
-    // The following fixed-size arrays are consumed by VulkanBinder. They describe the vertex
-    // structure, but do not specify the actual buffer objects to bind.
-    memset(varray.attributes, 0, sizeof(varray.attributes));
-    memset(varray.buffers, 0, sizeof(varray.buffers));
-
-    // For each enabled attribute, append to each of the above lists. Note that a single VkBuffer
-    // handle might be appended more than once, which is perfectly fine.
-    uint32_t bufferIndex = 0;
-    for (uint32_t attribIndex = 0; attribIndex < nattrs; attribIndex++) {
-        if (!(enabledAttributes & (1U << attribIndex))) {
-            continue;
-        }
-        const Attribute& attrib = vertexBuffer->attributes[attribIndex];
-        buffers.push_back(vertexBuffer->buffers[attrib.buffer]->getGpuBuffer());
-        offsets.push_back(attrib.offset);
-        varray.attributes[bufferIndex] = {
-            .location = attribIndex, // matches the GLSL layout specifier
-            .binding = bufferIndex,  // matches the position within vkCmdBindVertexBuffers
-            .format = getVkFormat(attrib.type, attrib.flags & Attribute::FLAG_NORMALIZED),
-            .offset = 0
-        };
-        varray.buffers[bufferIndex] = {
-            .binding = bufferIndex,
-            .stride = attrib.stride,
-            .inputRate = VK_VERTEX_INPUT_RATE_VERTEX
-        };
-        bufferIndex++;
-    }
-}
-
-} // namespace filament
-} // namespace backend
+} // namespace filament::backend

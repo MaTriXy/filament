@@ -14,23 +14,18 @@
  * limitations under the License.
  */
 
+#ifndef TNT_MATH_TQUATHELPERS_H
+#define TNT_MATH_TQUATHELPERS_H
 
-#ifndef MATH_TQUATHELPERS_H_
-#define MATH_TQUATHELPERS_H_
+#include <math/compiler.h>
+#include <math/scalar.h>
+#include <math/vec3.h>
 
 #include <math.h>
 #include <stdint.h>
 #include <sys/types.h>
 
-#include <iostream>
-
-#include <math/compiler.h>
-#include <math/vec3.h>
-
-namespace filament {
-namespace math {
-namespace details {
-// -------------------------------------------------------------------------------------
+namespace filament::math::details {
 
 /*
  * No user serviceable parts here.
@@ -48,14 +43,14 @@ namespace details {
  * get all the functionality here.
  */
 
-template <template<typename T> class QUATERNION, typename T>
+template<template<typename T> class QUATERNION, typename T>
 class TQuatProductOperators {
 public:
-    /* compound assignment from a another quaternion of the same size but different
+    /* compound assignment from another quaternion of the same size but different
      * element type.
      */
-    template <typename OTHER>
-    constexpr QUATERNION<T>& operator *= (const QUATERNION<OTHER>& r) {
+    template<typename OTHER>
+    constexpr QUATERNION<T>& operator*=(const QUATERNION<OTHER>& r) {
         QUATERNION<T>& q = static_cast<QUATERNION<T>&>(*this);
         q = q * r;
         return q;
@@ -63,14 +58,17 @@ public:
 
     /* compound assignment products by a scalar
      */
-    constexpr QUATERNION<T>& operator *= (T v) {
+    template<typename U, typename = std::enable_if_t<std::is_arithmetic_v<U>>>
+    constexpr QUATERNION<T>& operator*=(U v) {
         QUATERNION<T>& lhs = static_cast<QUATERNION<T>&>(*this);
         for (size_t i = 0; i < QUATERNION<T>::size(); i++) {
             lhs[i] *= v;
         }
         return lhs;
     }
-    constexpr QUATERNION<T>& operator /= (T v) {
+
+    template<typename U, typename = std::enable_if_t<std::is_arithmetic_v<U>>>
+    constexpr QUATERNION<T>& operator/=(U v) {
         QUATERNION<T>& lhs = static_cast<QUATERNION<T>&>(*this);
         for (size_t i = 0; i < QUATERNION<T>::size(); i++) {
             lhs[i] /= v;
@@ -86,31 +84,32 @@ public:
      * (the first one, BASE<T> being known).
      */
 
-    /* The operators below handle operation between quaternion of the same size
+    /* The operators below handle operation between quaternions of the same size
      * but of a different element type.
      */
-    template<typename RT>
-    friend inline
-    constexpr QUATERNION<T> MATH_PURE operator *(const QUATERNION<T>& q, const QUATERNION<RT>& r) {
+    template<typename U>
+    friend inline constexpr
+    QUATERNION<arithmetic_result_t<T, U>> MATH_PURE operator*(
+            const QUATERNION<T>& q, const QUATERNION<U>& r) {
         // could be written as:
         //  return QUATERNION<T>(
         //            q.w*r.w - dot(q.xyz, r.xyz),
         //            q.w*r.xyz + r.w*q.xyz + cross(q.xyz, r.xyz));
-
-        return QUATERNION<T>(
-                q.w*r.w - q.x*r.x - q.y*r.y - q.z*r.z,
-                q.w*r.x + q.x*r.w + q.y*r.z - q.z*r.y,
-                q.w*r.y - q.x*r.z + q.y*r.w + q.z*r.x,
-                q.w*r.z + q.x*r.y - q.y*r.x + q.z*r.w);
+        return {
+                q.w * r.w - q.x * r.x - q.y * r.y - q.z * r.z,
+                q.w * r.x + q.x * r.w + q.y * r.z - q.z * r.y,
+                q.w * r.y - q.x * r.z + q.y * r.w + q.z * r.x,
+                q.w * r.z + q.x * r.y - q.y * r.x + q.z * r.w
+        };
     }
 
-    template<typename RT>
-    friend inline
-    constexpr TVec3<T> MATH_PURE operator *(const QUATERNION<T>& q, const TVec3<RT>& v) {
+    template<typename U>
+    friend inline constexpr
+    TVec3<arithmetic_result_t<T, U>> MATH_PURE operator*(const QUATERNION<T>& q, const TVec3<U>& v) {
         // note: if q is known to be a unit quaternion, then this simplifies to:
         //  TVec3<T> t = 2 * cross(q.xyz, v)
         //  return v + (q.w * t) + cross(q.xyz, t)
-        return imaginary(q * QUATERNION<T>(v, 0) * inverse(q));
+        return imaginary(q * QUATERNION<U>(v, 0) * inverse(q));
     }
 
 
@@ -126,21 +125,25 @@ public:
      *              q.w*r.z + q.x*r.y - q.y*r.x + q.z*r.w);
      *
      */
-    friend inline
-    constexpr QUATERNION<T> MATH_PURE operator *(QUATERNION<T> q, T scalar) {
-        // don't pass q by reference because we need a copy anyways
-        return q *= scalar;
-    }
-    friend inline
-    constexpr QUATERNION<T> MATH_PURE operator *(T scalar, QUATERNION<T> q) {
-        // don't pass q by reference because we need a copy anyways
-        return q *= scalar;
+    template<typename U, typename = std::enable_if_t<std::is_arithmetic_v<U>>>
+    friend inline constexpr
+    QUATERNION<arithmetic_result_t<T, U>> MATH_PURE operator*(QUATERNION<T> q, U scalar) {
+        // don't pass q by reference because we need a copy anyway
+        return QUATERNION<arithmetic_result_t<T, U>>(q *= scalar);
     }
 
-    friend inline
-    constexpr QUATERNION<T> MATH_PURE operator /(QUATERNION<T> q, T scalar) {
-        // don't pass q by reference because we need a copy anyways
-        return q /= scalar;
+    template<typename U, typename = std::enable_if_t<std::is_arithmetic_v<U>>>
+    friend inline constexpr
+    QUATERNION<arithmetic_result_t<T, U>> MATH_PURE operator*(U scalar, QUATERNION<T> q) {
+        // don't pass q by reference because we need a copy anyway
+        return QUATERNION<arithmetic_result_t<T, U>>(q *= scalar);
+    }
+
+    template<typename U, typename = std::enable_if_t<std::is_arithmetic_v<U>>>
+    friend inline constexpr
+    QUATERNION<arithmetic_result_t<T, U>> MATH_PURE operator/(QUATERNION<T> q, U scalar) {
+        // don't pass q by reference because we need a copy anyway
+        return QUATERNION<arithmetic_result_t<T, U>>(q /= scalar);
     }
 };
 
@@ -152,7 +155,7 @@ public:
  * By simply inheriting from TQuatFunctions<BASE, T> BASE will automatically
  * get all the functionality here.
  */
-template <template<typename T> class QUATERNION, typename T>
+template<template<typename T> class QUATERNION, typename T>
 class TQuatFunctions {
 public:
     /*
@@ -163,9 +166,10 @@ public:
      * (the first one, BASE<T> being known).
      */
 
-    template<typename RT>
-    friend inline
-    constexpr T MATH_PURE dot(const QUATERNION<T>& p, const QUATERNION<RT>& q) {
+    template<typename U>
+    friend inline constexpr
+    arithmetic_result_t<T, U> MATH_PURE dot(
+            const QUATERNION<T>& p, const QUATERNION<U>& q) {
         return p.x * q.x +
                p.y * q.y +
                p.z * q.z +
@@ -174,7 +178,7 @@ public:
 
     friend inline
     T MATH_PURE norm(const QUATERNION<T>& q) {
-        return std::sqrt( dot(q, q) );
+        return std::sqrt(dot(q, q));
     }
 
     friend inline
@@ -199,7 +203,7 @@ public:
 
     friend inline
     constexpr QUATERNION<T> MATH_PURE inverse(const QUATERNION<T>& q) {
-        return conj(q) * (1 / dot(q, q));
+        return conj(q) * (T(1) / dot(q, q));
     }
 
     friend inline
@@ -217,42 +221,45 @@ public:
         return QUATERNION<T>(q.xyz, 0);
     }
 
-    friend inline
-    constexpr QUATERNION<T> MATH_PURE cross(const QUATERNION<T>& p, const QUATERNION<T>& q) {
-        return unreal(p*q);
+    template<typename U>
+    friend inline constexpr
+    QUATERNION<arithmetic_result_t<T, U>> MATH_PURE cross(
+            const QUATERNION<T>& p, const QUATERNION<U>& q) {
+        return unreal(p * q);
     }
 
     friend inline
     QUATERNION<T> MATH_PURE exp(const QUATERNION<T>& q) {
         const T nq(norm(q.xyz));
-        return std::exp(q.w)*QUATERNION<T>((sin(nq)/nq)*q.xyz, cos(nq));
+        return std::exp(q.w) * QUATERNION<T>((sin(nq) / nq) * q.xyz, cos(nq));
     }
 
     friend inline
     QUATERNION<T> MATH_PURE log(const QUATERNION<T>& q) {
         const T nq(norm(q));
-        return QUATERNION<T>((std::acos(q.w/nq)/norm(q.xyz))*q.xyz, log(nq));
+        return QUATERNION<T>((std::acos(q.w / nq) / norm(q.xyz)) * q.xyz, std::log(nq));
     }
 
     friend inline
     QUATERNION<T> MATH_PURE pow(const QUATERNION<T>& q, T a) {
         // could also be computed as: exp(a*log(q));
         const T nq(norm(q));
-        const T theta(a*std::acos(q.w / nq));
+        const T theta(a * std::acos(q.w / nq));
         return std::pow(nq, a) * QUATERNION<T>(normalize(q.xyz) * std::sin(theta), std::cos(theta));
     }
 
     friend inline
     QUATERNION<T> MATH_PURE slerp(const QUATERNION<T>& p, const QUATERNION<T>& q, T t) {
         // could also be computed as: pow(q * inverse(p), t) * p;
-        const T d = std::abs(dot(p, q));
+        const T d = dot(p, q);
+        const T absd = std::abs(d);
         static constexpr T value_eps = T(10) * std::numeric_limits<T>::epsilon();
         // Prevent blowing up when slerping between two quaternions that are very near each other.
-        if ((T(1) - d) < value_eps) {
-            return normalize(lerp(p, q, t));
+        if ((T(1) - absd) < value_eps) {
+            return normalize(lerp(d < 0 ? -p : p, q, t));
         }
-        const T npq = sqrt(dot(p, p) * dot(q, q));  // ||p|| * ||q||
-        const T a = std::acos(d / npq);
+        const T npq = std::sqrt(dot(p, p) * dot(q, q));  // ||p|| * ||q||
+        const T a = std::acos(math::clamp(absd / npq, T(-1), T(1)));
         const T a0 = a * (1 - t);
         const T a1 = a * t;
         const T sina = sin(a);
@@ -282,31 +289,6 @@ public:
     }
 };
 
-/*
- * TQuatDebug implements functions on a vector of type BASE<T>.
- *
- * BASE only needs to implement operator[] and size().
- * By simply inheriting from TQuatDebug<BASE, T> BASE will automatically
- * get all the functionality here.
- */
-template <template<typename T> class QUATERNION, typename T>
-class TQuatDebug {
-public:
-    /*
-     * NOTE: the functions below ARE NOT member methods. They are friend functions
-     * with they definition inlined with their declaration. This makes these
-     * template functions available to the compiler when (and only when) this class
-     * is instantiated, at which point they're only templated on the 2nd parameter
-     * (the first one, BASE<T> being known).
-     */
-    friend std::ostream& operator<< (std::ostream& stream, const QUATERNION<T>& q) {
-        return stream << "< " << q.w << " + " << q.x << "i + " << q.y << "j + " << q.z << "k >";
-    }
-};
+}  // namespace filament::math::details
 
-// -------------------------------------------------------------------------------------
-}  // namespace details
-}  // namespace math
-}  // namespace filament
-
-#endif  // MATH_TQUATHELPERS_H_
+#endif  // TNT_MATH_TQUATHELPERS_H

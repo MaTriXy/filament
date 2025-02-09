@@ -14,14 +14,15 @@
  * limitations under the License.
  */
 
-#ifndef UTILS_COUNTDOWNLATCH_H_
-#define UTILS_COUNTDOWNLATCH_H_
-
-#include <stddef.h>
+#ifndef TNT_UTILS_COUNTDOWNLATCH_H
+#define TNT_UTILS_COUNTDOWNLATCH_H
 
 // note: we use our version of mutex/condition to keep this public header STL free
 #include <utils/Condition.h>
 #include <utils/Mutex.h>
+
+#include <stdint.h>
+#include <stddef.h>
 
 namespace utils {
 
@@ -88,4 +89,4 @@ private:
 
 } // namespace utils
 
-#endif // UTILS_COUNTDOWNLATCH_H_
+#endif // TNT_UTILS_COUNTDOWNLATCH_H

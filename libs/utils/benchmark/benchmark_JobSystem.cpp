@@ -38,6 +38,8 @@ static void BM_JobSystem(benchmark::State& state) {
         }
     }
     state.SetItemsProcessed((int64_t)state.iterations());
+
+    js.emancipate();
 }
 
 static void BM_JobSystemAsChildren4k(benchmark::State& state) {
@@ -55,6 +57,8 @@ static void BM_JobSystemAsChildren4k(benchmark::State& state) {
         }
     }
     state.SetItemsProcessed((int64_t)state.iterations() * 4096);
+
+    js.emancipate();
 }
 
 static void BM_JobSystemParallelFor(benchmark::State& state) {
@@ -64,12 +68,14 @@ static void BM_JobSystemParallelFor(benchmark::State& state) {
     {
         PerformanceCounters pc(state);
         for (auto _ : state) {
-            auto job = jobs::parallel_for(js, nullptr, 0, 4096, [](uint32_t start, uint32_t count) {
-            }, jobs::CountSplitter<1>());
+            auto job = jobs::parallel_for(js, nullptr, 0, 4096,
+                    [](uint32_t start, uint32_t count) { }, jobs::CountSplitter<1>());
             js.runAndWait(job);
         }
     }
     state.SetItemsProcessed((int64_t)state.iterations() * 4096);
+
+    js.emancipate();
 }
 
 

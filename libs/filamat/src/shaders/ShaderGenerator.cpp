@@ -16,428 +16,845 @@
 
 #include "ShaderGenerator.h"
 
-#include <private/filament/SamplerInterfaceBlock.h>
-#include <private/filament/UniformInterfaceBlock.h>
+#include "CodeGenerator.h"
+#include "SibGenerator.h"
+#include "UibGenerator.h"
+
 #include <filament/MaterialEnums.h>
 
-#include <private/filament/SibGenerator.h>
-#include <private/filament/UibGenerator.h>
+#include <private/filament/DescriptorSets.h>
+#include <private/filament/EngineEnums.h>
 #include <private/filament/Variant.h>
 
+#include <filamat/MaterialBuilder.h>
+
+#include <backend/DriverEnums.h>
+
 #include <utils/CString.h>
+#include <utils/debug.h>
+#include <utils/sstream.h>
 
-#include "filamat/MaterialBuilder.h"
-#include "CodeGenerator.h"
+#include <algorithm>
+#include <iterator>
 
-using namespace filament;
-using namespace filament::backend;
+#include <stddef.h>
+#include <stdint.h>
 
 namespace filamat {
 
-static const char* getShadingDefine(filament::Shading shading) noexcept {
-    switch (shading) {
-        case filament::Shading::LIT:                 return "SHADING_MODEL_LIT";
-        case filament::Shading::UNLIT:               return "SHADING_MODEL_UNLIT";
-        case filament::Shading::SUBSURFACE:          return "SHADING_MODEL_SUBSURFACE";
-        case filament::Shading::CLOTH:               return "SHADING_MODEL_CLOTH";
-        case filament::Shading::SPECULAR_GLOSSINESS: return "SHADING_MODEL_SPECULAR_GLOSSINESS";
+using namespace filament;
+using namespace filament::backend;
+using namespace utils;
+
+void ShaderGenerator::generateSurfaceMaterialVariantDefines(utils::io::sstream& out,
+        ShaderStage stage, MaterialBuilder::FeatureLevel featureLevel,
+        MaterialInfo const& material, filament::Variant variant) noexcept {
+
+    bool const litVariants = material.isLit || material.hasShadowMultiplier;
+
+    CodeGenerator::generateDefine(out, "VARIANT_HAS_DIRECTIONAL_LIGHTING",
+            litVariants && variant.hasDirectionalLighting());
+    CodeGenerator::generateDefine(out, "VARIANT_HAS_DYNAMIC_LIGHTING",
+            litVariants && variant.hasDynamicLighting());
+    CodeGenerator::generateDefine(out, "VARIANT_HAS_SHADOWING",
+            litVariants && filament::Variant::isShadowReceiverVariant(variant));
+    CodeGenerator::generateDefine(out, "VARIANT_HAS_VSM",
+            filament::Variant::isVSMVariant(variant));
+    CodeGenerator::generateDefine(out, "VARIANT_HAS_STEREO",
+            hasStereo(variant, featureLevel));
+
+    switch (stage) {
+        case ShaderStage::VERTEX:
+        CodeGenerator::generateDefine(out, "VARIANT_HAS_SKINNING_OR_MORPHING",
+                hasSkinningOrMorphing(variant, featureLevel));
+            break;
+        case ShaderStage::FRAGMENT:
+            CodeGenerator::generateDefine(out, "VARIANT_HAS_FOG",
+                    filament::Variant::isFogVariant(variant));
+            CodeGenerator::generateDefine(out, "VARIANT_HAS_PICKING",
+                    filament::Variant::isPickingVariant(variant));
+            CodeGenerator::generateDefine(out, "VARIANT_HAS_SSR",
+                    filament::Variant::isSSRVariant(variant));
+            break;
+        case ShaderStage::COMPUTE:
+            break;
+    }
+
+    out << '\n';
+    CodeGenerator::generateDefine(out, "MATERIAL_FEATURE_LEVEL", uint32_t(featureLevel));
+
+    CodeGenerator::generateDefine(out, "MATERIAL_HAS_SHADOW_MULTIPLIER",
+            material.hasShadowMultiplier);
+
+    CodeGenerator::generateDefine(out, "MATERIAL_HAS_INSTANCES", material.instanced);
+
+    CodeGenerator::generateDefine(out, "MATERIAL_HAS_VERTEX_DOMAIN_DEVICE_JITTERED",
+            material.vertexDomainDeviceJittered);
+
+    CodeGenerator::generateDefine(out, "MATERIAL_HAS_TRANSPARENT_SHADOW",
+            material.hasTransparentShadow);
+
+    if (stage == ShaderStage::FRAGMENT) {
+        // We only support both screen-space refractions and reflections at the same time.
+        // And the MATERIAL_HAS_REFRACTION/MATERIAL_HAS_REFLECTIONS defines signify if
+        // refraction/reflections are supported by the material.
+
+        CodeGenerator::generateDefine(out, "MATERIAL_HAS_REFRACTION",
+                material.refractionMode != RefractionMode::NONE);
+        if (material.refractionMode != RefractionMode::NONE) {
+            CodeGenerator::generateDefine(out, "REFRACTION_MODE_CUBEMAP",
+                    uint32_t(RefractionMode::CUBEMAP));
+            CodeGenerator::generateDefine(out, "REFRACTION_MODE_SCREEN_SPACE",
+                    uint32_t(RefractionMode::SCREEN_SPACE));
+            switch (material.refractionMode) {
+                case RefractionMode::NONE:
+                    // can't be here
+                    break;
+                case RefractionMode::CUBEMAP:
+                    CodeGenerator::generateDefine(out, "REFRACTION_MODE",
+                            "REFRACTION_MODE_CUBEMAP");
+                    break;
+                case RefractionMode::SCREEN_SPACE:
+                    CodeGenerator::generateDefine(out, "REFRACTION_MODE",
+                            "REFRACTION_MODE_SCREEN_SPACE");
+                    break;
+            }
+            CodeGenerator::generateDefine(out, "REFRACTION_TYPE_SOLID",
+                    uint32_t(RefractionType::SOLID));
+            CodeGenerator::generateDefine(out, "REFRACTION_TYPE_THIN",
+                    uint32_t(RefractionType::THIN));
+            switch (material.refractionType) {
+                case RefractionType::SOLID:
+                    CodeGenerator::generateDefine(out, "REFRACTION_TYPE", "REFRACTION_TYPE_SOLID");
+                    break;
+                case RefractionType::THIN:
+                    CodeGenerator::generateDefine(out, "REFRACTION_TYPE", "REFRACTION_TYPE_THIN");
+                    break;
+            }
+        }
+        CodeGenerator::generateDefine(out, "MATERIAL_HAS_REFLECTIONS",
+                material.reflectionMode == ReflectionMode::SCREEN_SPACE);
+
+        CodeGenerator::generateDefine(out, "MATERIAL_HAS_DOUBLE_SIDED_CAPABILITY",
+                material.hasDoubleSidedCapability);
+
+        CodeGenerator::generateDefine(out, "MATERIAL_HAS_CUSTOM_SURFACE_SHADING",
+                material.hasCustomSurfaceShading);
+
+        out << '\n';
+        switch (material.blendingMode) {
+            case BlendingMode::OPAQUE:
+                CodeGenerator::generateDefine(out, "BLEND_MODE_OPAQUE", true);
+                break;
+            case BlendingMode::TRANSPARENT:
+                CodeGenerator::generateDefine(out, "BLEND_MODE_TRANSPARENT", true);
+                break;
+            case BlendingMode::ADD:
+                CodeGenerator::generateDefine(out, "BLEND_MODE_ADD", true);
+                break;
+            case BlendingMode::MASKED:
+                CodeGenerator::generateDefine(out, "BLEND_MODE_MASKED", true);
+                break;
+            case BlendingMode::FADE:
+                // Fade is a special case of transparent
+                CodeGenerator::generateDefine(out, "BLEND_MODE_TRANSPARENT", true);
+                CodeGenerator::generateDefine(out, "BLEND_MODE_FADE", true);
+                break;
+            case BlendingMode::MULTIPLY:
+                CodeGenerator::generateDefine(out, "BLEND_MODE_MULTIPLY", true);
+                break;
+            case BlendingMode::SCREEN:
+                CodeGenerator::generateDefine(out, "BLEND_MODE_SCREEN", true);
+                break;
+            case BlendingMode::CUSTOM:
+                CodeGenerator::generateDefine(out, "BLEND_MODE_CUSTOM", true);
+                break;
+        }
+
+        switch (material.postLightingBlendingMode) {
+            case BlendingMode::OPAQUE:
+                CodeGenerator::generateDefine(out, "POST_LIGHTING_BLEND_MODE_OPAQUE", true);
+                break;
+            case BlendingMode::TRANSPARENT:
+                CodeGenerator::generateDefine(out, "POST_LIGHTING_BLEND_MODE_TRANSPARENT", true);
+                break;
+            case BlendingMode::ADD:
+                CodeGenerator::generateDefine(out, "POST_LIGHTING_BLEND_MODE_ADD", true);
+                break;
+            case BlendingMode::MULTIPLY:
+                CodeGenerator::generateDefine(out, "POST_LIGHTING_BLEND_MODE_MULTIPLY", true);
+                break;
+            case BlendingMode::SCREEN:
+                CodeGenerator::generateDefine(out, "POST_LIGHTING_BLEND_MODE_SCREEN", true);
+                break;
+            case BlendingMode::CUSTOM:
+                CodeGenerator::generateDefine(out, "POST_LIGHTING_BLEND_MODE_CUSTOM", true);
+                break;
+            default:
+                break;
+        }
+
+        out << '\n';
+        CodeGenerator::generateDefine(out, "GEOMETRIC_SPECULAR_AA",
+                material.specularAntiAliasing && material.isLit);
+
+        CodeGenerator::generateDefine(out, "CLEAR_COAT_IOR_CHANGE",
+                material.clearCoatIorChange);
     }
 }
 
-static void generateMaterialDefines(utils::io::sstream& os, const CodeGenerator& cg,
-        MaterialBuilder::PropertyList const properties) noexcept {
+void ShaderGenerator::generateSurfaceMaterialVariantProperties(io::sstream& out,
+        MaterialBuilder::PropertyList const properties,
+        const MaterialBuilder::PreprocessorDefineList& defines) noexcept {
+
+    UTILS_NOUNROLL
     for (size_t i = 0; i < MaterialBuilder::MATERIAL_PROPERTIES_COUNT; i++) {
-        cg.generateMaterialProperty(os, static_cast<MaterialBuilder::Property>(i), properties[i]);
+        CodeGenerator::generateMaterialProperty(out,
+                static_cast<MaterialBuilder::Property>(i), properties[i]);
+    }
+
+    // synthetic defines
+    bool const hasTBN =
+            properties[static_cast<int>(MaterialBuilder::Property::ANISOTROPY)]         ||
+            properties[static_cast<int>(MaterialBuilder::Property::NORMAL)]             ||
+            properties[static_cast<int>(MaterialBuilder::Property::BENT_NORMAL)]        ||
+            properties[static_cast<int>(MaterialBuilder::Property::CLEAR_COAT_NORMAL)];
+
+    CodeGenerator::generateDefine(out, "MATERIAL_NEEDS_TBN", hasTBN);
+
+    // Additional, user-provided defines.
+    for (const auto& define : defines) {
+        CodeGenerator::generateDefine(out, define.name.c_str(), define.value.c_str());
     }
 }
 
-static void generateVertexDomain(const CodeGenerator& cg, utils::io::sstream& vs,
-        filament::VertexDomain domain) noexcept {
+void ShaderGenerator::generateVertexDomainDefines(io::sstream& vs, VertexDomain domain) noexcept {
     switch (domain) {
         case VertexDomain::OBJECT:
-            cg.generateDefine(vs, "VERTEX_DOMAIN_OBJECT", true);
+            CodeGenerator::generateDefine(vs, "VERTEX_DOMAIN_OBJECT", true);
             break;
         case VertexDomain::WORLD:
-            cg.generateDefine(vs, "VERTEX_DOMAIN_WORLD", true);
+            CodeGenerator::generateDefine(vs, "VERTEX_DOMAIN_WORLD", true);
             break;
         case VertexDomain::VIEW:
-            cg.generateDefine(vs, "VERTEX_DOMAIN_VIEW", true);
+            CodeGenerator::generateDefine(vs, "VERTEX_DOMAIN_VIEW", true);
             break;
         case VertexDomain::DEVICE:
-            cg.generateDefine(vs, "VERTEX_DOMAIN_DEVICE", true);
+            CodeGenerator::generateDefine(vs, "VERTEX_DOMAIN_DEVICE", true);
             break;
     }
 }
 
-static size_t countLines(const char* s) noexcept {
-    size_t lines = 0;
-    size_t i = 0;
-    while (s[i] != 0) {
-        if (s[i++] == '\n') lines++;
+void ShaderGenerator::generatePostProcessMaterialVariantDefines(io::sstream& out,
+        PostProcessVariant variant) noexcept {
+    switch (variant) {
+        case PostProcessVariant::OPAQUE:
+            CodeGenerator::generateDefine(out, "POST_PROCESS_OPAQUE", 1u);
+            break;
+        case PostProcessVariant::TRANSLUCENT:
+            CodeGenerator::generateDefine(out, "POST_PROCESS_OPAQUE", 0u);
+            break;
     }
-    return lines;
 }
 
-static size_t countLines(const utils::CString& s) noexcept {
-    size_t lines = 0;
-    for (char i : s) {
-        if (i == '\n') lines++;
-    }
-    return lines;
-}
+void ShaderGenerator::appendShader(io::sstream& ss,
+        const CString& shader, size_t lineOffset) noexcept {
 
-static void appendShader(utils::io::sstream& ss,
-        const utils::CString& shader, size_t lineOffset) noexcept {
+    auto countLines = [](const char* s) -> size_t {
+        size_t lines = 0;
+        size_t i = 0;
+        while (s[i]) {
+            if (s[i++] == '\n') lines++;
+        }
+        return lines;
+    };
+
     if (!shader.empty()) {
         size_t lines = countLines(ss.c_str());
-        ss << "#line " << lineOffset;
-        if (shader[0] != '\n') ss << "\n";
+        ss << "#line " << lineOffset + 1 << '\n';
         ss << shader.c_str();
         if (shader[shader.size() - 1] != '\n') {
             ss << "\n";
             lines++;
         }
         // + 2 to account for the #line directives we just added
-        ss << "#line " << lines + countLines(shader) + 2 << "\n";
+        ss << "#line " << lines + countLines(shader.c_str()) + 2 << "\n";
     }
 }
+
+void ShaderGenerator::generateUserSpecConstants(
+        const CodeGenerator& cg, io::sstream& fs, MaterialBuilder::ConstantList const& constants) {
+    // Constants 0 to CONFIG_MAX_RESERVED_SPEC_CONSTANTS - 1 are reserved by Filament.
+    size_t index = CONFIG_MAX_RESERVED_SPEC_CONSTANTS;
+    for (const auto& constant : constants) {
+        std::string const fullName = std::string("materialConstants_") + constant.name.c_str();
+        switch (constant.type) {
+            case ConstantType::INT:
+                cg.generateSpecializationConstant(
+                        fs, fullName.c_str(), index++, constant.defaultValue.i);
+                break;
+            case ConstantType::FLOAT:
+                cg.generateSpecializationConstant(
+                        fs, fullName.c_str(), index++, constant.defaultValue.f);
+                break;
+            case ConstantType::BOOL:
+                cg.generateSpecializationConstant(
+                        fs, fullName.c_str(), index++, constant.defaultValue.b);
+                break;
+        }
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
 
 ShaderGenerator::ShaderGenerator(
         MaterialBuilder::PropertyList const& properties,
         MaterialBuilder::VariableList const& variables,
-        utils::CString const& materialCode, size_t lineOffset,
-        utils::CString const& materialVertexCode, size_t vertexLineOffset) noexcept {
+        MaterialBuilder::OutputList const& outputs,
+        MaterialBuilder::PreprocessorDefineList const& defines,
+        MaterialBuilder::ConstantList const& constants,
+        MaterialBuilder::PushConstantList const& pushConstants,
+        CString const& materialCode, size_t lineOffset,
+        CString const& materialVertexCode, size_t vertexLineOffset,
+        MaterialBuilder::MaterialDomain materialDomain) noexcept {
+
+    if (materialDomain == MaterialBuilder::MaterialDomain::COMPUTE) {
+        // we shouldn't have a vertex shader in a compute material
+        assert_invariant(materialVertexCode.empty());
+    }
 
     std::copy(std::begin(properties), std::end(properties), std::begin(mProperties));
     std::copy(std::begin(variables), std::end(variables), std::begin(mVariables));
+    std::copy(std::begin(outputs), std::end(outputs), std::back_inserter(mOutputs));
 
-    mMaterialCode = materialCode;
+    mMaterialFragmentCode = materialCode;
     mMaterialVertexCode = materialVertexCode;
+    mIsMaterialVertexShaderEmpty = materialVertexCode.empty();
     mMaterialLineOffset = lineOffset;
     mMaterialVertexLineOffset = vertexLineOffset;
+    mMaterialDomain = materialDomain;
+    mDefines = defines;
+    mConstants = constants;
+    mPushConstants = pushConstants;
 
-    if (mMaterialCode.empty()) {
-        mMaterialCode =
-                utils::CString("void material(inout MaterialInputs m) {\n    prepareMaterial(m);\n}\n");
+    if (mMaterialFragmentCode.empty()) {
+        if (mMaterialDomain == MaterialBuilder::MaterialDomain::SURFACE) {
+            mMaterialFragmentCode =
+                    CString("void material(inout MaterialInputs m) {\n    prepareMaterial(m);\n}\n");
+        } else if (mMaterialDomain == MaterialBuilder::MaterialDomain::POST_PROCESS) {
+            mMaterialFragmentCode =
+                    CString("void postProcess(inout PostProcessInputs p) {\n}\n");
+        } else if (mMaterialDomain == MaterialBuilder::MaterialDomain::COMPUTE) {
+            mMaterialFragmentCode =
+                    CString("void compute() {\n}\n");
+        }
     }
     if (mMaterialVertexCode.empty()) {
-        mMaterialVertexCode =
-                utils::CString("void materialVertex(inout MaterialVertexInputs m) {\n}\n");
+        if (mMaterialDomain == MaterialBuilder::MaterialDomain::SURFACE) {
+            mMaterialVertexCode =
+                    CString("void materialVertex(inout MaterialVertexInputs m) {\n}\n");
+        } else if (mMaterialDomain == MaterialBuilder::MaterialDomain::POST_PROCESS) {
+            mMaterialVertexCode =
+                    CString("void postProcessVertex(inout PostProcessVertexInputs m) {\n}\n");
+        }
     }
 }
 
-const std::string ShaderGenerator::createVertexProgram(filament::backend::ShaderModel shaderModel,
+void ShaderGenerator::fixupExternalSamplers(ShaderModel sm, std::string& shader,
+        MaterialBuilder::FeatureLevel featureLevel,
+        MaterialInfo const& material) noexcept {
+    // External samplers are only supported on GL ES at the moment, we must
+    // skip the fixup on desktop targets
+    if (material.hasExternalSamplers && sm == ShaderModel::MOBILE) {
+        CodeGenerator::fixupExternalSamplers(shader, material.sib, featureLevel);
+    }
+}
+
+std::string ShaderGenerator::createSurfaceVertexProgram(ShaderModel shaderModel,
         MaterialBuilder::TargetApi targetApi, MaterialBuilder::TargetLanguage targetLanguage,
-        MaterialInfo const& material, uint8_t variantKey, filament::Interpolation interpolation,
-        filament::VertexDomain vertexDomain) const noexcept {
-    utils::io::sstream vs;
+        MaterialBuilder::FeatureLevel featureLevel,
+        MaterialInfo const& material, const filament::Variant variant, Interpolation interpolation,
+        VertexDomain vertexDomain) const noexcept {
 
-    const CodeGenerator cg(shaderModel, targetApi, targetLanguage);
-    const bool lit = material.isLit;
-    const filament::Variant variant(variantKey);
+    assert_invariant(filament::Variant::isValid(variant));
+    assert_invariant(mMaterialDomain != MaterialBuilder::MaterialDomain::COMPUTE);
 
-    cg.generateProlog(vs, ShaderType::VERTEX, material.hasExternalSamplers);
+    if (mMaterialDomain == MaterialBuilder::MaterialDomain::POST_PROCESS) {
+        return createPostProcessVertexProgram(
+                shaderModel, targetApi,
+                targetLanguage, featureLevel, material, variant.key);
+    }
 
-    cg.generateDefine(vs, "FLIP_UV_ATTRIBUTE", material.flipUV);
+    io::sstream vs;
 
-    bool litVariants = lit || material.hasShadowMultiplier;
-    cg.generateDefine(vs, "HAS_DIRECTIONAL_LIGHTING", litVariants && variant.hasDirectionalLighting());
-    cg.generateDefine(vs, "HAS_SHADOWING", litVariants && variant.hasShadowReceiver());
-    cg.generateDefine(vs, "HAS_SHADOW_MULTIPLIER", material.hasShadowMultiplier);
-    cg.generateDefine(vs, "HAS_SKINNING", variant.hasSkinning());
-    cg.generateDefine(vs, getShadingDefine(material.shading), true);
-    generateMaterialDefines(vs, cg, mProperties);
+    const CodeGenerator cg(shaderModel, targetApi, targetLanguage, featureLevel);
+
+    cg.generateCommonProlog(vs, ShaderStage::VERTEX, material, variant);
+
+    generateUserSpecConstants(cg, vs, mConstants);
+
+    // note: even if the user vertex shader is empty, we can't use the "optimized" version if
+    // we're in masked mode because fragment shader needs the color varyings
+    const bool useOptimizedDepthVertexShader =
+            // must be a depth variant
+            filament::Variant::isValidDepthVariant(variant) &&
+            // must have an empty vertex shader
+            mIsMaterialVertexShaderEmpty &&
+            // but must not be MASKED mode
+            material.blendingMode != BlendingMode::MASKED &&
+            // and must not have transparent shadows
+            !(material.hasTransparentShadow  &&
+                    (material.blendingMode == BlendingMode::TRANSPARENT ||
+                     material.blendingMode == BlendingMode::FADE));
+
+    CodeGenerator::generateDefine(vs, "USE_OPTIMIZED_DEPTH_VERTEX_SHADER",
+            useOptimizedDepthVertexShader);
+
+    generateSurfaceMaterialVariantDefines(vs, ShaderStage::VERTEX, featureLevel, material, variant);
+
+    generateSurfaceMaterialVariantProperties(vs, mProperties, mDefines);
 
     AttributeBitset attributes = material.requiredAttributes;
-    if (variant.hasSkinning()) {
+    if (hasSkinningOrMorphing(variant, featureLevel)) {
         attributes.set(VertexAttribute::BONE_INDICES);
         attributes.set(VertexAttribute::BONE_WEIGHTS);
+        if (material.useLegacyMorphing) {
+            attributes.set(VertexAttribute::MORPH_POSITION_0);
+            attributes.set(VertexAttribute::MORPH_POSITION_1);
+            attributes.set(VertexAttribute::MORPH_POSITION_2);
+            attributes.set(VertexAttribute::MORPH_POSITION_3);
+            attributes.set(VertexAttribute::MORPH_TANGENTS_0);
+            attributes.set(VertexAttribute::MORPH_TANGENTS_1);
+            attributes.set(VertexAttribute::MORPH_TANGENTS_2);
+            attributes.set(VertexAttribute::MORPH_TANGENTS_3);
+        }
     }
-    cg.generateShaderInputs(vs, ShaderType::VERTEX, attributes, interpolation);
+
+    MaterialBuilder::PushConstantList vertexPushConstants;
+    std::copy_if(mPushConstants.begin(), mPushConstants.end(),
+            std::back_insert_iterator<MaterialBuilder::PushConstantList>(vertexPushConstants),
+            [](MaterialBuilder::PushConstant const& constant) {
+                return constant.stage == ShaderStage::VERTEX;
+            });
+    cg.generateSurfaceShaderInputs(vs, ShaderStage::VERTEX, attributes, interpolation,
+            vertexPushConstants);
+
+    CodeGenerator::generateSurfaceTypes(vs, ShaderStage::VERTEX);
 
     // custom material variables
     size_t variableIndex = 0;
     for (const auto& variable : mVariables) {
-        cg.generateVariable(vs, ShaderType::VERTEX, variable, variableIndex++);
+        CodeGenerator::generateCommonVariable(vs, ShaderStage::VERTEX, variable, variableIndex++);
     }
 
     // materials defines
-    generateVertexDomain(cg, vs, vertexDomain);
+    generateVertexDomainDefines(vs, vertexDomain);
 
     // uniforms
-    cg.generateUniforms(vs, ShaderType::VERTEX,
-            BindingPoints::PER_VIEW, UibGenerator::getPerViewUib());
-    cg.generateUniforms(vs, ShaderType::VERTEX,
-            BindingPoints::PER_RENDERABLE, UibGenerator::getPerRenderableUib());
-    if (variant.hasSkinning()) {
-        cg.generateUniforms(vs, ShaderType::VERTEX,
-                BindingPoints::PER_RENDERABLE_BONES,
-                UibGenerator::getPerRenderableBonesUib());
+    cg.generateUniforms(vs, ShaderStage::VERTEX,
+            DescriptorSetBindingPoints::PER_VIEW,
+            +PerViewBindingPoints::FRAME_UNIFORMS,
+            UibGenerator::getPerViewUib());
+
+    cg.generateUniforms(vs, ShaderStage::VERTEX,
+            DescriptorSetBindingPoints::PER_RENDERABLE,
+            +PerRenderableBindingPoints::OBJECT_UNIFORMS,
+            UibGenerator::getPerRenderableUib());
+
+    const bool litVariants = material.isLit || material.hasShadowMultiplier;
+    if (litVariants && filament::Variant::isShadowReceiverVariant(variant)) {
+        cg.generateUniforms(vs, ShaderStage::FRAGMENT,
+                DescriptorSetBindingPoints::PER_VIEW,
+                +PerViewBindingPoints::SHADOWS,
+                UibGenerator::getShadowUib());
     }
-    cg.generateUniforms(vs, ShaderType::VERTEX,
-            BindingPoints::PER_MATERIAL_INSTANCE, material.uib);
-    cg.generateSeparator(vs);
-    // TODO: should we generate per-view SIB in the vertex shader?
-    cg.generateSamplers(vs,
-            material.samplerBindings.getBlockOffset(BindingPoints::PER_MATERIAL_INSTANCE),
-            material.sib);
+
+    if (hasSkinningOrMorphing(variant, featureLevel)) {
+        cg.generateUniforms(vs, ShaderStage::VERTEX,
+                DescriptorSetBindingPoints::PER_RENDERABLE,
+                +PerRenderableBindingPoints::BONES_UNIFORMS,
+                UibGenerator::getPerRenderableBonesUib());
+        cg.generateUniforms(vs, ShaderStage::VERTEX,
+                DescriptorSetBindingPoints::PER_RENDERABLE,
+                +PerRenderableBindingPoints::MORPHING_UNIFORMS,
+                UibGenerator::getPerRenderableMorphingUib());
+        cg.generateCommonSamplers(vs, DescriptorSetBindingPoints::PER_RENDERABLE,
+                SibGenerator::getPerRenderableSib(variant));
+    }
+
+    cg.generateUniforms(vs, ShaderStage::VERTEX,
+            DescriptorSetBindingPoints::PER_MATERIAL,
+            +PerMaterialBindingPoints::MATERIAL_PARAMS,
+            material.uib);
+
+    CodeGenerator::generateSeparator(vs);
+
+    cg.generateCommonSamplers(vs, DescriptorSetBindingPoints::PER_MATERIAL, material.sib);
 
     // shader code
-    cg.generateCommon(vs, ShaderType::VERTEX);
-    cg.generateGetters(vs, ShaderType::VERTEX);
-    cg.generateCommonMaterial(vs, ShaderType::VERTEX);
+    CodeGenerator::generateSurfaceCommon(vs, ShaderStage::VERTEX);
+    CodeGenerator::generateSurfaceGetters(vs, ShaderStage::VERTEX);
+    CodeGenerator::generateSurfaceMaterial(vs, ShaderStage::VERTEX);
 
-    if (variant.isDepthPass() &&
-        (material.blendingMode != BlendingMode::MASKED) &&
-        !hasCustomDepthShader()) {
-        // these variants are special and are treated as DEPTH variants. Filament will never
-        // request that variant for the color pass.
-        cg.generateDepthShaderMain(vs, ShaderType::VERTEX);
-    } else {
-        // main entry point
-        appendShader(vs, mMaterialVertexCode, mMaterialVertexLineOffset);
-        cg.generateShaderMain(vs, ShaderType::VERTEX);
-    }
+    // main entry point
+    appendShader(vs, mMaterialVertexCode, mMaterialVertexLineOffset);
+    CodeGenerator::generateSurfaceMain(vs, ShaderStage::VERTEX);
 
-    cg.generateEpilog(vs);
+    CodeGenerator::generateCommonEpilog(vs);
 
     return vs.c_str();
 }
 
-bool ShaderGenerator::hasCustomDepthShader() const noexcept {
-    for (const auto& variable : mVariables) {
-        if (!variable.empty()) {
-            return true;
-        }
-    }
-    return false;
-}
-
-const std::string ShaderGenerator::createFragmentProgram(filament::backend::ShaderModel shaderModel,
+std::string ShaderGenerator::createSurfaceFragmentProgram(ShaderModel shaderModel,
         MaterialBuilder::TargetApi targetApi, MaterialBuilder::TargetLanguage targetLanguage,
-        MaterialInfo const& material, uint8_t variantKey,
-        filament::Interpolation interpolation) const noexcept {
+        MaterialBuilder::FeatureLevel featureLevel,
+        MaterialInfo const& material, const filament::Variant variant,
+        Interpolation interpolation, UserVariantFilterMask variantFilter) const noexcept {
 
-    const CodeGenerator cg(shaderModel, targetApi, targetLanguage);
-    const bool lit = material.isLit;
-    const filament::Variant variant(variantKey);
+    assert_invariant(filament::Variant::isValid(variant));
+    assert_invariant(mMaterialDomain != MaterialBuilder::MaterialDomain::COMPUTE);
 
-    utils::io::sstream fs;
-    cg.generateProlog(fs, ShaderType::FRAGMENT, material.hasExternalSamplers);
-
-    cg.generateDefine(fs, "IBL_USE_RGBM", filament::CONFIG_IBL_RGBM);
-    cg.generateDefine(fs, "IBL_MAX_MIP_LEVEL", std::log2f(filament::CONFIG_IBL_SIZE));
-
-    // this should probably be a code generation option
-    cg.generateDefine(fs, "USE_MULTIPLE_SCATTERING_COMPENSATION", true);
-
-    cg.generateDefine(fs, "GEOMETRIC_SPECULAR_AA", material.specularAntiAliasing && lit);
-
-    cg.generateDefine(fs, "CLEAR_COAT_IOR_CHANGE", material.clearCoatIorChange);
-
-    cg.generateDefine(fs, "SPECULAR_AMBIENT_OCCLUSION", material.specularAO);
-    cg.generateDefine(fs, "MULTI_BOUNCE_AMBIENT_OCCLUSION", material.multiBounceAO);
-
-    // lighting variants
-    bool litVariants = lit || material.hasShadowMultiplier;
-    cg.generateDefine(fs, "HAS_DIRECTIONAL_LIGHTING", litVariants && variant.hasDirectionalLighting());
-    cg.generateDefine(fs, "HAS_DYNAMIC_LIGHTING", litVariants && variant.hasDynamicLighting());
-    cg.generateDefine(fs, "HAS_SHADOWING", litVariants && variant.hasShadowReceiver());
-    cg.generateDefine(fs, "HAS_SHADOW_MULTIPLIER", material.hasShadowMultiplier);
-
-    // material defines
-    cg.generateDefine(fs, "MATERIAL_HAS_DOUBLE_SIDED_CAPABILITY", material.hasDoubleSidedCapability);
-    switch (material.blendingMode) {
-        case BlendingMode::OPAQUE:
-            cg.generateDefine(fs, "BLEND_MODE_OPAQUE", true);
-            break;
-        case BlendingMode::TRANSPARENT:
-            cg.generateDefine(fs, "BLEND_MODE_TRANSPARENT", true);
-            break;
-        case BlendingMode::ADD:
-            cg.generateDefine(fs, "BLEND_MODE_ADD", true);
-            break;
-        case BlendingMode::MASKED:
-            cg.generateDefine(fs, "BLEND_MODE_MASKED", true);
-            break;
-        case BlendingMode::FADE:
-            // Fade is a special case of transparent
-            cg.generateDefine(fs, "BLEND_MODE_TRANSPARENT", true);
-            cg.generateDefine(fs, "BLEND_MODE_FADE", true);
-            break;
-        case BlendingMode::MULTIPLY:
-            cg.generateDefine(fs, "BLEND_MODE_MULTIPLY", true);
-            break;
-        case BlendingMode::SCREEN:
-            cg.generateDefine(fs, "BLEND_MODE_SCREEN", true);
-            break;
+    if (mMaterialDomain == MaterialBuilder::MaterialDomain::POST_PROCESS) {
+        return createPostProcessFragmentProgram(shaderModel, targetApi, targetLanguage,
+                                                featureLevel, material, variant.key);
     }
-    switch (material.postLightingBlendingMode) {
-        case BlendingMode::OPAQUE:
-            cg.generateDefine(fs, "POST_LIGHTING_BLEND_MODE_OPAQUE", true);
-            break;
-        case BlendingMode::TRANSPARENT:
-            cg.generateDefine(fs, "POST_LIGHTING_BLEND_MODE_TRANSPARENT", true);
-            break;
-        case BlendingMode::ADD:
-            cg.generateDefine(fs, "POST_LIGHTING_BLEND_MODE_ADD", true);
-            break;
-        case BlendingMode::MULTIPLY:
-            cg.generateDefine(fs, "POST_LIGHTING_BLEND_MODE_MULTIPLY", true);
-            break;
-        case BlendingMode::SCREEN:
-            cg.generateDefine(fs, "POST_LIGHTING_BLEND_MODE_SCREEN", true);
-            break;
-        default:
-            break;
-    }
-    cg.generateDefine(fs, getShadingDefine(material.shading), true);
-    generateMaterialDefines(fs, cg, mProperties);
 
-    cg.generateShaderInputs(fs, ShaderType::FRAGMENT, material.requiredAttributes, interpolation);
+    const CodeGenerator cg(shaderModel, targetApi, targetLanguage, featureLevel);
+
+    io::sstream fs;
+    cg.generateCommonProlog(fs, ShaderStage::FRAGMENT, material, variant);
+
+    generateUserSpecConstants(cg, fs, mConstants);
+
+    generateSurfaceMaterialVariantDefines(
+            fs, ShaderStage::FRAGMENT, featureLevel, material, variant);
+
+    auto defaultSpecularAO = shaderModel == ShaderModel::MOBILE ?
+                             SpecularAmbientOcclusion::NONE : SpecularAmbientOcclusion::SIMPLE;
+    auto specularAO = material.specularAOSet ? material.specularAO : defaultSpecularAO;
+    CodeGenerator::generateDefine(fs, "SPECULAR_AMBIENT_OCCLUSION", uint32_t(specularAO));
+
+    bool const multiBounceAO = material.multiBounceAOSet ?
+                               material.multiBounceAO : shaderModel == ShaderModel::DESKTOP;
+    CodeGenerator::generateDefine(fs, "MULTI_BOUNCE_AMBIENT_OCCLUSION", multiBounceAO ? 1u : 0u);
+
+    generateSurfaceMaterialVariantProperties(fs, mProperties, mDefines);
+
+    MaterialBuilder::PushConstantList fragmentPushConstants;
+    std::copy_if(mPushConstants.begin(), mPushConstants.end(),
+            std::back_insert_iterator<MaterialBuilder::PushConstantList>(fragmentPushConstants),
+            [](MaterialBuilder::PushConstant const& constant) {
+                return constant.stage == ShaderStage::FRAGMENT;
+            });
+    cg.generateSurfaceShaderInputs(fs, ShaderStage::FRAGMENT, material.requiredAttributes, interpolation,
+            fragmentPushConstants);
+
+    CodeGenerator::generateSurfaceTypes(fs, ShaderStage::FRAGMENT);
 
     // custom material variables
     size_t variableIndex = 0;
     for (const auto& variable : mVariables) {
-        cg.generateVariable(fs, ShaderType::FRAGMENT, variable, variableIndex++);
+        CodeGenerator::generateCommonVariable(fs, ShaderStage::FRAGMENT, variable, variableIndex++);
     }
 
     // uniforms and samplers
-    cg.generateUniforms(fs, ShaderType::FRAGMENT,
-            BindingPoints::PER_VIEW, UibGenerator::getPerViewUib());
-    cg.generateUniforms(fs, ShaderType::FRAGMENT,
-            BindingPoints::LIGHTS, UibGenerator::getLightsUib());
-    cg.generateUniforms(fs, ShaderType::FRAGMENT,
-            BindingPoints::PER_MATERIAL_INSTANCE, material.uib);
-    cg.generateSeparator(fs);
-    cg.generateSamplers(fs,
-            material.samplerBindings.getBlockOffset(BindingPoints::PER_VIEW),
-            SibGenerator::getPerViewSib());
-    cg.generateSamplers(fs,
-            material.samplerBindings.getBlockOffset(BindingPoints::PER_MATERIAL_INSTANCE),
-            material.sib);
+    cg.generateUniforms(fs, ShaderStage::FRAGMENT,
+            DescriptorSetBindingPoints::PER_VIEW,
+            +PerViewBindingPoints::FRAME_UNIFORMS,
+            UibGenerator::getPerViewUib());
 
-    // shading code
-    cg.generateCommon(fs, ShaderType::FRAGMENT);
-    cg.generateGetters(fs, ShaderType::FRAGMENT);
-    cg.generateCommonMaterial(fs, ShaderType::FRAGMENT);
-    cg.generateParameters(fs, ShaderType::FRAGMENT);
+    cg.generateUniforms(fs, ShaderStage::FRAGMENT,
+            DescriptorSetBindingPoints::PER_RENDERABLE,
+            +PerRenderableBindingPoints::OBJECT_UNIFORMS,
+            UibGenerator::getPerRenderableUib());
 
-    // shading model
-    if (variant.isDepthPass()) {
-        if (material.blendingMode == BlendingMode::MASKED) {
-            appendShader(fs, mMaterialCode, mMaterialLineOffset);
-        }
-        // these variants are special and are treated as DEPTH variants. Filament will never
-        // request that variant for the color pass.
-        cg.generateDepthShaderMain(fs, ShaderType::FRAGMENT);
-    } else {
-        appendShader(fs, mMaterialCode, mMaterialLineOffset);
-        if (material.isLit) {
-            cg.generateShaderLit(fs, ShaderType::FRAGMENT, variant, material.shading);
-        } else {
-            cg.generateShaderUnlit(fs, ShaderType::FRAGMENT, variant, material.hasShadowMultiplier);
-        }
-        // entry point
-        cg.generateShaderMain(fs, ShaderType::FRAGMENT);
+    if (variant.hasDynamicLighting()) {
+        cg.generateUniforms(fs, ShaderStage::FRAGMENT,
+                DescriptorSetBindingPoints::PER_VIEW,
+                +PerViewBindingPoints::LIGHTS,
+                UibGenerator::getLightsUib());
     }
 
-    cg.generateEpilog(fs);
+    bool const litVariants = material.isLit || material.hasShadowMultiplier;
+    if (litVariants && filament::Variant::isShadowReceiverVariant(variant)) {
+        cg.generateUniforms(fs, ShaderStage::FRAGMENT,
+                DescriptorSetBindingPoints::PER_VIEW,
+                +PerViewBindingPoints::SHADOWS,
+                UibGenerator::getShadowUib());
+    }
+
+    if (variant.hasDynamicLighting()) {
+        cg.generateUniforms(fs, ShaderStage::FRAGMENT,
+                DescriptorSetBindingPoints::PER_VIEW,
+                +PerViewBindingPoints::RECORD_BUFFER,
+                UibGenerator::getFroxelRecordUib());
+
+        cg.generateUniforms(fs, ShaderStage::FRAGMENT,
+                DescriptorSetBindingPoints::PER_VIEW,
+                +PerViewBindingPoints::FROXEL_BUFFER,
+                UibGenerator::getFroxelsUib());
+    }
+
+    cg.generateUniforms(fs, ShaderStage::FRAGMENT,
+            DescriptorSetBindingPoints::PER_MATERIAL,
+            +PerMaterialBindingPoints::MATERIAL_PARAMS,
+            material.uib);
+
+    CodeGenerator::generateSeparator(fs);
+
+    if (featureLevel >= FeatureLevel::FEATURE_LEVEL_1) {
+        assert_invariant(mMaterialDomain == MaterialDomain::SURFACE);
+
+        auto const perViewDescriptorSetLayout = getPerViewDescriptorSetLayoutWithVariant(
+                variant, variantFilter,
+                material.isLit || material.hasShadowMultiplier,
+                material.reflectionMode, material.refractionMode);
+
+        // this is the list of samplers we need to filter
+        auto list = SibGenerator::getPerViewSib(variant).getSamplerInfoList();
+
+        // remove all the samplers that are not included in the descriptor-set layout
+        list.erase(
+                std::remove_if(list.begin(), list.end(),
+                        [&perViewDescriptorSetLayout](auto const& entry) {
+                            auto pos = std::find_if(
+                                    perViewDescriptorSetLayout.bindings.begin(),
+                                    perViewDescriptorSetLayout.bindings.end(),
+                                    [&entry](const auto& item) {
+                                        return item.binding == entry.binding;
+                                    });
+                            return pos == perViewDescriptorSetLayout.bindings.end();
+                        }), list.end());
+
+        cg.generateCommonSamplers(fs, DescriptorSetBindingPoints::PER_VIEW, list);
+    }
+
+    cg.generateCommonSamplers(fs, DescriptorSetBindingPoints::PER_MATERIAL, material.sib);
+
+    fs << "float filament_lodBias;\n";
+
+    // shading code
+    CodeGenerator::generateSurfaceCommon(fs, ShaderStage::FRAGMENT);
+    CodeGenerator::generateSurfaceGetters(fs, ShaderStage::FRAGMENT);
+    CodeGenerator::generateSurfaceMaterial(fs, ShaderStage::FRAGMENT);
+    CodeGenerator::generateSurfaceParameters(fs, ShaderStage::FRAGMENT);
+
+    if (filament::Variant::isFogVariant(variant)) {
+        CodeGenerator::generateSurfaceFog(fs, ShaderStage::FRAGMENT);
+    }
+
+    // shading model
+    if (filament::Variant::isValidDepthVariant(variant)) {
+        // In MASKED mode or with transparent shadows, we need the alpha channel computed by
+        // the material (user code), so we append it here.
+        if (material.userMaterialHasCustomDepth ||
+            material.blendingMode == BlendingMode::MASKED || ((
+                     material.blendingMode == BlendingMode::TRANSPARENT ||
+                     material.blendingMode == BlendingMode::FADE)
+             && material.hasTransparentShadow)) {
+            appendShader(fs, mMaterialFragmentCode, mMaterialLineOffset);
+        }
+        // These variants are special and are treated as DEPTH variants. Filament will never
+        // request that variant for the color pass.
+        CodeGenerator::generateSurfaceDepthMain(fs, ShaderStage::FRAGMENT);
+    } else {
+        appendShader(fs, mMaterialFragmentCode, mMaterialLineOffset);
+        if (material.isLit) {
+            if (filament::Variant::isSSRVariant(variant)) {
+                CodeGenerator::generateSurfaceReflections(fs, ShaderStage::FRAGMENT);
+            } else {
+                CodeGenerator::generateSurfaceLit(fs, ShaderStage::FRAGMENT, variant,
+                        material.shading,material.hasCustomSurfaceShading);
+            }
+        } else {
+            CodeGenerator::generateSurfaceUnlit(fs, ShaderStage::FRAGMENT, variant,
+                    material.hasShadowMultiplier);
+        }
+        // entry point
+        CodeGenerator::generateSurfaceMain(fs, ShaderStage::FRAGMENT);
+    }
+
+    CodeGenerator::generateCommonEpilog(fs);
 
     return fs.c_str();
 }
 
-void ShaderGenerator::fixupExternalSamplers(filament::backend::ShaderModel sm,
-        std::string& shader, MaterialInfo const& material) const noexcept {
-    // External samplers are only supported on GL ES at the moment, we must
-    // skip the fixup on desktop targets
-    if (material.hasExternalSamplers && sm == ShaderModel::GL_ES_30) {
-        CodeGenerator::fixupExternalSamplers(shader, material.sib);
-    }
+std::string ShaderGenerator::createSurfaceComputeProgram(filament::backend::ShaderModel shaderModel,
+        MaterialBuilder::TargetApi targetApi, MaterialBuilder::TargetLanguage targetLanguage,
+        MaterialBuilder::FeatureLevel featureLevel,
+        MaterialInfo const& material) const noexcept {
+    assert_invariant(mMaterialDomain == MaterialBuilder::MaterialDomain::COMPUTE);
+    assert_invariant(featureLevel >= FeatureLevel::FEATURE_LEVEL_2);
+    const CodeGenerator cg(shaderModel, targetApi, targetLanguage, featureLevel);
+    io::sstream s;
+
+    cg.generateCommonProlog(s, ShaderStage::COMPUTE, material, {});
+
+    generateUserSpecConstants(cg, s, mConstants);
+
+    CodeGenerator::generateSurfaceTypes(s, ShaderStage::COMPUTE);
+
+    cg.generateUniforms(s, ShaderStage::COMPUTE,
+            DescriptorSetBindingPoints::PER_VIEW,
+            +PerViewBindingPoints::FRAME_UNIFORMS,
+            UibGenerator::getPerViewUib());
+
+    cg.generateUniforms(s, ShaderStage::COMPUTE,
+            DescriptorSetBindingPoints::PER_MATERIAL,
+            +PerMaterialBindingPoints::MATERIAL_PARAMS,
+            material.uib);
+
+    cg.generateCommonSamplers(s, DescriptorSetBindingPoints::PER_MATERIAL, material.sib);
+
+    // generate SSBO
+    cg.generateBuffers(s, material.buffers);
+
+    // TODO: generate images
+
+    CodeGenerator::generateSurfaceCommon(s, ShaderStage::COMPUTE);
+    CodeGenerator::generateSurfaceGetters(s, ShaderStage::COMPUTE);
+
+    appendShader(s, mMaterialFragmentCode, mMaterialLineOffset);
+
+    CodeGenerator::generateSurfaceMain(s, ShaderStage::COMPUTE);
+
+    CodeGenerator::generateCommonEpilog(s);
+    return s.c_str();
 }
 
-const std::string ShaderPostProcessGenerator::createPostProcessVertexProgram(
-        filament::backend::ShaderModel sm, MaterialBuilder::TargetApi targetApi,
-        MaterialBuilder::TargetLanguage targetLanguage, filament::PostProcessStage variant,
-        uint8_t firstSampler) noexcept {
-    const CodeGenerator cg(sm, targetApi, targetLanguage);
-    utils::io::sstream vs;
-    cg.generateProlog(vs, ShaderType::VERTEX, false);
-    cg.generateDefine(vs, "LOCATION_POSITION", uint32_t(VertexAttribute::POSITION));
-    generatePostProcessStageDefines(vs, cg, variant);
+std::string ShaderGenerator::createPostProcessVertexProgram(ShaderModel sm,
+        MaterialBuilder::TargetApi targetApi, MaterialBuilder::TargetLanguage targetLanguage,
+        MaterialBuilder::FeatureLevel featureLevel,
+        MaterialInfo const& material, const filament::Variant::type_t variantKey) const noexcept {
+    const CodeGenerator cg(sm, targetApi, targetLanguage, featureLevel);
+    io::sstream vs;
+    cg.generateCommonProlog(vs, ShaderStage::VERTEX, material, {});
 
-    cg.generateUniforms(vs, ShaderType::VERTEX,
-            BindingPoints::PER_VIEW, UibGenerator::getPerViewUib());
-    cg.generateUniforms(vs, ShaderType::VERTEX,
-            BindingPoints::POST_PROCESS, UibGenerator::getPostProcessingUib());
-    cg.generateSamplers(vs,
-            firstSampler, SibGenerator::getPostProcessSib());
+    generateUserSpecConstants(cg, vs, mConstants);
 
-    cg.generateCommon(vs, ShaderType::VERTEX);
-    cg.generatePostProcessMain(vs, ShaderType::VERTEX, variant);
-    cg.generateEpilog(vs);
+    CodeGenerator::generateDefine(vs, "LOCATION_POSITION", uint32_t(VertexAttribute::POSITION));
+
+    // custom material variables
+    size_t variableIndex = 0;
+    for (const auto& variable : mVariables) {
+        CodeGenerator::generateCommonVariable(vs, ShaderStage::VERTEX, variable, variableIndex++);
+    }
+
+    CodeGenerator::generatePostProcessInputs(vs, ShaderStage::VERTEX);
+    generatePostProcessMaterialVariantDefines(vs, PostProcessVariant(variantKey));
+
+    cg.generateUniforms(vs, ShaderStage::VERTEX,
+            DescriptorSetBindingPoints::PER_VIEW,
+            +PerViewBindingPoints::FRAME_UNIFORMS,
+            UibGenerator::getPerViewUib());
+
+    cg.generateUniforms(vs, ShaderStage::VERTEX,
+            DescriptorSetBindingPoints::PER_MATERIAL,
+            +PerMaterialBindingPoints::MATERIAL_PARAMS,
+            material.uib);
+
+    cg.generateCommonSamplers(vs, DescriptorSetBindingPoints::PER_MATERIAL, material.sib);
+
+    CodeGenerator::generatePostProcessCommon(vs, ShaderStage::VERTEX);
+    CodeGenerator::generatePostProcessGetters(vs, ShaderStage::VERTEX);
+
+    appendShader(vs, mMaterialVertexCode, mMaterialVertexLineOffset);
+
+    CodeGenerator::generatePostProcessMain(vs, ShaderStage::VERTEX);
+
+    CodeGenerator::generateCommonEpilog(vs);
     return vs.c_str();
 }
 
-const std::string ShaderPostProcessGenerator::createPostProcessFragmentProgram(
-        filament::backend::ShaderModel sm, MaterialBuilder::TargetApi targetApi,
-        MaterialBuilder::TargetLanguage targetLanguage, filament::PostProcessStage variant,
-        uint8_t firstSampler) noexcept {
-    const CodeGenerator cg(sm, targetApi, targetLanguage);
-    utils::io::sstream fs;
-    cg.generateProlog(fs, ShaderType::FRAGMENT, false);
-    generatePostProcessStageDefines(fs, cg, variant);
+std::string ShaderGenerator::createPostProcessFragmentProgram(ShaderModel sm,
+        MaterialBuilder::TargetApi targetApi, MaterialBuilder::TargetLanguage targetLanguage,
+        MaterialBuilder::FeatureLevel featureLevel,
+        MaterialInfo const& material, uint8_t variant) const noexcept {
+    const CodeGenerator cg(sm, targetApi, targetLanguage, featureLevel);
+    io::sstream fs;
+    cg.generateCommonProlog(fs, ShaderStage::FRAGMENT, material, {});
 
-    cg.generateUniforms(fs, ShaderType::FRAGMENT,
-            BindingPoints::PER_VIEW, UibGenerator::getPerViewUib());
-    cg.generateUniforms(fs, ShaderType::FRAGMENT,
-            BindingPoints::POST_PROCESS, UibGenerator::getPostProcessingUib());
-    cg.generateSamplers(fs,
-            firstSampler, SibGenerator::getPostProcessSib());
+    generateUserSpecConstants(cg, fs, mConstants);
 
-    cg.generateCommon(fs, ShaderType::FRAGMENT);
-    cg.generatePostProcessMain(fs, ShaderType::FRAGMENT, variant);
-    cg.generateEpilog(fs);
+    generatePostProcessMaterialVariantDefines(fs, PostProcessVariant(variant));
+
+    // custom material variables
+    size_t variableIndex = 0;
+    for (const auto& variable : mVariables) {
+        CodeGenerator::generateCommonVariable(fs, ShaderStage::FRAGMENT, variable, variableIndex++);
+    }
+
+    cg.generateUniforms(fs, ShaderStage::FRAGMENT,
+            DescriptorSetBindingPoints::PER_VIEW,
+            +PerViewBindingPoints::FRAME_UNIFORMS,
+            UibGenerator::getPerViewUib());
+
+    cg.generateUniforms(fs, ShaderStage::FRAGMENT,
+            DescriptorSetBindingPoints::PER_MATERIAL,
+            +PerMaterialBindingPoints::MATERIAL_PARAMS,
+            material.uib);
+
+    cg.generateCommonSamplers(fs, DescriptorSetBindingPoints::PER_MATERIAL, material.sib);
+
+    // subpass
+    CodeGenerator::generatePostProcessSubpass(fs, material.subpass);
+
+    CodeGenerator::generatePostProcessCommon(fs, ShaderStage::FRAGMENT);
+    CodeGenerator::generatePostProcessGetters(fs, ShaderStage::FRAGMENT);
+
+    // Generate post-process outputs.
+    for (const auto& output : mOutputs) {
+        if (output.target == MaterialBuilder::OutputTarget::COLOR) {
+            cg.generateOutput(fs, ShaderStage::FRAGMENT, output.name, output.location,
+                    output.qualifier, output.precision, output.type);
+        }
+        if (output.target == MaterialBuilder::OutputTarget::DEPTH) {
+            CodeGenerator::generateDefine(fs, "FRAG_OUTPUT_DEPTH", 1u);
+        }
+    }
+
+    CodeGenerator::generatePostProcessInputs(fs, ShaderStage::FRAGMENT);
+
+    appendShader(fs, mMaterialFragmentCode, mMaterialLineOffset);
+
+    CodeGenerator::generatePostProcessMain(fs, ShaderStage::FRAGMENT);
+    CodeGenerator::generateCommonEpilog(fs);
     return fs.c_str();
 }
 
-void ShaderPostProcessGenerator::generatePostProcessStageDefines(utils::io::sstream& vs,
-        CodeGenerator const& cg, PostProcessStage variant) noexcept {
-    cg.generateDefine(vs, "POST_PROCESS_TONE_MAPPING_OPAQUE",
-            uint32_t(PostProcessStage::TONE_MAPPING_OPAQUE));
-    cg.generateDefine(vs, "POST_PROCESS_TONE_MAPPING_TRANSLUCENT",
-            uint32_t(PostProcessStage::TONE_MAPPING_TRANSLUCENT));
-    cg.generateDefine(vs, "POST_PROCESS_ANTI_ALIASING_OPAQUE",
-            uint32_t(PostProcessStage::ANTI_ALIASING_OPAQUE));
-    cg.generateDefine(vs, "POST_PROCESS_ANTI_ALIASING_TRANSLUCENT",
-            uint32_t(PostProcessStage::ANTI_ALIASING_TRANSLUCENT));
-    switch (variant) {
-        case PostProcessStage::TONE_MAPPING_OPAQUE:
-            cg.generateDefine(vs, "POST_PROCESS_STAGE", "POST_PROCESS_TONE_MAPPING_OPAQUE");
-            cg.generateDefine(vs, "POST_PROCESS_TONE_MAPPING",  1u);
-            cg.generateDefine(vs, "POST_PROCESS_ANTI_ALIASING", 0u);
-            cg.generateDefine(vs, "POST_PROCESS_OPAQUE",        1u);
-            break;
-        case PostProcessStage::TONE_MAPPING_TRANSLUCENT:
-            cg.generateDefine(vs, "POST_PROCESS_STAGE", "POST_PROCESS_TONE_MAPPING_TRANSLUCENT");
-            cg.generateDefine(vs, "POST_PROCESS_TONE_MAPPING",  1u);
-            cg.generateDefine(vs, "POST_PROCESS_ANTI_ALIASING", 0u);
-            cg.generateDefine(vs, "POST_PROCESS_OPAQUE",        0u);
-            break;
-        case PostProcessStage::ANTI_ALIASING_OPAQUE:
-            cg.generateDefine(vs, "POST_PROCESS_STAGE", "POST_PROCESS_ANTI_ALIASING_OPAQUE");
-            cg.generateDefine(vs, "POST_PROCESS_TONE_MAPPING",  0u);
-            cg.generateDefine(vs, "POST_PROCESS_ANTI_ALIASING", 1u);
-            cg.generateDefine(vs, "POST_PROCESS_OPAQUE",        1u);
-            break;
-        case PostProcessStage::ANTI_ALIASING_TRANSLUCENT:
-            cg.generateDefine(vs, "POST_PROCESS_STAGE", "POST_PROCESS_ANTI_ALIASING_TRANSLUCENT");
-            cg.generateDefine(vs, "POST_PROCESS_TONE_MAPPING",  0u);
-            cg.generateDefine(vs, "POST_PROCESS_ANTI_ALIASING", 1u);
-            cg.generateDefine(vs, "POST_PROCESS_OPAQUE",        0u);
-            break;
-    }
+bool ShaderGenerator::hasSkinningOrMorphing(
+        filament::Variant variant, MaterialBuilder::FeatureLevel featureLevel) noexcept {
+    return variant.hasSkinningOrMorphing()
+            // HACK(exv): Ignore skinning/morphing variant when targeting ESSL 1.0. We should
+            // either properly support skinning on FL0 or build a system in matc which allows
+            // the set of included variants to differ per-feature level.
+            && featureLevel > MaterialBuilder::FeatureLevel::FEATURE_LEVEL_0;
 }
 
+bool ShaderGenerator::hasStereo(
+        filament::Variant variant, MaterialBuilder::FeatureLevel featureLevel) noexcept {
+    return variant.hasStereo()
+            // HACK(exv): Ignore stereo variant when targeting ESSL 1.0. We should properly build a
+            // system in matc which allows the set of included variants to differ per-feature level.
+            && featureLevel > MaterialBuilder::FeatureLevel::FEATURE_LEVEL_0;
+}
+
+backend::DescriptorSetLayout ShaderGenerator::getPerViewDescriptorSetLayoutWithVariant(
+        filament::Variant variant,
+        UserVariantFilterMask variantFilter,
+        bool isLit,
+        ReflectionMode reflectionMode,
+        RefractionMode refractionMode) {
+    if (filament::Variant::isValidDepthVariant(variant)) {
+        return descriptor_sets::getDepthVariantLayout();
+    }
+    if (filament::Variant::isSSRVariant(variant)) {
+        return descriptor_sets::getSsrVariantLayout();
+    }
+    // We need to filter out all the descriptors not included in the "resolved" layout below
+    return descriptor_sets::getPerViewDescriptorSetLayout(
+            MaterialDomain::SURFACE, variantFilter,
+            isLit, reflectionMode, refractionMode);
+}
 
 } // namespace filament

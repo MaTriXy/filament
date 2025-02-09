@@ -16,227 +16,270 @@
 
 #include <utils/ostream.h>
 
-#include <string>
+#include "ostream_.h"
+
 #include <utils/compiler.h>
 
-#include <iostream>
+#define UTILS_PRIVATE_IMPLEMENTATION_NON_COPYABLE
+#include <utils/PrivateImplementation-impl.h>
 
-#include <utils/trap.h>
+#include <algorithm>
+#include <mutex>
+#include <string>
+#include <string_view>
+#include <utility>
 
-namespace utils {
+#include <stdlib.h>
+#include <stdarg.h>
+#include <string.h>
 
-namespace io {
+template class utils::PrivateImplementation<utils::io::ostream_>;
+
+namespace utils::io {
 
 ostream::~ostream() = default;
 
-ostream::Buffer::Buffer() noexcept {
-    constexpr size_t initialSize = 1024;
-    buffer = (char*) malloc(initialSize);
-    assert(buffer);
-    // Set the first byte to 0 as this buffer might be used as a C string.
-    buffer[0] = 0;
-    curr = buffer;
-    capacity = initialSize;
-    size = initialSize;
+void ostream::setConsumer(ConsumerCallback consumer, void* user) noexcept {
+    auto* const pImpl = mImpl;
+    std::lock_guard const lock(pImpl->mLock);
+    pImpl->mConsumer = { consumer, user };
 }
 
-ostream::Buffer::~Buffer() noexcept {
-    free(buffer);
-}
-
-UTILS_NOINLINE
-void ostream::Buffer::advance(ssize_t n) noexcept {
-    if (n > 0) {
-        size_t written = n < size ? size_t(n) : size;
-        curr += written;
-        size -= written;
-    }
-}
-
-UTILS_NOINLINE
-void ostream::Buffer::resize(size_t newSize) noexcept {
-    size_t offset = curr - buffer;
-    buffer = (char*) realloc(buffer, newSize);
-    assert(buffer);
-    capacity = newSize;
-    curr = buffer + offset;
-    size = capacity - offset;
-}
-
-UTILS_NOINLINE
-void ostream::Buffer::reset() noexcept {
-    curr = buffer;
-    size = capacity;
-}
-
-const char* ostream::getFormat(ostream::type t) const noexcept {
-    switch (t) {
-        case type::SHORT:       return mShowHex ? "0x%hx"  : "%hd";
-        case type::USHORT:      return mShowHex ? "0x%hx"  : "%hu";
-        case type::CHAR:        return "%c";
-        case type::UCHAR:       return "%c";
-        case type::INT:         return mShowHex ? "0x%x"   : "%d";
-        case type::UINT:        return mShowHex ? "0x%x"   : "%u";
-        case type::LONG:        return mShowHex ? "0x%lx"  : "%ld";
-        case type::ULONG:       return mShowHex ? "0x%lx"  : "%lu";
-        case type::LONG_LONG:   return mShowHex ? "0x%llx" : "%lld";
-        case type::ULONG_LONG:  return mShowHex ? "0x%llx" : "%llu";
-        case type::DOUBLE:      return "%f";
-        case type::LONG_DOUBLE: return "%Lf";
-    }
-}
-
-void ostream::growBufferIfNeeded(size_t s) noexcept {
-    Buffer& buf = getBuffer();
-    const size_t used = buf.curr - buf.buffer;  // space currently used in buffer
-    if (UTILS_UNLIKELY(buf.size < s)) {
-        size_t newSize = buf.capacity * 2;
-        while (UTILS_UNLIKELY((newSize - used) < s)) {
-            newSize *= 2;
+ostream& flush(ostream& s) noexcept {
+    auto* const pImpl = s.mImpl;
+    pImpl->mLock.lock();
+    auto const callback = pImpl->mConsumer;
+    if (UTILS_UNLIKELY(callback.first)) {
+        auto& buf = s.getBuffer();
+        char const* const data = buf.get();
+        if (UTILS_LIKELY(data)) {
+            char* const str = strdup(data);
+            buf.reset();
+            pImpl->mLock.unlock();
+            // call ConsumerCallback without lock held
+            callback.first(callback.second, str);
+            ::free(str);
+            return s;
         }
-        buf.resize(newSize);
-        assert(buf.size >= s);
     }
+    pImpl->mLock.unlock();
+
+    return s.flush();
+}
+
+ostream::Buffer& ostream::getBuffer() noexcept {
+    return mImpl->mData;
+}
+
+ostream::Buffer const& ostream::getBuffer() const noexcept {
+    return mImpl->mData;
+}
+
+const char* ostream::getFormat(type t) const noexcept {
+    switch (t) {
+        case SHORT:       return mImpl->mShowHex ? "0x%hx"  : "%hd";
+        case USHORT:      return mImpl->mShowHex ? "0x%hx"  : "%hu";
+        case CHAR:        return "%c";
+        case UCHAR:       return "%c";
+        case INT:         return mImpl->mShowHex ? "0x%x"   : "%d";
+        case UINT:        return mImpl->mShowHex ? "0x%x"   : "%u";
+        case LONG:        return mImpl->mShowHex ? "0x%lx"  : "%ld";
+        case ULONG:       return mImpl->mShowHex ? "0x%lx"  : "%lu";
+        case LONG_LONG:   return mImpl->mShowHex ? "0x%llx" : "%lld";
+        case ULONG_LONG:  return mImpl->mShowHex ? "0x%llx" : "%llu";
+        case FLOAT:       return "%.9g";
+        case DOUBLE:      return "%.17g";
+        case LONG_DOUBLE: return "%Lf";
+    }
+}
+
+UTILS_NOINLINE
+ostream& ostream::print(const char* format, ...) noexcept {
+    va_list args0;
+    va_list args1;
+
+    // figure out how much size to we need
+    va_start(args0, format);
+    va_copy(args1, args0);
+    ssize_t const s = vsnprintf(nullptr, 0, format, args0);
+    va_end(args0);
+
+
+    { // scope for the lock
+        std::lock_guard const lock(mImpl->mLock);
+
+        Buffer& buf = getBuffer();
+
+        // grow the buffer to the needed size
+        auto[curr, size] = buf.grow(s + 1); // +1 to include the null-terminator
+
+        // print into the buffer
+        vsnprintf(curr, size, format, args1);
+
+        // advance the buffer
+        buf.advance(s);
+    }
+
+    va_end(args1);
+
+    return *this;
 }
 
 ostream& ostream::operator<<(short value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, getFormat(type::SHORT), value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, getFormat(type::SHORT), value));
-    return *this;
+    const char* format = getFormat(SHORT);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(unsigned short value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, getFormat(type::USHORT), value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, getFormat(type::USHORT), value));
-    return *this;
+    const char* format = getFormat(USHORT);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(char value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, getFormat(type::CHAR), value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, getFormat(type::CHAR), value));
-    return *this;
+    const char* format = getFormat(CHAR);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(unsigned char value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, getFormat(type::UCHAR), value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, getFormat(type::UCHAR), value));
-    return *this;
+    const char* format = getFormat(UCHAR);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(int value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, getFormat(type::INT), value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, getFormat(type::INT), value));
-    return *this;
+    const char* format = getFormat(INT);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(unsigned int value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, getFormat(type::UINT), value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, getFormat(type::UINT), value));
-    return *this;
+    const char* format = getFormat(UINT);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(long value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, getFormat(type::LONG), value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, getFormat(type::LONG), value));
-    return *this;
+    const char* format = getFormat(LONG);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(unsigned long value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, getFormat(type::ULONG), value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, getFormat(type::ULONG), value));
-    return *this;
+    const char* format = getFormat(ULONG);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(long long value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, getFormat(type::LONG_LONG), value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, getFormat(type::LONG_LONG), value));
-    return *this;
+    const char* format = getFormat(LONG_LONG);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(unsigned long long value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, getFormat(type::ULONG_LONG), value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, getFormat(type::ULONG_LONG), value));
-    return *this;
+    const char* format = getFormat(ULONG_LONG);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(float value) noexcept {
-    return operator<<((double)value);
+    const char* format = getFormat(FLOAT);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(double value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, getFormat(type::DOUBLE), value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, getFormat(type::DOUBLE), value));
-    return *this;
+    const char* format = getFormat(DOUBLE);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(long double value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, getFormat(type::LONG_DOUBLE), value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, getFormat(type::LONG_DOUBLE), value));
-    return *this;
+    const char* format = getFormat(LONG_DOUBLE);
+    return print(format, value);
 }
 
 ostream& ostream::operator<<(bool value) noexcept {
-    return operator<<((int)value);
+    return operator<<(value ? "true" : "false");
 }
 
 ostream& ostream::operator<<(const char* string) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, "%s", string);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, "%s", string));
-    return *this;
+    return print("%s", string);
 }
 
 ostream& ostream::operator<<(const unsigned char* string) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, "%s", string);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, "%s", string));
-    return *this;
+    return print("%s", string);
 }
 
 ostream& ostream::operator<<(const void* value) noexcept {
-    Buffer& buf = getBuffer();
-    size_t s = snprintf(nullptr, 0, "%p", value);
-    growBufferIfNeeded(s + 1); // +1 to include the null-terminator
-    buf.advance(snprintf(buf.curr, buf.size, "%p", value));
-    return *this;
+    return print("%p", value);
+}
+
+ostream& ostream::operator<<(std::string const& s) noexcept {
+    return print("%s", s.c_str());
+}
+
+ostream& ostream::operator<<(std::string_view const& s) noexcept {
+    return print("%.*s", s.length(), s.data());
 }
 
 ostream& ostream::hex() noexcept {
-    mShowHex = true;
+    mImpl->mShowHex = true;
     return *this;
 }
 
 ostream& ostream::dec() noexcept {
-    mShowHex = false;
+    mImpl->mShowHex = false;
     return *this;
 }
 
-} // namespace io
+// ------------------------------------------------------------------------------------------------
 
-} // namespace utils
+// don't allocate any memory before we actually use the log because one of these is created
+// per thread.
+ostream::Buffer::Buffer() noexcept = default;
+
+ostream::Buffer::~Buffer() noexcept {
+    // note: on Android pre r14, thread_local destructors are not called
+    free(buffer);
+}
+
+void ostream::Buffer::advance(ssize_t n) noexcept {
+    if (n > 0) {
+        size_t const written = n < sizeRemaining ? size_t(n) : sizeRemaining;
+        curr += written;
+        sizeRemaining -= written;
+    }
+}
+
+void ostream::Buffer::reserve(size_t newCapacity) noexcept {
+    size_t const offset = curr - buffer;
+    if (buffer == nullptr) {
+        buffer = (char*)malloc(newCapacity);
+    } else {
+        buffer = (char*)realloc(buffer, newCapacity);
+    }
+    assert(buffer);
+    capacity = newCapacity;
+    curr = buffer + offset;
+    sizeRemaining = capacity - offset;
+}
+
+void ostream::Buffer::reset() noexcept {
+    // aggressively shrink the buffer
+    if (capacity > 1024) {
+        free(buffer);
+        buffer = (char*)malloc(1024);
+        capacity = 1024;
+    }
+    curr = buffer;
+    sizeRemaining = capacity;
+}
+
+size_t ostream::Buffer::length() const noexcept {
+    return curr - buffer;
+}
+
+std::pair<char*, size_t> ostream::Buffer::grow(size_t s) noexcept {
+    if (UTILS_UNLIKELY(sizeRemaining < s)) {
+        size_t const usedSize = curr - buffer;
+        size_t const neededCapacity = usedSize + s;
+        size_t const newCapacity = std::max(size_t(32), (neededCapacity * 3 + 1) / 2); // 32 bytes minimum
+        reserve(newCapacity);
+        assert(sizeRemaining >= s);
+    }
+    return { curr, sizeRemaining };
+}
+
+} // namespace utils::io

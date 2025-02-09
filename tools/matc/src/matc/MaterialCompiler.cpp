@@ -16,19 +16,30 @@
 
 #include "MaterialCompiler.h"
 
-#include <functional>
 #include <memory>
 #include <iostream>
+#include <utility>
 
 #include <filamat/MaterialBuilder.h>
 
 #include <filamat/Enums.h>
 
+#include <utils/Log.h>
+#include <utils/JobSystem.h>
+
+#include "DirIncluder.h"
 #include "MaterialLexeme.h"
 #include "MaterialLexer.h"
 #include "JsonishLexer.h"
 #include "JsonishParser.h"
 #include "ParametersProcessor.h"
+
+#include <GlslangToSpv.h>
+#include "glslang/Include/intermediate.h"
+
+#include "sca/builtinResource.h"
+
+#include <smolv.h>
 
 using namespace utils;
 using namespace filamat;
@@ -39,17 +50,20 @@ namespace matc {
 static constexpr const char* CONFIG_KEY_MATERIAL= "material";
 static constexpr const char* CONFIG_KEY_VERTEX_SHADER = "vertex";
 static constexpr const char* CONFIG_KEY_FRAGMENT_SHADER = "fragment";
+static constexpr const char* CONFIG_KEY_COMPUTE_SHADER = "compute";
 static constexpr const char* CONFIG_KEY_TOOL = "tool";
 
 MaterialCompiler::MaterialCompiler() {
     mConfigProcessor[CONFIG_KEY_MATERIAL] = &MaterialCompiler::processMaterial;
     mConfigProcessor[CONFIG_KEY_VERTEX_SHADER] = &MaterialCompiler::processVertexShader;
     mConfigProcessor[CONFIG_KEY_FRAGMENT_SHADER] = &MaterialCompiler::processFragmentShader;
+    mConfigProcessor[CONFIG_KEY_COMPUTE_SHADER] = &MaterialCompiler::processComputeShader;
     mConfigProcessor[CONFIG_KEY_TOOL] = &MaterialCompiler::ignoreLexeme;
 
     mConfigProcessorJSON[CONFIG_KEY_MATERIAL] = &MaterialCompiler::processMaterialJSON;
     mConfigProcessorJSON[CONFIG_KEY_VERTEX_SHADER] = &MaterialCompiler::processVertexShaderJSON;
     mConfigProcessorJSON[CONFIG_KEY_FRAGMENT_SHADER] = &MaterialCompiler::processFragmentShaderJSON;
+    mConfigProcessorJSON[CONFIG_KEY_COMPUTE_SHADER] = &MaterialCompiler::processComputeShaderJSON;
     mConfigProcessorJSON[CONFIG_KEY_TOOL] = &MaterialCompiler::ignoreLexemeJSON;
 }
 
@@ -60,7 +74,7 @@ bool MaterialCompiler::processMaterial(const MaterialLexeme& jsonLexeme,
     jlexer.lex(jsonLexeme.getStart(), jsonLexeme.getSize(), jsonLexeme.getLine());
 
     JsonishParser parser(jlexer.getLexemes());
-    std::unique_ptr<JsonishObject> json = parser.parse();
+    std::unique_ptr<JsonishObject> const json = parser.parse();
 
     if (json == nullptr) {
         std::cerr << "JsonishParser error (see above)." << std::endl;
@@ -68,7 +82,7 @@ bool MaterialCompiler::processMaterial(const MaterialLexeme& jsonLexeme,
     }
 
     ParametersProcessor parametersProcessor;
-    bool ok = parametersProcessor.process(builder, *json);
+    bool const ok = parametersProcessor.process(builder, *json);
     if (!ok) {
         std::cerr << "Error while processing material." << std::endl;
         return false;
@@ -80,25 +94,33 @@ bool MaterialCompiler::processMaterial(const MaterialLexeme& jsonLexeme,
 bool MaterialCompiler::processVertexShader(const MaterialLexeme& lexeme,
         MaterialBuilder& builder) const noexcept {
 
-    MaterialLexeme trimmedLexeme = lexeme.trimBlockMarkers();
-    std::string shaderStr = trimmedLexeme.getStringValue();
+    MaterialLexeme const trimmedLexeme = lexeme.trimBlockMarkers();
+    std::string const shaderStr = trimmedLexeme.getStringValue();
 
-    builder.materialVertex(shaderStr.c_str(), trimmedLexeme.getLine() + 1);
+    // getLine() returns a line number, with 1 being the first line, but .material wants a 0-based
+    // line number offset, where 0 is the first line.
+    builder.materialVertex(shaderStr.c_str(), trimmedLexeme.getLine() - 1);
     return true;
 }
 
 bool MaterialCompiler::processFragmentShader(const MaterialLexeme& lexeme,
         MaterialBuilder& builder) const noexcept {
 
-    MaterialLexeme trimmedLexeme = lexeme.trimBlockMarkers();
-    std::string shaderStr = trimmedLexeme.getStringValue();
+    MaterialLexeme const trimmedLexeme = lexeme.trimBlockMarkers();
+    std::string const shaderStr = trimmedLexeme.getStringValue();
 
-    builder.material(shaderStr.c_str(), trimmedLexeme.getLine() + 1);
+    // getLine() returns a line number, with 1 being the first line, but .material wants a 0-based
+    // line number offset, where 0 is the first line.
+    builder.material(shaderStr.c_str(), trimmedLexeme.getLine() - 1);
     return true;
 }
 
-bool MaterialCompiler::ignoreLexeme(const MaterialLexeme& lexeme,
+bool MaterialCompiler::processComputeShader(const MaterialLexeme& lexeme,
         MaterialBuilder& builder) const noexcept {
+    return MaterialCompiler::processFragmentShader(lexeme, builder);
+}
+
+bool MaterialCompiler::ignoreLexeme(const MaterialLexeme&, MaterialBuilder&) const noexcept {
     return true;
 }
 
@@ -119,7 +141,7 @@ bool MaterialCompiler::processMaterialJSON(const JsonishValue* value,
     }
 
     ParametersProcessor parametersProcessor;
-    bool ok = parametersProcessor.process(builder, *value->toJsonObject());
+    bool const ok = parametersProcessor.process(builder, *value->toJsonObject());
     if (!ok) {
         std::cerr << "Error while processing material." << std::endl;
         return false;
@@ -167,14 +189,33 @@ bool MaterialCompiler::processFragmentShaderJSON(const JsonishValue* value,
     builder.material(value->toJsonString()->getString().c_str());
     return true;
 }
+bool MaterialCompiler::processComputeShaderJSON(const JsonishValue* value,
+        filamat::MaterialBuilder& builder) const noexcept {
+
+    if (!value) {
+        std::cerr << "'compute' block does not have a value, one is required." << std::endl;
+        return false;
+    }
+
+    if (value->getType() != JsonishValue::STRING) {
+        std::cerr << "'compute' block has an invalid type: "
+                << JsonishValue::typeToString(value->getType())
+                << ", should be STRING."
+                << std::endl;
+        return false;
+    }
+
+    builder.material(value->toJsonString()->getString().c_str());
+    return true;
+}
 
 bool MaterialCompiler::ignoreLexemeJSON(const JsonishValue*,
-        filamat::MaterialBuilder& builder) const noexcept {
+        filamat::MaterialBuilder&) const noexcept {
     return true;
 }
 
 static bool reflectParameters(const MaterialBuilder& builder) {
-    uint8_t count = builder.getParameterCount();
+    uint8_t const count = builder.getParameterCount();
     const MaterialBuilder::ParameterList& parameters = builder.getParameters();
 
     std::cout << "{" << std::endl;
@@ -183,17 +224,26 @@ static bool reflectParameters(const MaterialBuilder& builder) {
         const MaterialBuilder::Parameter& parameter = parameters[i];
         std::cout << "    {" << std::endl;
         std::cout << R"(      "name": ")" << parameter.name.c_str() << "\"," << std::endl;
-        if (parameter.isSampler) {
+        if (parameter.isSampler()) {
             std::cout << R"(      "type": ")" <<
                       Enums::toString(parameter.samplerType) << "\"," << std::endl;
             std::cout << R"(      "format": ")" <<
-                      Enums::toString(parameter.samplerFormat) << "\"," << std::endl;
+                      Enums::toString(parameter.format) << "\"," << std::endl;
             std::cout << R"(      "precision": ")" <<
-                      Enums::toString(parameter.samplerPrecision) << "\"" << std::endl;
-        } else {
+                      Enums::toString(parameter.precision) << "\"," << std::endl;
+            std::cout << R"(      "multisample": ")" <<
+                      (parameter.multisample ? "true" : "false")<< "\"" << std::endl;
+        } else if (parameter.isUniform()) {
             std::cout << R"(      "type": ")" <<
                       Enums::toString(parameter.uniformType) << "\"," << std::endl;
             std::cout << R"(      "size": ")" << parameter.size << "\"" << std::endl;
+        } else if (parameter.isSubpass()) {
+            std::cout << R"(      "type": ")" <<
+                      Enums::toString(parameter.subpassType) << "\"," << std::endl;
+            std::cout << R"(      "format": ")" <<
+                      Enums::toString(parameter.format) << "\"," << std::endl;
+            std::cout << R"(      "precision": ")" <<
+                      Enums::toString(parameter.precision) << "\"" << std::endl;
         }
         std::cout << "    }";
         if (i < count - 1) std::cout << ",";
@@ -242,9 +292,82 @@ bool MaterialCompiler::run(const Config& config) {
     Config::Input* input = config.getInput();
     ssize_t size = input->open();
     if (size <= 0) {
+        std::cerr << "Input file is empty" << std::endl;
         return false;
     }
-    auto buffer = input->read();
+    std::unique_ptr<const char[]> buffer = input->read();
+
+    // Perform template substitutions in two passes: the first pass determines the size of the
+    // modified buffer and checks for errors. The second pass rebuilds the buffer.
+    const auto& templateMap = config.getTemplateMap();
+    ssize_t modifiedSize = size;
+    bool modified = false;
+    if (!templateMap.empty()) {
+        for (ssize_t cursor = 0, n = size - 1; cursor < n; ++cursor) {
+            if (UTILS_LIKELY(buffer[cursor] != '$' || buffer[cursor + 1] != '{')) {
+                continue;
+            }
+            cursor += 2;
+            ssize_t endCursor = cursor;
+            while (true) {
+                if (endCursor == size) {
+                    std::cerr << "Unexpected end of file" << std::endl;
+                    return false;
+                }
+                if (buffer[endCursor] == '}') {
+                    break;
+                }
+                ++endCursor;
+            }
+            // At this point, cursor points to the F in ${FOO} and endCursor points to the }.
+            std::string_view const macro(&buffer[cursor], endCursor - cursor);
+            if (auto iter = templateMap.find(macro); iter != templateMap.end()) {
+                modifiedSize -= macro.size() + 3;
+                modifiedSize += iter->second.size();
+            } else {
+                std::cerr << "Undefined template macro:" << macro << std::endl;
+                return false;
+            }
+            modified = true;
+        }
+    }
+
+    // Second pass of template substitution allocates a new buffer and performs the actual
+    // substitutions. Since the first pass did not return early, we can safely assume no errors.
+    if (modified) {
+        auto modifiedBuffer = std::make_unique<char[]>(modifiedSize);
+        for (ssize_t cursor = 0, dstCursor = 0; cursor < size; ++cursor) {
+            const ssize_t next = cursor + 1;
+            if (UTILS_LIKELY(buffer[cursor] != '$' || next >= size || buffer[next] != '{')) {
+                modifiedBuffer[dstCursor++] = buffer[cursor];
+                continue;
+            }
+            cursor += 2;
+            ssize_t endCursor = cursor;
+            while (buffer[endCursor] != '}') ++endCursor;
+            // At this point, cursor points to the F in ${FOO} and endCursor points to the }.
+            std::string_view const macro(&buffer[cursor], endCursor - cursor);
+            const std::string& val = templateMap.find(macro)->second;
+            for (size_t i = 0, n = val.size(); i < n; ++i, ++dstCursor) {
+                modifiedBuffer[dstCursor] = val[i];
+            }
+            cursor = endCursor;
+        }
+        buffer = std::move(modifiedBuffer);
+        size = modifiedSize;
+    }
+
+    utils::Path const materialFilePath = utils::Path(input->getName()).getAbsolutePath();
+    assert(materialFilePath.isFile());
+
+    if (config.rawShaderMode()) {
+        const std::string extension = materialFilePath.getExtension();
+        glslang::InitializeProcess();
+        bool const success = compileRawShader(buffer.get(), size, config.isDebug(), config.getOutput(),
+                extension.c_str());
+        glslang::FinalizeProcess();
+        return success;
+    }
 
     MaterialBuilder::init();
     MaterialBuilder builder;
@@ -260,6 +383,12 @@ bool MaterialCompiler::run(const Config& config) {
         return false;
     }
 
+    if (builder.getFeatureLevel() > config.getFeatureLevel()) {
+        std::cerr << "Material feature level (" << +builder.getFeatureLevel() << ") is higher "
+                "than maximum allowed (" << +config.getFeatureLevel() << ")" << std::endl;
+        return false;
+    }
+
     switch (config.getReflectionTarget()) {
         case Config::Metadata::NONE:
             break;
@@ -267,16 +396,41 @@ bool MaterialCompiler::run(const Config& config) {
             return reflectParameters(builder);
     }
 
+    // Set the root include directory to the directory containing the material file.
+    DirIncluder includer;
+    includer.setIncludeDirectory(materialFilePath.getParent());
+
     builder
+        .noSamplerValidation(config.noSamplerValidation())
+        .includeEssl1(config.includeEssl1())
+        .includeCallback(includer)
+        .fileName(materialFilePath.getName().c_str())
         .platform(config.getPlatform())
         .targetApi(config.getTargetApi())
         .optimization(config.getOptimizationLevel())
         .printShaders(config.printShaders())
+        .saveRawVariants(config.saveRawVariants())
+        .generateDebugInfo(config.isDebug())
         .variantFilter(config.getVariantFilter() | builder.getVariantFilter());
 
+    for (const auto& define : config.getDefines()) {
+        builder.shaderDefine(define.first.c_str(), define.second.c_str());
+    }
+
+    if (!processMaterialParameters(builder, config)) {
+        std::cerr << "Error while processing material parameters." << std::endl;
+        return false;
+    }
+
+    JobSystem js;
+    js.adopt();
+
     // Write builder.build() to output.
-    Package package = builder.build();
+    Package const package = builder.build(js);
+
+    js.emancipate();
     MaterialBuilder::shutdown();
+
     if (!package.isValid()) {
         std::cerr << "Could not compile material " << input->getName() << std::endl;
         return false;
@@ -326,9 +480,9 @@ bool MaterialCompiler::parseMaterialAsJSON(const char* buffer, size_t size,
         }
 
         // Retrieve function member pointer
-        MaterialConfigProcessorJSON p =  mConfigProcessorJSON.at(key);
+        MaterialConfigProcessorJSON const p =  mConfigProcessorJSON.at(key);
         // Call it.
-        bool ok = (*this.*p)(entry.second, builder);
+        bool const ok = (*this.*p)(entry.second, builder);
         if (!ok) {
             std::cerr << "Error while processing block with key:'" << key << "'" << std::endl;
             return false;
@@ -397,7 +551,7 @@ bool MaterialCompiler::parseMaterial(const char* buffer, size_t size,
                 return false;
             }
         } else if (lexeme.getType() == MaterialType::BLOCK) {
-            MaterialConfigProcessor processor = mConfigProcessor.at(identifier);
+            MaterialConfigProcessor const processor = mConfigProcessor.at(identifier);
             if (!(*this.*processor)(lexeme, builder)) {
                 std::cerr << "Error while processing block with key:'" << identifier << "'"
                           << std::endl;
@@ -406,6 +560,81 @@ bool MaterialCompiler::parseMaterial(const char* buffer, size_t size,
         }
     }
     return true;
+}
+
+bool MaterialCompiler::compileRawShader(const char* glsl, size_t size, bool isDebug,
+        Config::Output* output, const char* ext) const noexcept {
+    using namespace glslang;
+    using namespace filament::backend;
+    using SpirvBlob = std::vector<uint32_t>;
+
+    const EShLanguage shLang = !strcmp(ext, "vs") ? EShLangVertex : EShLangFragment;
+
+    // Add a terminating null by making a copy of the GLSL string.
+    std::string const nullTerminated(glsl, size);
+    glsl = nullTerminated.c_str();
+
+    TShader tShader(shLang);
+    tShader.setStrings(&glsl, 1);
+
+    const int version = 110;
+    EShMessages msg = EShMessages::EShMsgDefault;
+    msg = (EShMessages) (EShMessages::EShMsgVulkanRules | EShMessages::EShMsgSpvRules);
+
+    tShader.setAutoMapBindings(true);
+
+    bool const parseOk = tShader.parse(&DefaultTBuiltInResource, version, false, msg);
+    if (!parseOk) {
+        std::cerr << "ERROR: Unable to parse " << ext << ":" << std::endl;
+        std::cerr << tShader.getInfoLog() << std::endl;
+        return false;
+    }
+
+    // Even though we only have a single shader stage, linking is still necessary to finalize
+    // SPIR-V types
+    TProgram program;
+    program.addShader(&tShader);
+    bool const linkOk = program.link(msg);
+    if (!linkOk) {
+        std::cerr << "ERROR: link failed " << std::endl << tShader.getInfoLog() << std::endl;
+        return false;
+    }
+
+    SpirvBlob spirv;
+    SpvOptions options;
+    GlslangToSpv(*tShader.getIntermediate(), spirv, &options);
+
+    if (spirv.empty()) {
+        std::cerr << "SPIRV blob is empty." << std::endl;
+        return false;
+    }
+
+    if (!output->open()) {
+        std::cerr << "Unable to create SPIRV file." << std::endl;
+        return false;
+    }
+
+    const uint32_t flags = isDebug ? 0 : smolv::kEncodeFlagStripDebugInfo;
+
+    smolv::ByteArray compressed;
+    if (!smolv::Encode(spirv.data(), spirv.size() * 4, compressed, flags)) {
+        utils::slog.e << "Error with SPIRV compression" << utils::io::endl;
+    }
+
+    output->write(compressed.data(), compressed.size());
+    output->close();
+
+    return true;
+}
+
+bool MaterialCompiler::processMaterialParameters(filamat::MaterialBuilder& builder,
+        const Config& config) const {
+    ParametersProcessor parametersProcessor;
+    bool ok = true;
+    for (const auto& param : config.getMaterialParameters()) {
+        ok &= parametersProcessor.process(builder, param.first, param.second);
+    }
+    return ok;
 }
 
 } // namespace matc

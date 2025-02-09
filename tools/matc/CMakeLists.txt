@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.19)
 
 # ==================================================================================================
 # Library
@@ -9,7 +9,7 @@ set(TARGET matlang)
 # ==================================================================================================
 # Sources and headers
 # ==================================================================================================
-file(GLOB_RECURSE HDRS
+set(HDRS
         src/matc/CommandlineConfig.h
         src/matc/Compiler.h
         src/matc/Config.h
@@ -22,7 +22,7 @@ file(GLOB_RECURSE HDRS
         src/matc/MaterialLexeme.h
         src/matc/MaterialLexer.h
         src/matc/ParametersProcessor.h
-        src/matc/PostprocessMaterialCompiler.h
+        src/matc/DirIncluder.h
         )
 
 set(SRCS
@@ -33,7 +33,7 @@ set(SRCS
         src/matc/MaterialCompiler.cpp
         src/matc/MaterialLexer.cpp
         src/matc/ParametersProcessor.cpp
-        src/matc/PostprocessMaterialCompiler.cpp
+        src/matc/DirIncluder.cpp
         )
 
 # ==================================================================================================
@@ -44,7 +44,8 @@ add_library(${TARGET} STATIC ${SRCS} ${HDRS})
 target_include_directories(${TARGET} PUBLIC src)
 target_include_directories(${TARGET} PRIVATE ${filamat_SOURCE_DIR}/src)
 
-target_link_libraries(${TARGET} getopt filamat filabridge backend utils)
+target_link_libraries(${TARGET} getopt filamat filabridge utils)
+set_target_properties(${TARGET} PROPERTIES FOLDER Tools)
 
 # =================================================================================================
 # Licenses
@@ -70,6 +71,7 @@ set(SRCS src/main.cpp)
 # ==================================================================================================
 add_executable(${TARGET} ${SRCS} ${HDRS})
 target_link_libraries(${TARGET} matlang)
+set_target_properties(${TARGET} PROPERTIES FOLDER Tools)
 
 # ==================================================================================================
 # Installation
@@ -83,9 +85,14 @@ project(test_matc)
 set(TARGET test_matc)
 set(SRCS
     tests/test_matc.cpp
+    tests/test_includer.cpp
+    tests/TestMaterialCompiler.h
+    tests/test_compute_material.cpp
     tests/MockConfig.cpp
     tests/MockConfig.h)
 
 add_executable(${TARGET} ${SRCS})
 
 target_link_libraries(${TARGET} matlang gtest)
+
+set_target_properties(test_matc PROPERTIES FOLDER Tests)

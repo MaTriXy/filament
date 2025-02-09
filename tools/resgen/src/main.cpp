@@ -19,20 +19,27 @@
 #include <getopt/getopt.h>
 
 #include <algorithm>
+#include <cstdint>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
+#include <sstream>
 #include <string>
 #include <vector>
+
+#include <string.h>
 
 using namespace std;
 using namespace utils;
 
+static const char* g_jsonMagicString = "__RESGEN__";
 static const char* g_packageName = "resources";
 static const char* g_deployDir = ".";
 static bool g_keepExtension = false;
 static bool g_appendNull = false;
 static bool g_generateC = false;
+static bool g_quietMode = false;
+static bool g_embedJson = false;
 
 static const char* USAGE = R"TXT(
 RESGEN aggregates a sequence of binary blobs, each of which becomes a "resource" whose id
@@ -62,6 +69,11 @@ Options:
        Append a null terminator to each data blob
    --cfile, -c
        Generate xxd-style C file (useful for WebAssembly)
+   --json, -j
+       Embed a JSON string in the output that provides a summary
+       of all resource sizes and names. Useful for size analysis.
+    --quiet, -q
+        Suppress console output
 
 Examples:
     RESGEN -cp textures jungle.png beach.png
@@ -72,24 +84,16 @@ Examples:
 
 static const char* APPLE_ASM_TEMPLATE = R"ASM(
     .global _{RESOURCES}PACKAGE
-    .global _{RESOURCES}PACKAGE_SIZE
     .section __TEXT,__const
 _{RESOURCES}PACKAGE:
     .incbin "{resources}.bin"
-1:
-_{RESOURCES}PACKAGE_SIZE:
-    .int 1b - _{RESOURCES}PACKAGE
 )ASM";
 
 static const char* ASM_TEMPLATE = R"ASM(
     .global {RESOURCES}PACKAGE
-    .global {RESOURCES}PACKAGE_SIZE
     .section .rodata
 {RESOURCES}PACKAGE:
     .incbin "{resources}.bin"
-1:
-{RESOURCES}PACKAGE_SIZE:
-    .int 1b - {RESOURCES}PACKAGE
 )ASM";
 
 static void printUsage(const char* name) {
@@ -103,13 +107,18 @@ static void printUsage(const char* name) {
 }
 
 static void license() {
-    cout <<
-    #include "licenses/licenses.inc"
-    ;
+    static const char *license[] = {
+        #include "licenses/licenses.inc"
+        nullptr
+    };
+
+    const char **p = &license[0];
+    while (*p)
+        std::cout << *p++ << std::endl;
 }
 
 static int handleArguments(int argc, char* argv[]) {
-    static constexpr const char* OPTSTR = "hLp:x:ktc";
+    static constexpr const char* OPTSTR = "hLp:x:ktcqj";
     static const struct option OPTIONS[] = {
             { "help",                 no_argument, 0, 'h' },
             { "license",              no_argument, 0, 'L' },
@@ -118,6 +127,8 @@ static int handleArguments(int argc, char* argv[]) {
             { "keep",                 no_argument, 0, 'k' },
             { "text",                 no_argument, 0, 't' },
             { "cfile",                no_argument, 0, 'c' },
+            { "quiet",                no_argument, 0, 'q' },
+            { "json",                 no_argument, 0, 'j' },
             { 0, 0, 0, 0 }  // termination of the option list
     };
 
@@ -149,6 +160,12 @@ static int handleArguments(int argc, char* argv[]) {
             case 'c':
                 g_generateC = true;
                 break;
+            case 'q':
+                g_quietMode = true;
+                break;
+            case 'j':
+                g_embedJson = true;
+                break;
         }
     }
 
@@ -166,6 +183,9 @@ int main(int argc, char* argv[]) {
     vector<Path> inputPaths;
     for (int argIndex = optionIndex; argIndex < argc; ++argIndex) {
         inputPaths.emplace_back(argv[argIndex]);
+    }
+    if (g_embedJson) {
+        inputPaths.push_back(g_jsonMagicString);
     }
 
     std::string packageFile = g_packageName;
@@ -200,23 +220,19 @@ int main(int argc, char* argv[]) {
     for (size_t pos = asmstr.find(k2); pos != std::string::npos; pos = asmstr.find(k2, pos))
         asmstr.replace(pos, k2.length(), packageFile);
 
-    // Generate the Apple-friendly assembly language file.
+    // Open the Apple-friendly assembly language file.
     ofstream appleAsmStream(appleAsmPath.getPath());
     if (!appleAsmStream) {
         cerr << "Unable to open " << appleAsmPath << endl;
         exit(1);
     }
-    appleAsmStream << aasmstr << endl;
-    appleAsmStream.close();
 
-    // Generate the non-Apple assembly language file.
+    // Open the non-Apple assembly language file.
     ofstream asmStream(asmPath.getPath());
     if (!asmStream) {
         cerr << "Unable to open " << asmPath << endl;
         exit(1);
     }
-    asmStream << asmstr << endl;
-    asmStream.close();
 
     // Open the bin file for writing.
     ofstream binStream(binPath.getPath(), ios::binary);
@@ -225,19 +241,19 @@ int main(int argc, char* argv[]) {
         exit(1);
     }
 
-    // Open the header file for writing.
-    ofstream headerStream(headerPath.getPath());
-    if (!headerStream) {
-        cerr << "Unable to open " << headerPath << endl;
-        exit(1);
-    }
+    // Open the header file stream for writing.
+    ostringstream headerStream;
     headerStream << "#ifndef " << packagePrefix << "H_" << endl
             << "#define " << packagePrefix << "H_" << endl << endl
             << "#include <stdint.h>" << endl << endl
             << "extern \"C\" {" << endl
-            << "    extern const uint8_t " << package << "[];" << endl
-            << "    extern const int " << package << "_SIZE;" << endl
-            << "}" << endl << endl;
+            << "    extern const uint8_t " << package << "[];" << endl;
+
+    ostringstream headerMacros;
+    ostringstream xxdDefinitions;
+    ostringstream appleDataAsmStream;
+    ostringstream dataAsmStream;
+    ostringstream jsonStream;
 
     // Open the generated C file for writing.
     ofstream xxdStream;
@@ -250,15 +266,31 @@ int main(int argc, char* argv[]) {
         xxdStream << "#include <stdint.h>\n\nconst uint8_t " << package << "[] = {\n";
     }
 
-    // Iterate through each input file and consume its contents.
+    // Consume each input file and write it back out into the various output streams.
+    jsonStream << "{";
     size_t offset = 0;
     for (const auto& inPath : inputPaths) {
-        ifstream inStream(inPath.getPath(), ios::binary);
-        if (!inStream) {
-            cerr << "Unable to open " << inPath << endl;
-            exit(1);
+        vector<uint8_t> content;
+        if (inPath != g_jsonMagicString) {
+            ifstream inStream(inPath.getPath(), ios::binary);
+            if (!inStream) {
+                cerr << "Unable to open " << inPath << endl;
+                exit(1);
+            }
+            content = vector<uint8_t>((istreambuf_iterator<char>(inStream)), {});
+        } else {
+            // To finalize the JSON string, we replace the trailing comma with an end bracket and
+            // prefix it with the magic identifier and string size.
+            std::string jsonString = jsonStream.str();
+            jsonString[jsonString.size()-1] = '}';
+            ostringstream jsonBlob;
+            jsonBlob << g_jsonMagicString << "\0";
+            jsonBlob << jsonString.size() << "\0";
+            jsonBlob << jsonString;
+            jsonString = jsonBlob.str();
+            uint8_t const* jsonPtr = (uint8_t const*) jsonString.c_str();
+            content = vector<uint8_t>(jsonPtr, jsonPtr + jsonBlob.str().size());
         }
-        vector<uint8_t> content((istreambuf_iterator<char>(inStream)), {});
         if (g_appendNull) {
             content.push_back(0);
         }
@@ -272,14 +304,40 @@ int main(int argc, char* argv[]) {
         // Write the binary blob into the bin file.
         binStream.write((const char*) content.data(), content.size());
 
-        // Write the offset and size into the header file.
-        headerStream
-                << "#define " << prname << "_OFFSET " << offset << "\n"
-                << "#define " << prname << "_SIZE " << content.size() << "\n"
+        // Write the offsets and sizes.
+        headerMacros
                 << "#define " << prname << "_DATA (" << package << " + " << prname << "_OFFSET)\n";
+
+        headerStream
+                << "    extern int " << prname << "_OFFSET;\n"
+                << "    extern int " << prname << "_SIZE;\n";
+
+        dataAsmStream
+                << prname << "_OFFSET:\n"
+                << "    .int " << offset << "\n"
+                << prname << "_SIZE:\n"
+                << "    .int " << content.size() << "\n";
+
+        asmStream
+                << "    .global " << prname << "_OFFSET;\n"
+                << "    .global " << prname << "_SIZE;\n";
+
+        appleDataAsmStream
+                << "_" << prname << "_OFFSET:\n"
+                << "    .int " << offset << "\n"
+                << "_" << prname << "_SIZE:\n"
+                << "    .int " << content.size() << "\n";
+
+        appleAsmStream
+                << "    .global _" << prname << "_OFFSET;\n"
+                << "    .global _" << prname << "_SIZE;\n";
 
         // Write the xxd-style ASCII array, followed by a blank line.
         if (g_generateC) {
+            xxdDefinitions
+                    << "int " << prname << "_OFFSET = " << offset << ";\n"
+                    << "int " << prname << "_SIZE = " << content.size() << ";\n";
+
             xxdStream << "// " << rname << "\n";
             xxdStream << setfill('0') << hex;
             size_t i = 0;
@@ -293,21 +351,58 @@ int main(int argc, char* argv[]) {
             xxdStream << "\n";
         }
 
+        jsonStream << "\"" << rname << "\":" << content.size() << ",";
         offset += content.size();
     }
 
+    headerStream << "}\n" << headerMacros.str();
     headerStream << "\n#endif\n";
 
-    cout << "Generated files: "
-        << headerPath << " "
-        << asmPath << " "
-        << appleAsmPath << " "
-        << binPath;
-
-    if (g_generateC) {
-        xxdStream << "};\n\nconst int " << package << "_SIZE = " << dec << offset << ";\n";
-        cout << " " << xxdPath;
+    // To optimize builds, avoid overwriting the header file if nothing has changed.
+    bool headerIsDirty = true;
+    ifstream headerInStream(headerPath.getPath(), std::ifstream::ate);
+    string headerContents = headerStream.str();
+    if (headerInStream) {
+        long fileSize = static_cast<long>(headerInStream.tellg());
+        if (fileSize == headerContents.size()) {
+            vector<char> previous(fileSize);
+            headerInStream.seekg(0);
+            headerInStream.read(previous.data(), fileSize);
+            headerIsDirty = 0 != memcmp(previous.data(), headerContents.c_str(), fileSize);
+        }
     }
 
-    cout << endl;
+    if (headerIsDirty) {
+        ofstream headerOutStream(headerPath.getPath());
+        if (!headerOutStream) {
+            cerr << "Unable to open " << headerPath << endl;
+            exit(1);
+        }
+        headerOutStream << headerContents;
+    }
+
+    asmStream << asmstr << dataAsmStream.str() << endl;
+    asmStream.close();
+
+    appleAsmStream << aasmstr << appleDataAsmStream.str() << endl;
+    appleAsmStream.close();
+
+    if (!g_quietMode) {
+        cout << "Generated files: "
+            << headerPath << " "
+            << asmPath << " "
+            << appleAsmPath << " "
+            << binPath;
+    }
+
+    if (g_generateC) {
+        xxdStream << "};\n\n" << xxdDefinitions.str();
+        if (!g_quietMode) {
+            cout << " " << xxdPath;
+        }
+    }
+
+    if (!g_quietMode) {
+        cout << endl;
+    }
 }

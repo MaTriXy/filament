@@ -1,10 +1,16 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.19)
 project(bluegl ASM)
 
 set(TARGET              bluegl)
 set(PUBLIC_HDR_DIR      include)
 
-if (WIN32)
+if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+    set(IS_64_BIT TRUE)
+else()
+    set(IS_64_BIT FALSE)
+endif()
+
+if (WIN32 AND IS_64_BIT)
     enable_language(ASM_MASM)
     set_property(SOURCE src/BlueGLCoreWindowsImpl.S PROPERTY LANGUAGE ASM_MASM)
 endif()
@@ -19,26 +25,25 @@ set(SRCS
 
 if (WIN32)
     set(SRCS ${SRCS} src/BlueGLWindows.cpp)
-    set(SRCS ${SRCS} src/BlueGLCoreWindowsImpl.S)
+    if(NOT IS_64_BIT)
+        set(SRCS ${SRCS} src/BlueGLCoreWindows32Impl.cpp)
+    else()
+        set(SRCS ${SRCS} src/BlueGLCoreWindowsImpl.S)
+    endif()
 elseif (APPLE AND NOT IOS)
     set(SRCS ${SRCS} src/BlueGLDarwin.cpp)
-    set(SRCS ${SRCS} src/BlueGLCoreDarwinImpl.S)
+    set(SRCS ${SRCS} src/BlueGLCoreDarwinUniversalImpl.S)
 elseif(LINUX)
-    set(SRCS ${SRCS} src/BlueGLLinux.cpp)
-    set(SRCS ${SRCS} src/BlueGLCoreLinuxImpl.S)
+    if(FILAMENT_SUPPORTS_EGL_ON_LINUX)
+        set(SRCS ${SRCS} src/BlueGLLinuxEGL.cpp)
+    elseif(FILAMENT_SUPPORTS_OSMESA)
+        set(SRCS ${SRCS} src/BlueGLLinuxOSMesa.cpp)
+    else()
+        set(SRCS ${SRCS} src/BlueGLLinux.cpp)
+    endif()
+    set(SRCS ${SRCS} src/BlueGLCoreLinuxUniversalImpl.S)
 else()
     message(FATAL_ERROR "Platform not supported. BlueGL supports Windows, Linux, and MacOS X.")
-endif()
-
-if (NOT WIN32)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fvisibility=hidden")
-endif()
-
-# Only linux, clang doesn't want to use a shared library that is not PIC.
-# /usr/bin/ld: ../bluegl/libbluegl.a(BlueGL.cpp.o): relocation R_X86_64_32S
-# against `.bss' can not be used when making a shared object; recompile with -fPIC
-if (LINUX)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -fPIC")
 endif()
 
 # specify where our headers are
@@ -49,6 +54,7 @@ add_library(${TARGET} STATIC ${PUBLIC_HDRS} ${SRCS})
 
 # specify where the public headers of this library are
 target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
+set_target_properties(${TARGET} PROPERTIES FOLDER Libs)
 
 if (WIN32)
     target_link_libraries(${TARGET} PRIVATE opengl32 gdi32)
@@ -69,3 +75,4 @@ endif()
 # and we're linking against the libraries below, importing their public headers
 target_link_libraries(test_${TARGET} LINK_PUBLIC ${TARGET})
 target_link_libraries(test_${TARGET} LINK_PUBLIC gtest)
+set_target_properties(test_${TARGET} PROPERTIES FOLDER Tests)

@@ -15,6 +15,7 @@
 #ifndef TEST_TEST_FIXTURE_H_
 #define TEST_TEST_FIXTURE_H_
 
+#include <algorithm>
 #include <string>
 #include <vector>
 
@@ -46,7 +47,7 @@ class TextToBinaryTestBase : public T {
     text = {textStr, strlen(textStr)};
   }
 
-  virtual ~TextToBinaryTestBase() {
+  ~TextToBinaryTestBase() override {
     DestroyBinary();
     if (diagnostic) spvDiagnosticDestroy(diagnostic);
   }
@@ -61,6 +62,8 @@ class TextToBinaryTestBase : public T {
   // compilation success. Returns the compiled code.
   SpirvVector CompileSuccessfully(const std::string& txt,
                                   spv_target_env env = SPV_ENV_UNIVERSAL_1_0) {
+    DestroyBinary();
+    DestroyDiagnostic();
     spv_result_t status =
         spvTextToBinary(ScopedContext(env).context, txt.c_str(), txt.size(),
                         &binary, &diagnostic);
@@ -79,6 +82,8 @@ class TextToBinaryTestBase : public T {
   // Returns the error message(s).
   std::string CompileFailure(const std::string& txt,
                              spv_target_env env = SPV_ENV_UNIVERSAL_1_0) {
+    DestroyBinary();
+    DestroyDiagnostic();
     EXPECT_NE(SPV_SUCCESS,
               spvTextToBinary(ScopedContext(env).context, txt.c_str(),
                               txt.size(), &binary, &diagnostic))
@@ -87,13 +92,28 @@ class TextToBinaryTestBase : public T {
     return diagnostic->error;
   }
 
+  // Potentially flip the words in the binary representation to the other
+  // endianness
+  template <class It>
+  void MaybeFlipWords(bool flip_words, It begin, It end) {
+    SCOPED_TRACE(flip_words ? "Flipped Endianness" : "Normal Endianness");
+    if (flip_words) {
+      std::transform(begin, end, begin, [](const uint32_t raw_word) {
+        return spvFixWord(raw_word, I32_ENDIAN_HOST == I32_ENDIAN_BIG
+                                        ? SPV_ENDIANNESS_LITTLE
+                                        : SPV_ENDIANNESS_BIG);
+      });
+    }
+  }
+
   // Encodes SPIR-V text into binary and then decodes the binary using
   // given options. Returns the decoded text.
   std::string EncodeAndDecodeSuccessfully(
       const std::string& txt,
       uint32_t disassemble_options = SPV_BINARY_TO_TEXT_OPTION_NONE,
-      spv_target_env env = SPV_ENV_UNIVERSAL_1_0) {
+      spv_target_env env = SPV_ENV_UNIVERSAL_1_0, bool flip_words = false) {
     DestroyBinary();
+    DestroyDiagnostic();
     ScopedContext context(env);
     disassemble_options |= SPV_BINARY_TO_TEXT_OPTION_NO_HEADER;
     spv_result_t error = spvTextToBinary(context.context, txt.c_str(),
@@ -104,6 +124,8 @@ class TextToBinaryTestBase : public T {
     }
     EXPECT_EQ(SPV_SUCCESS, error);
     if (!binary) return "";
+
+    MaybeFlipWords(flip_words, binary->code, binary->code + binary->wordCount);
 
     spv_text decoded_text;
     error = spvBinaryToText(context.context, binary->code, binary->wordCount,
@@ -126,6 +148,8 @@ class TextToBinaryTestBase : public T {
   // Returns the error message.
   std::string EncodeSuccessfullyDecodeFailed(
       const std::string& txt, const SpirvVector& words_to_append) {
+    DestroyBinary();
+    DestroyDiagnostic();
     SpirvVector code =
         spvtest::Concatenate({CompileSuccessfully(txt), words_to_append});
 
@@ -167,6 +191,12 @@ class TextToBinaryTestBase : public T {
   void DestroyBinary() {
     spvBinaryDestroy(binary);
     binary = nullptr;
+  }
+
+  // Destroys the diagnostic, if it exists.
+  void DestroyDiagnostic() {
+    spvDiagnosticDestroy(diagnostic);
+    diagnostic = nullptr;
   }
 
   spv_diagnostic diagnostic;

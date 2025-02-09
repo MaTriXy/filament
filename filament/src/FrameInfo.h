@@ -17,197 +17,171 @@
 #ifndef TNT_FILAMENT_FRAMEINFO_H
 #define TNT_FILAMENT_FRAMEINFO_H
 
-#include "details/Engine.h"
+#include <filament/Renderer.h>
 
-#include <filament/Fence.h>
+#include <backend/Handle.h>
 
-#include <utils/Allocator.h>
+#include <private/backend/DriverApi.h>
 
-#include <deque>
+#include <utils/compiler.h>
+#include <utils/debug.h>
+#include <utils/FixedCapacityVector.h>
+
+#include <array>
+#include <atomic>
 #include <chrono>
-#include <condition_variable>
-#include <mutex>
-#include <thread>
-#include <vector>
+#include <ratio>
+#include <type_traits>
 
-#include <assert.h>
-#include <math/fast.h>
-
-// set EXTRA_TIMING_INFO to enable and print extra timing info about the render loop
-#define EXTRA_TIMING_INFO  false
+#include <stdint.h>
+#include <stddef.h>
 
 namespace filament {
+class FEngine;
 
-using namespace details;
+namespace details {
+struct FrameInfo {
+    using duration = std::chrono::duration<float, std::milli>;
+    duration frameTime{};            // frame period
+    duration denoisedFrameTime{};    // frame period (median filter)
+    bool valid = false;              // true if the data of the structure is valid
+};
+} // namespace details
 
-class FrameInfoManager;
-
-class FrameInfo {
-public:
-    friend class FrameInfoManager;
+struct FrameInfoImpl : public details::FrameInfo {
     using clock = std::chrono::steady_clock;
     using time_point = clock::time_point;
-    using duration = std::chrono::duration<float, std::milli>;
-
-    enum lap_id {
-        START = 0,      // don't use for FrameInfo::lap()
-        FINISH = 1,     // don't use for FrameInfo::lap()
-        LAP_0,
-        LAP_1,
-        LAP_2,
-        LAP_3,
-        LAP_4,
-        LAP_5,
-    };
-
-    void beginFrame(FrameInfoManager* mgr);
-    void lap(FrameInfoManager* mgr, lap_id id);
-    void endFrame(FrameInfoManager* mgr);
-
-    static constexpr size_t MAX_LAPS_IDS = 8;
-
-    uint32_t frame = 0;
-    time_point laps[MAX_LAPS_IDS] = { time_point::max() };
+    uint32_t const frameId;
+    time_point beginFrame;           // main thread beginFrame time
+    time_point endFrame;             // main thread endFrame time
+    time_point backendBeginFrame;    // backend thread beginFrame time (makeCurrent time)
+    time_point backendEndFrame;      // backend thread endFrame time (present time)
+    std::atomic_bool ready{};        // true once backend thread has populated its data
+    explicit FrameInfoImpl(uint32_t const frameId) noexcept
+        : frameId(frameId) {
+    }
 };
 
-class FrameInfoManager {
-    friend class FrameInfo;
-    static constexpr size_t HISTORY_COUNT = 5;
-    static constexpr size_t POOL_COUNT = 8;
-
-    // set this to true to enable extra timing info
-    static constexpr bool mLapRecordsEnabled = EXTRA_TIMING_INFO;
-
+template<typename T, size_t CAPACITY>
+class CircularQueue {
 public:
-    using clock = FrameInfo::clock;
-    using time_point = FrameInfo::time_point;
-    using duration = FrameInfo::duration;
+    using value_type = T;
+    using reference = value_type&;
+    using const_reference = value_type const&;
 
-    explicit FrameInfoManager(FEngine& engine);
-    ~FrameInfoManager() noexcept;
-
-    Engine& getEngine() { return mEngine; }
-
-    void run() {
-        mSyncThread.run();
+    size_t capacity() const {
+        return CAPACITY;
     }
 
-    void terminate() {
-        mSyncThread.requestExitAndWait();
+    size_t size() const {
+        return mSize;
     }
 
-    // call this immediately after "make current"
-    void beginFrame(uint32_t frameId);
-
-    // call this between beginFrame and endFrame to record a time
-    void lap(FrameInfo::lap_id id) {
-        if (mLapRecordsEnabled) {
-            FrameInfo* const info = mCurrentFrameInfo;
-            assert(info);
-            info->lap(this, id);
-        }
+    bool empty() const noexcept {
+        return !size();
     }
 
-    // call this immediately before "swap buffers"
-    void endFrame();
-
-    void cancelFrame();
-
-    constexpr bool isLapRecordsEnabled() const noexcept {
-        return mLapRecordsEnabled;
+    void pop_back() noexcept {
+        assert_invariant(!empty());
+        --mSize;
+        std::destroy_at(&mStorage[(mFront - mSize) % CAPACITY]);
     }
 
-    duration getLastFrameTime() const noexcept {
-        std::unique_lock<std::mutex> lock(mLock);
-        FrameInfo const& info = mFrameInfoHistory.front();
-        return info.laps[FrameInfo::FINISH] - info.laps[FrameInfo::START];
+    void push_front(T const& v) noexcept {
+        assert_invariant(size() < CAPACITY);
+        mFront = advance(mFront);
+        new(&mStorage[mFront]) T(v);
+        ++mSize;
     }
 
-    std::vector<FrameInfo> getHistory() const noexcept {
-        std::unique_lock<std::mutex> lock(mLock);
-        return mFrameInfoHistory;
+    void push_front(T&& v) noexcept {
+        assert_invariant(size() < CAPACITY);
+        mFront = advance(mFront);
+        new(&mStorage[mFront]) T(std::move(v));
+        ++mSize;
     }
 
-    // no user serviceable part below...
-
-    template<typename CALLABLE, typename ... ARGS>
-    void push(CALLABLE&& func, ARGS&&... args) {
-        mSyncThread.push(std::forward<CALLABLE>(func), std::forward<ARGS>(args)...);
+    template<typename ...Args>
+    T& emplace_front(Args&&... args) noexcept {
+        assert_invariant(size() < CAPACITY);
+        mFront = advance(mFront);
+        new(&mStorage[mFront]) T(std::forward<Args>(args)...);
+        ++mSize;
+        return front();
     }
 
-    static constexpr size_t getHistorySize() noexcept {
-        return HISTORY_COUNT;
+    T& operator[](size_t const pos) noexcept {
+        assert_invariant(pos < size());
+        size_t const index = (mFront + CAPACITY - pos) % CAPACITY;
+        return *std::launder(reinterpret_cast<T*>(&mStorage[index]));
+    }
+
+    T const& operator[](size_t pos) const noexcept {
+        return const_cast<CircularQueue&>(*this)[pos];
+    }
+
+    T const& front() const noexcept {
+        assert_invariant(!empty());
+        return operator[](0);
+    }
+
+    T& front() noexcept {
+        assert_invariant(!empty());
+        return operator[](0);
     }
 
 private:
-
-    class SyncThread {
-    public:
-        using Job = std::function<void()>;
-
-        SyncThread() = default;
-        ~SyncThread();
-
-        void run();
-        void requestExitAndWait();
-
-        template<typename CALLABLE, typename ... ARGS>
-        void push(CALLABLE&& func, ARGS&&... args) {
-            enqueue(Job(std::bind(std::forward<CALLABLE>(func), std::forward<ARGS>(args)...)));
-        }
-
-    private:
-        void enqueue(SyncThread::Job&& job);
-        void loop();
-        std::thread mThread;
-        mutable std::mutex mLock;
-        mutable std::condition_variable mCondition;
-        std::deque<Job> mQueue;
-        bool mExitRequested = false;
-    };
-
-    FrameInfo* obtain() noexcept;
-    void finish(FrameInfo* info) noexcept;
-
-    using PoolArena = utils::Arena<utils::ObjectPoolAllocator<FrameInfo>, utils::LockingPolicy::SpinLock>;
-    FEngine& mEngine;
-    PoolArena mPoolArena;
-    SyncThread mSyncThread;
-    FrameInfo* mCurrentFrameInfo = nullptr;
-
-    mutable std::mutex mLock;
-    std::vector<FrameInfo> mFrameInfoHistory;
+    using Storage = std::aligned_storage_t<sizeof(T), alignof(T)>;
+    Storage mStorage[CAPACITY];
+    uint32_t mFront = 0;    // always index 0
+    uint32_t mSize = 0;
+    [[nodiscard]] inline uint32_t advance(uint32_t const v) noexcept {
+        return (v + 1) % CAPACITY;
+    }
 };
 
+class FrameInfoManager {
+    static constexpr size_t POOL_COUNT = 4;
+    static constexpr size_t MAX_FRAMETIME_HISTORY = 16u;
 
-template<typename T, size_t MEDIAN = 5, size_t HISTORY = 16>
-class Series {
 public:
-    Series() {
-        mIn.resize(MEDIAN);
-        mOut.resize(HISTORY);
+    using duration = FrameInfoImpl::duration;
+    using clock = FrameInfoImpl::clock;
+
+    struct Config {
+        uint32_t historySize;
+    };
+
+    explicit FrameInfoManager(backend::DriverApi& driver) noexcept;
+
+    ~FrameInfoManager() noexcept;
+    void terminate(backend::DriverApi& driver) noexcept;
+
+    // call this immediately after "make current"
+    void beginFrame(backend::DriverApi& driver, Config const& config, uint32_t frameId) noexcept;
+
+    // call this immediately before "swap buffers"
+    void endFrame(backend::DriverApi& driver) noexcept;
+
+    details::FrameInfo getLastFrameInfo() const noexcept {
+        // if pFront is not set yet, return FrameInfo(). But the `valid` field will be false in this case.
+        return pFront ? *pFront : details::FrameInfo{};
     }
 
-    void push(T value, float b = 1.0f - math::fast::exp(-0.125f)) noexcept {
-        mIn.push_back(value);
-        mIn.pop_front();
-        std::array<T, MEDIAN> median;
-        std::copy_n(mIn.begin(), median.size(), median.begin());
-        std::sort(median.begin(), median.end());
-        mLowPass += b * (median[median.size() / 2] - mLowPass);
-        mOut.push_back(mLowPass);
-        mOut.pop_front();
-    }
+    utils::FixedCapacityVector<Renderer::FrameInfo> getFrameInfoHistory(size_t historySize) const noexcept;
 
-    T operator[](size_t i) const noexcept { return mOut[i]; }
-    typename std::deque<T>::iterator begin() const { return mOut.begin(); }
-    typename std::deque<T>::iterator end() const { return mOut.end(); }
-    T const& oldest() const noexcept { return mOut.front(); }
-    T const& latest() const noexcept { return mOut.back(); }
-
-    std::deque<T> mIn;
-    std::deque<T> mOut;
-    T mLowPass = {};
+private:
+    using FrameHistoryQueue = CircularQueue<FrameInfoImpl, MAX_FRAMETIME_HISTORY>;
+    static void denoiseFrameTime(FrameHistoryQueue& history, Config const& config) noexcept;
+    struct Query {
+        backend::Handle<backend::HwTimerQuery> handle{};
+        FrameInfoImpl* pInfo = nullptr;
+    };
+    std::array<Query, POOL_COUNT> mQueries;
+    uint32_t mIndex = 0;                // index of current query
+    uint32_t mLast = 0;                 // index of oldest query still active
+    FrameInfoImpl* pFront = nullptr;    // the most recent slot with a valid frame time
+    FrameHistoryQueue mFrameTimeHistory;
 };
 
 

@@ -42,6 +42,7 @@ OpCapability Float64)";
       R"(
 OpMemoryModel Logical GLSL450
 OpEntryPoint Fragment %main "main"
+OpExecutionMode %main OriginUpperLeft
 %void = OpTypeVoid
 %func = OpTypeFunction %void
 %bool = OpTypeBool
@@ -339,6 +340,16 @@ TEST_F(ValidateBitwise, OpBitFieldInsertSuccess) {
   ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
 }
 
+TEST_F(ValidateBitwise, OpBitFieldInsertVulkanSuccess) {
+  const std::string body = R"(
+%val1 = OpBitFieldInsert %u32 %u32_1 %u32_2 %s32_1 %s32_2
+%val2 = OpBitFieldInsert %s32vec2 %s32vec2_12 %s32vec2_12 %s32_1 %u32_2
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body).c_str(), SPV_ENV_VULKAN_1_0);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+}
+
 TEST_F(ValidateBitwise, OpBitFieldInsertWrongResultType) {
   const std::string body = R"(
 %val1 = OpBitFieldInsert %bool %u64_1 %u64_2 %s32_1 %s32_2
@@ -349,7 +360,7 @@ TEST_F(ValidateBitwise, OpBitFieldInsertWrongResultType) {
   EXPECT_THAT(
       getDiagnosticString(),
       HasSubstr(
-          "Expected int scalar or vector type as Result Type: BitFieldInsert"));
+          "Expected Base Type to be equal to Result Type: BitFieldInsert"));
 }
 
 TEST_F(ValidateBitwise, OpBitFieldInsertWrongBaseType) {
@@ -402,6 +413,20 @@ TEST_F(ValidateBitwise, OpBitFieldInsertCountNotInt) {
       HasSubstr("Expected Count Type to be int scalar: BitFieldInsert"));
 }
 
+TEST_F(ValidateBitwise, OpBitFieldInsertNot32Vulkan) {
+  const std::string body = R"(
+%val1 = OpBitFieldInsert %u64 %u64_1 %u64_2 %s32_1 %s32_2
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body).c_str(), SPV_ENV_VULKAN_1_0);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-Base-04781"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("Expected 32-bit int type for Base operand: BitFieldInsert"));
+}
+
 TEST_F(ValidateBitwise, OpBitFieldSExtractSuccess) {
   const std::string body = R"(
 %val1 = OpBitFieldSExtract %u64 %u64_1 %s32_1 %s32_2
@@ -412,6 +437,16 @@ TEST_F(ValidateBitwise, OpBitFieldSExtractSuccess) {
   ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
 }
 
+TEST_F(ValidateBitwise, OpBitFieldSExtractVulkanSuccess) {
+  const std::string body = R"(
+%val1 = OpBitFieldSExtract %u32 %u32_1 %s32_1 %s32_2
+%val2 = OpBitFieldSExtract %s32vec2 %s32vec2_12 %s32_1 %u32_2
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body).c_str(), SPV_ENV_VULKAN_1_0);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+}
+
 TEST_F(ValidateBitwise, OpBitFieldSExtractWrongResultType) {
   const std::string body = R"(
 %val1 = OpBitFieldSExtract %bool %u64_1 %s32_1 %s32_2
@@ -419,9 +454,10 @@ TEST_F(ValidateBitwise, OpBitFieldSExtractWrongResultType) {
 
   CompileSuccessfully(GenerateShaderCode(body).c_str());
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
-  EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("Expected int scalar or vector type as Result Type: "
-                        "BitFieldSExtract"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "Expected Base Type to be equal to Result Type: BitFieldSExtract"));
 }
 
 TEST_F(ValidateBitwise, OpBitFieldSExtractWrongBaseType) {
@@ -461,6 +497,20 @@ TEST_F(ValidateBitwise, OpBitFieldSExtractCountNotInt) {
       HasSubstr("Expected Count Type to be int scalar: BitFieldSExtract"));
 }
 
+TEST_F(ValidateBitwise, OpBitFieldSExtractNot32Vulkan) {
+  const std::string body = R"(
+%val1 = OpBitFieldSExtract %u64 %u64_1 %s32_1 %s32_2
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body).c_str(), SPV_ENV_VULKAN_1_0);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-Base-04781"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("Expected 32-bit int type for Base operand: BitFieldSExtract"));
+}
+
 TEST_F(ValidateBitwise, OpBitReverseSuccess) {
   const std::string body = R"(
 %val1 = OpBitReverse %u64 %u64_1
@@ -469,6 +519,16 @@ TEST_F(ValidateBitwise, OpBitReverseSuccess) {
 
   CompileSuccessfully(GenerateShaderCode(body).c_str());
   ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateBitwise, OpBitReverseVulkanSuccess) {
+  const std::string body = R"(
+%val1 = OpBitReverse %u32 %u32_1
+%val2 = OpBitReverse %s32vec2 %s32vec2_12
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body).c_str(), SPV_ENV_VULKAN_1_0);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_0));
 }
 
 TEST_F(ValidateBitwise, OpBitReverseWrongResultType) {
@@ -480,8 +540,7 @@ TEST_F(ValidateBitwise, OpBitReverseWrongResultType) {
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr(
-          "Expected int scalar or vector type as Result Type: BitReverse"));
+      HasSubstr("Expected Base Type to be equal to Result Type: BitReverse"));
 }
 
 TEST_F(ValidateBitwise, OpBitReverseWrongBaseType) {
@@ -496,14 +555,39 @@ TEST_F(ValidateBitwise, OpBitReverseWrongBaseType) {
       HasSubstr("Expected Base Type to be equal to Result Type: BitReverse"));
 }
 
+TEST_F(ValidateBitwise, OpBitReverseNot32Vulkan) {
+  const std::string body = R"(
+%val1 = OpBitReverse %u64 %u64_1
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body).c_str(), SPV_ENV_VULKAN_1_0);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-Base-04781"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("Expected 32-bit int type for Base operand: BitReverse"));
+}
+
 TEST_F(ValidateBitwise, OpBitCountSuccess) {
   const std::string body = R"(
 %val1 = OpBitCount %s32 %u64_1
 %val2 = OpBitCount %u32vec2 %s32vec2_12
+%val3 = OpBitCount %s64 %s64_1
 )";
 
   CompileSuccessfully(GenerateShaderCode(body).c_str());
   ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateBitwise, OpBitCountVulkanSuccess) {
+  const std::string body = R"(
+%val1 = OpBitCount %s32 %u32_1
+%val2 = OpBitCount %u32vec2 %s32vec2_12
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body).c_str(), SPV_ENV_VULKAN_1_0);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_0));
 }
 
 TEST_F(ValidateBitwise, OpBitCountWrongResultType) {
@@ -523,11 +607,14 @@ TEST_F(ValidateBitwise, OpBitCountBaseNotInt) {
 %val1 = OpBitCount %u32 %f64_1
 )";
 
-  CompileSuccessfully(GenerateShaderCode(body).c_str());
-  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  CompileSuccessfully(GenerateShaderCode(body).c_str(), SPV_ENV_VULKAN_1_0);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-Base-04781"));
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr("Expected Base Type to be int scalar or vector: BitCount"));
+      HasSubstr(
+          "Expected int scalar or vector type for Base operand: BitCount"));
 }
 
 TEST_F(ValidateBitwise, OpBitCountBaseWrongDimension) {
@@ -541,6 +628,19 @@ TEST_F(ValidateBitwise, OpBitCountBaseWrongDimension) {
       getDiagnosticString(),
       HasSubstr("Expected Base dimension to be equal to Result Type dimension: "
                 "BitCount"));
+}
+
+TEST_F(ValidateBitwise, OpBitCountNot32Vulkan) {
+  const std::string body = R"(
+%val1 = OpBitCount %s64 %s64_1
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body).c_str(), SPV_ENV_VULKAN_1_0);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-Base-04781"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Expected 32-bit int type for Base operand: BitCount"));
 }
 
 }  // namespace

@@ -22,42 +22,95 @@
 #include "source/spirv_target_env.h"
 #include "source/util/bitutils.h"
 #include "source/val/instruction.h"
+#include "source/val/validate_scopes.h"
 #include "source/val/validation_state.h"
 
 namespace spvtools {
 namespace val {
 namespace {
 
-spv_result_t ValidateExecutionScope(ValidationState_t& _,
-                                    const Instruction* inst, uint32_t scope) {
-  SpvOp opcode = inst->opcode();
-  bool is_int32 = false, is_const_int32 = false;
-  uint32_t value = 0;
-  std::tie(is_int32, is_const_int32, value) = _.EvalInt32IfConst(scope);
+spv_result_t ValidateGroupNonUniformBallotBitCount(ValidationState_t& _,
+                                                   const Instruction* inst) {
+  // Scope is already checked by ValidateExecutionScope() above.
 
-  if (!is_int32) {
+  const uint32_t result_type = inst->type_id();
+  if (!_.IsUnsignedIntScalarType(result_type)) {
     return _.diag(SPV_ERROR_INVALID_DATA, inst)
-           << spvOpcodeString(opcode)
-           << ": expected Execution Scope to be a 32-bit int";
+           << "Expected Result Type to be an unsigned integer type scalar.";
   }
 
-  if (!is_const_int32) {
-    return SPV_SUCCESS;
+  const auto value = inst->GetOperandAs<uint32_t>(4);
+  const auto value_type = _.FindDef(value)->type_id();
+  if (!_.IsUnsignedIntVectorType(value_type) ||
+      _.GetDimension(value_type) != 4) {
+    return _.diag(SPV_ERROR_INVALID_DATA, inst) << "Expected Value to be a "
+                                                   "vector of four components "
+                                                   "of integer type scalar";
   }
 
-  if (spvIsVulkanEnv(_.context()->target_env) &&
-      _.context()->target_env != SPV_ENV_VULKAN_1_0 &&
-      value != SpvScopeSubgroup) {
+  const auto group = inst->GetOperandAs<spv::GroupOperation>(3);
+  if (spvIsVulkanEnv(_.context()->target_env)) {
+    if ((group != spv::GroupOperation::Reduce) &&
+        (group != spv::GroupOperation::InclusiveScan) &&
+        (group != spv::GroupOperation::ExclusiveScan)) {
+      return _.diag(SPV_ERROR_INVALID_DATA, inst)
+             << _.VkErrorID(4685)
+             << "In Vulkan: The OpGroupNonUniformBallotBitCount group "
+                "operation must be only: Reduce, InclusiveScan, or "
+                "ExclusiveScan.";
+    }
+  }
+  return SPV_SUCCESS;
+}
+
+spv_result_t ValidateGroupNonUniformRotateKHR(ValidationState_t& _,
+                                              const Instruction* inst) {
+  // Scope is already checked by ValidateExecutionScope() above.
+  const uint32_t result_type = inst->type_id();
+  if (!_.IsIntScalarOrVectorType(result_type) &&
+      !_.IsFloatScalarOrVectorType(result_type) &&
+      !_.IsBoolScalarOrVectorType(result_type)) {
     return _.diag(SPV_ERROR_INVALID_DATA, inst)
-           << spvOpcodeString(opcode)
-           << ": in Vulkan environment Execution scope is limited to "
-              "Subgroup";
+           << "Expected Result Type to be a scalar or vector of "
+              "floating-point, integer or boolean type.";
   }
 
-  if (value != SpvScopeSubgroup && value != SpvScopeWorkgroup) {
+  const uint32_t value_type = _.GetTypeId(inst->GetOperandAs<uint32_t>(3));
+  if (value_type != result_type) {
     return _.diag(SPV_ERROR_INVALID_DATA, inst)
-           << spvOpcodeString(opcode)
-           << ": Execution scope is limited to Subgroup or Workgroup";
+           << "Result Type must be the same as the type of Value.";
+  }
+
+  const uint32_t delta_type = _.GetTypeId(inst->GetOperandAs<uint32_t>(4));
+  if (!_.IsUnsignedIntScalarType(delta_type)) {
+    return _.diag(SPV_ERROR_INVALID_DATA, inst)
+           << "Delta must be a scalar of integer type, whose Signedness "
+              "operand is 0.";
+  }
+
+  if (inst->words().size() > 6) {
+    const uint32_t cluster_size_op_id = inst->GetOperandAs<uint32_t>(5);
+    const uint32_t cluster_size_type = _.GetTypeId(cluster_size_op_id);
+    if (!_.IsUnsignedIntScalarType(cluster_size_type)) {
+      return _.diag(SPV_ERROR_INVALID_DATA, inst)
+             << "ClusterSize must be a scalar of integer type, whose "
+                "Signedness operand is 0.";
+    }
+
+    uint64_t cluster_size;
+    if (!_.GetConstantValUint64(cluster_size_op_id, &cluster_size)) {
+      return _.diag(SPV_ERROR_INVALID_DATA, inst)
+             << "ClusterSize must come from a constant instruction.";
+    }
+
+    if ((cluster_size == 0) || ((cluster_size & (cluster_size - 1)) != 0)) {
+      return _.diag(SPV_WARNING, inst)
+             << "Behavior is undefined unless ClusterSize is at least 1 and a "
+                "power of 2.";
+    }
+
+    // TODO(kpet) Warn about undefined behavior when ClusterSize is greater than
+    // the declared SubGroupSize
   }
 
   return SPV_SUCCESS;
@@ -67,13 +120,22 @@ spv_result_t ValidateExecutionScope(ValidationState_t& _,
 
 // Validates correctness of non-uniform group instructions.
 spv_result_t NonUniformPass(ValidationState_t& _, const Instruction* inst) {
-  const SpvOp opcode = inst->opcode();
+  const spv::Op opcode = inst->opcode();
 
   if (spvOpcodeIsNonUniformGroupOperation(opcode)) {
     const uint32_t execution_scope = inst->word(3);
     if (auto error = ValidateExecutionScope(_, inst, execution_scope)) {
       return error;
     }
+  }
+
+  switch (opcode) {
+    case spv::Op::OpGroupNonUniformBallotBitCount:
+      return ValidateGroupNonUniformBallotBitCount(_, inst);
+    case spv::Op::OpGroupNonUniformRotateKHR:
+      return ValidateGroupNonUniformRotateKHR(_, inst);
+    default:
+      break;
   }
 
   return SPV_SUCCESS;

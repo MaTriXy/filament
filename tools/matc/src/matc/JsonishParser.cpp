@@ -20,15 +20,18 @@
 
 #include <iostream>
 
+#include <string.h>
+
+#include <utils/string.h>
+
 namespace matc {
 
-static std::string resolveEscapes(const std::string&& s) {
+static std::string resolveEscapes(const std::string& s) {
     std::string out;
     out.reserve(s.length());
 
     bool inEscape = false;
-    for (size_t i = 0; i < s.length(); i++) {
-        char c = s[i];
+    for (char c : s) {
         if (inEscape) {
             switch (c) {
                 case '\\':
@@ -81,8 +84,8 @@ static std::string resolveEscapes(const std::string&& s) {
     return out;
 }
 
-JsonishString::JsonishString(const std::string&& string) : JsonishValue(STRING) {
-    mString = resolveEscapes(std::move(string));
+JsonishString::JsonishString(const std::string& string) : JsonishValue(STRING) {
+    mString = resolveEscapes(string);
 }
 
 std::unique_ptr<JsonishObject> JsonishParser::parse() noexcept {
@@ -239,27 +242,48 @@ JsonishArray* JsonishParser::parseElements() noexcept {
     return array;
 }
 
+// Strings optionally have an array suffix, as in: "float[9]". To handle this we parse the array
+// value (which might be multidimensional), discard the parsed value, and append it to the string.
+JsonishValue* JsonishParser::parseString() noexcept {
+    std::string tmp;
+    const JsonLexeme* strLexeme = consumeLexeme(STRING);
+    const JsonLexeme* arrLexeme = peekNextLexemeType();
+    JsonishValue* arrValue;
+    if (arrLexeme && arrLexeme->getType() == ARRAY_START && (arrValue = parseArray())) {
+        delete arrValue;
+
+        const JsonLexeme* next = peekNextLexemeType();
+        if (!next) {
+            return nullptr;
+        }
+
+        size_t length = next->getStart() - strLexeme->getStart();
+        tmp = std::string(strLexeme->getStart(), length);
+    } else {
+        tmp = std::string(strLexeme->getStart(), strLexeme->getSize());
+    }
+    return new JsonishString(tmp);
+}
+
 JsonishValue* JsonishParser::parseValue() noexcept {
     const JsonLexeme* next = peekNextLexemeType();
     if (next == nullptr) {
         return nullptr;
     }
 
-    std::string tmp(next->getStart(), next->getSize());
     switch (next->getType()) {
         case STRING:
-            consumeLexeme(STRING);
-            return new JsonishString(std::move(tmp));
+            return parseString();
         case NUMBER:
             consumeLexeme(NUMBER);
-            return new JsonishNumber(static_cast<float>(atof(tmp.c_str())));
+            return new JsonishNumber(utils::strtof_c(next->getStart(), nullptr));
         case BLOCK_START:
             return parseObject();
         case ARRAY_START:
             return parseArray();
         case BOOLEAN:
             consumeLexeme(BOOLEAN);
-            return new JsonishBool(tmp == "true");
+            return new JsonishBool(!strncmp(next->getStart(), "true", next->getSize()));
         case NUll:
             consumeLexeme(NUll);
             return new JsonishNull();

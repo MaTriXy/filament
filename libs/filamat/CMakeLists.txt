@@ -1,22 +1,17 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.19)
 project(filamat)
 
 set(TARGET         filamat)
 set(PUBLIC_HDR_DIR include)
-
-# filamat is split into two targets: filamat, and filamat_lite.
-# filamat_lite forgoes SPIRV-V / MSL output, static analysis, and optimization in favor of a smaller
-# binary size.
-# Both libraries use the same public header files.
 
 # ==================================================================================================
 # Sources and headers
 # ==================================================================================================
 set(HDRS
         include/filamat/Enums.h
+        include/filamat/IncludeCallback.h
         include/filamat/MaterialBuilder.h
-        include/filamat/Package.h
-        include/filamat/PostprocessMaterialBuilder.h)
+        include/filamat/Package.h)
 
 set(COMMON_PRIVATE_HDRS
         src/eiff/Chunk.h
@@ -27,7 +22,9 @@ set(COMMON_PRIVATE_HDRS
         src/eiff/MaterialTextChunk.h
         src/eiff/MaterialInterfaceBlockChunk.h
         src/eiff/ShaderEntry.h
-        src/eiff/SimpleFieldChunk.h)
+        src/eiff/SimpleFieldChunk.h
+        src/Includes.h
+        src/PushConstantDefinitions.h)
 
 set(COMMON_SRCS
         src/eiff/Chunk.cpp
@@ -39,9 +36,13 @@ set(COMMON_SRCS
         src/eiff/SimpleFieldChunk.cpp
         src/shaders/CodeGenerator.cpp
         src/shaders/ShaderGenerator.cpp
+        src/shaders/SibGenerator.cpp
+        src/shaders/UibGenerator.cpp
         src/Enums.cpp
+        src/Includes.cpp
         src/MaterialBuilder.cpp
-        src/PostprocessMaterialBuilder.cpp)
+        src/MaterialVariants.cpp
+)
 
 # Sources and headers for filamat
 
@@ -49,8 +50,12 @@ set(PRIVATE_HDRS
         ${COMMON_PRIVATE_HDRS}
         src/eiff/BlobDictionary.h
         src/eiff/DictionarySpirvChunk.h
-        src/eiff/MaterialSpirvChunk.h
+        src/eiff/DictionaryMetalLibraryChunk.h
+        src/eiff/MaterialBinaryChunk.h
         src/GLSLPostProcessor.h
+        src/MetalArgumentBuffer.h
+        src/ShaderMinifier.h
+        src/SpirvFixup.h
         src/sca/ASTHelpers.h
         src/sca/GLSLTools.h
         src/sca/builtinResource.h)
@@ -59,20 +64,14 @@ set(SRCS
         ${COMMON_SRCS}
         src/eiff/BlobDictionary.cpp
         src/eiff/DictionarySpirvChunk.cpp
-        src/eiff/MaterialSpirvChunk.cpp
+        src/eiff/DictionaryMetalLibraryChunk.cpp
+        src/eiff/MaterialBinaryChunk.cpp
+        src/MetalArgumentBuffer.cpp
         src/sca/ASTHelpers.cpp
         src/sca/GLSLTools.cpp
-        src/GLSLPostProcessor.cpp)
-
-# Sources and headers for filamat lite
-
-set(LITE_PRIVATE_HDRS
-        ${COMMON_PRIVATE_HDRS}
-        src/sca/GLSLToolsLite.h)
-
-set(LITE_SRCS
-        ${COMMON_SRCS}
-        src/sca/GLSLToolsLite.cpp)
+        src/GLSLPostProcessor.cpp
+        src/ShaderMinifier.cpp
+        src/SpirvFixup.cpp)
 
 # ==================================================================================================
 # Include and target definitions
@@ -83,12 +82,8 @@ include_directories(${CMAKE_BINARY_DIR})
 # Filamat
 add_library(${TARGET} STATIC ${HDRS} ${PRIVATE_HDRS} ${SRCS})
 target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
-target_link_libraries(${TARGET} shaders filabridge utils smol-v)
-
-# Filamat Lite
-add_library(filamat_lite STATIC ${HDRS} ${LITE_PRIVATE_HDRS} ${LITE_SRCS})
-target_include_directories(filamat_lite PUBLIC ${PUBLIC_HDR_DIR})
-target_link_libraries(filamat_lite shaders filabridge utils)
+set_target_properties(${TARGET} PROPERTIES FOLDER Libs)
+target_link_libraries(${TARGET} backend_headers shaders filabridge utils smol-v)
 
 # We are being naughty and accessing private headers here
 # For spirv-tools, we're just following glslang's example
@@ -97,11 +92,11 @@ target_include_directories(${TARGET} PRIVATE ${spirv-tools_SOURCE_DIR}/include)
 # glslang libraries have circular dependencies. To make sure the proper object are part of the link
 # we need to force archive re-scan on new symbol dependencies via start/end-group.
 # Read more about this here https://eli.thegreenplace.net/2013/07/09/library-order-in-static-linking
-if (APPLE)
-    target_link_libraries(${TARGET} glslang SPIRV SPVRemapper SPIRV-Tools-opt spirv-cross-glsl)
+if (APPLE OR MSVC)
+    target_link_libraries(${TARGET} glslang SPIRV SPIRV-Tools-opt spirv-cross-glsl)
 else()
     target_link_libraries(${TARGET}
-            -Wl,--start-group glslang SPIRV SPVRemapper SPIRV-Tools-opt spirv-cross-glsl -Wl,--end-group)
+            -Wl,--start-group glslang SPIRV SPIRV-Tools-opt spirv-cross-glsl -Wl,--end-group)
 endif()
 
 # ==================================================================================================
@@ -110,19 +105,13 @@ endif()
 # this must match options enabled in glslang's CMakeLists.txt
 target_compile_options(${TARGET} PRIVATE -DAMD_EXTENSIONS -DNV_EXTENSIONS )
 
-target_compile_options(${TARGET} PRIVATE
-# TODO: use hidden by default and expose what we need (we'll need to do the same in dependencies)
-#        -fvisibility=hidden
-        $<$<PLATFORM_ID:Linux>:-fPIC>
-)
+if (MSVC)
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /W0 /Zc:__cplusplus")
+endif()
 
-target_compile_options(filamat_lite PRIVATE
-# TODO: use hidden by default and expose what we need (we'll need to do the same in dependencies)
-#        -fvisibility=hidden
-        $<$<PLATFORM_ID:Linux>:-fPIC>
-)
-
-target_compile_definitions(filamat_lite PRIVATE FILAMAT_LITE)
+if (FILAMENT_ENABLE_MATDBG)
+    add_definitions(-DFILAMENT_ENABLE_MATDBG)
+endif()
 
 # ==================================================================================================
 # Installation
@@ -138,7 +127,6 @@ set(FILAMAT_DEPS
         SPIRV
         SPIRV-Tools
         SPIRV-Tools-opt
-        SPVRemapper
         filamat
         glslang
         spirv-cross-core
@@ -146,31 +134,12 @@ set(FILAMAT_DEPS
         spirv-cross-msl
         )
 
-# Loop through the dependent libraries and query their location on disk.
-set(FILAMAT_DEPS_FILES )
-foreach(DEPENDENCY ${FILAMAT_DEPS})
-    list(APPEND FILAMAT_DEPS_FILES "$<TARGET_FILE:${DEPENDENCY}>")
-endforeach()
-
-# Run the combine-static-libs script to bundle the libraries together.
 set(FILAMAT_COMBINED_OUTPUT "${CMAKE_CURRENT_BINARY_DIR}/libfilamat_combined.a")
-set(COMBINE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../../build/linux/combine-static-libs.sh")
-if (WIN32)
-    set(COMBINE_SCRIPT "${CMAKE_CURRENT_SOURCE_DIR}/../../build/windows/combine-static-libs.bat")
-    set(CMAKE_AR "lib.exe")
-endif()
-add_custom_command(
-    TARGET filamat POST_BUILD
-    COMMAND "${COMBINE_SCRIPT}" "${CMAKE_AR}" "${FILAMAT_COMBINED_OUTPUT}" ${FILAMAT_DEPS_FILES}
-    COMMENT "Combining filamat dependencies into single shared library"
-    VERBATIM
-)
+combine_static_libs(filamat "${FILAMAT_COMBINED_OUTPUT}" "${FILAMAT_DEPS}")
 
 set(FILAMAT_LIB_NAME ${CMAKE_STATIC_LIBRARY_PREFIX}filamat${CMAKE_STATIC_LIBRARY_SUFFIX})
 install(FILES "${FILAMAT_COMBINED_OUTPUT}" DESTINATION lib/${DIST_DIR} RENAME ${FILAMAT_LIB_NAME})
 install(DIRECTORY ${PUBLIC_HDR_DIR}/filamat DESTINATION include)
-
-install(TARGETS filamat_lite ARCHIVE DESTINATION lib/${DIST_DIR})
 
 # ==================================================================================================
 # Tests
@@ -178,7 +147,10 @@ install(TARGETS filamat_lite ARCHIVE DESTINATION lib/${DIST_DIR})
 project(test_filamat)
 set(TARGET test_filamat)
 set(SRCS
-        tests/test_filamat.cpp)
+        tests/test_filamat.cpp
+        tests/test_argBufferFixup.cpp
+        tests/test_clipDistanceFixup.cpp
+        tests/test_includes.cpp)
 
 add_executable(${TARGET} ${SRCS})
 
@@ -186,12 +158,5 @@ target_include_directories(${TARGET} PRIVATE src)
 
 target_link_libraries(${TARGET} filamat gtest)
 
-set(TARGET test_filamat_lite)
-set(SRCS
-        tests/test_filamat_lite.cpp)
+set_target_properties(${TARGET} PROPERTIES FOLDER Tests)
 
-add_executable(${TARGET} ${SRCS})
-
-target_include_directories(${TARGET} PRIVATE src)
-
-target_link_libraries(${TARGET} filamat_lite gtest)

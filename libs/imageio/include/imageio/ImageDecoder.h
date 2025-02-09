@@ -22,16 +22,18 @@
 
 #include <image/LinearImage.h>
 
+#include <utils/compiler.h>
+
 namespace image {
 
-class ImageDecoder {
+class UTILS_PUBLIC ImageDecoder {
 public:
     enum class ColorSpace {
         LINEAR,
         SRGB
     };
 
-    // Returns linear floating-point data, or a non-valid image if an error occured.
+    // Returns linear floating-point data, or a non-valid image if an error occurred.
     static LinearImage decode(std::istream& stream, const std::string& sourceName,
             ColorSpace sourceSpace = ColorSpace::SRGB);
 

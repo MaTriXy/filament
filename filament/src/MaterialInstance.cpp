@@ -16,279 +16,386 @@
 
 #include <filament/MaterialInstance.h>
 
+#include "details/Material.h"
 #include "details/MaterialInstance.h"
 
-#include "RenderPass.h"
+#include <filament/Color.h>
+#include <filament/MaterialEnums.h>
 
-#include <private/filament/UniformInterfaceBlock.h>
+#include <backend/DriverEnums.h>
 
-#include "details/Engine.h"
-#include "details/Material.h"
-#include "details/Texture.h"
+#include <utils/compiler.h>
+#include <utils/debug.h>
 
-#include <utils/Log.h>
+#include <math/vec2.h>
+#include <math/vec3.h>
+#include <math/vec4.h>
+#include <math/mat3.h>
 
-#include <string.h>
+#include <algorithm>
+#include <string_view>
 
-using namespace filament::math;
-using namespace utils;
+#include <stddef.h>
+#include <stdint.h>
 
 namespace filament {
 
+using namespace math;
 using namespace backend;
 
-namespace details {
+// ------------------------------------------------------------------------------------------------
 
-FMaterialInstance::FMaterialInstance() noexcept = default;
-
-FMaterialInstance::FMaterialInstance(FEngine& engine, FMaterial const* material) {
-    mMaterial = material;
-    mMaterialSortingKey = RenderPass::makeMaterialSortingKey(
-            material->getId(), material->generateMaterialInstanceId());
-
-    FEngine::DriverApi& driver = engine.getDriverApi();
-
-    if (!material->getUniformInterfaceBlock().isEmpty()) {
-        mUniforms.setUniforms(material->getDefaultInstance()->getUniformBuffer());
-        mUbHandle = driver.createUniformBuffer(mUniforms.getSize(), backend::BufferUsage::DYNAMIC);
-    }
-
-    if (!material->getSamplerInterfaceBlock().isEmpty()) {
-        mSamplers.setSamplers(material->getDefaultInstance()->getSamplerGroup());
-        mSbHandle = driver.createSamplerGroup(mSamplers.getSize());
-    }
-
-    initParameters(material);
-}
-
-// This version is used to initialize the default material instance
-void FMaterialInstance::initDefaultInstance(FEngine& engine, FMaterial const* material) {
-    mMaterial = material;
-    mMaterialSortingKey = RenderPass::makeMaterialSortingKey(
-            material->getId(), material->generateMaterialInstanceId());
-
-    FEngine::DriverApi& driver = engine.getDriverApi();
-
-    if (!material->getUniformInterfaceBlock().isEmpty()) {
-        mUniforms = UniformBuffer(material->getUniformInterfaceBlock().getSize());
-        mUbHandle = driver.createUniformBuffer(mUniforms.getSize(), backend::BufferUsage::STATIC);
-    }
-
-    if (!material->getSamplerInterfaceBlock().isEmpty()) {
-        mSamplers = SamplerGroup(material->getSamplerInterfaceBlock().getSize());
-        mSbHandle = driver.createSamplerGroup(mSamplers.getSize());
-    }
-
-    initParameters(material);
-}
-
-FMaterialInstance::~FMaterialInstance() noexcept = default;
-
-void FMaterialInstance::terminate(FEngine& engine) {
-    FEngine::DriverApi& driver = engine.getDriverApi();
-    driver.destroyUniformBuffer(mUbHandle);
-    driver.destroySamplerGroup(mSbHandle);
-}
-
-void FMaterialInstance::initParameters(FMaterial const* material) {
-
-    if (material->getBlendingMode() == BlendingMode::MASKED) {
-        static_cast<MaterialInstance*>(this)->setParameter(
-                "_maskThreshold", material->getMaskThreshold());
-    }
-
-    if (material->hasDoubleSidedCapability()) {
-        static_cast<MaterialInstance*>(this)->setParameter(
-                "_doubleSided", material->isDoubleSided());
-    }
-
-    if (material->hasSpecularAntiAliasing()) {
-        static_cast<MaterialInstance*>(this)->setParameter(
-                "_specularAntiAliasingVariance", material->getSpecularAntiAliasingVariance());
-        static_cast<MaterialInstance*>(this)->setParameter(
-                "_specularAntiAliasingThreshold", material->getSpecularAntiAliasingThreshold());
+// This is the untyped/sized version of the setParameter: we end up here for e.g. vec4<int> and
+// vec4<float>. This must not be inlined (this is the whole point).
+template<size_t Size>
+UTILS_NOINLINE
+void FMaterialInstance::setParameterUntypedImpl(std::string_view const name, const void* value) {
+    ssize_t offset = mMaterial->getUniformInterfaceBlock().getFieldOffset(name, 0);
+    if (UTILS_LIKELY(offset >= 0)) {
+        mUniforms.setUniformUntyped<Size>(size_t(offset), value);  // handles specialization for mat3f
     }
 }
 
-void FMaterialInstance::commitSlow(DriverApi& driver) const {
-    // update uniforms if needed
-    if (mUniforms.isDirty()) {
-        driver.loadUniformBuffer(mUbHandle, mUniforms.toBufferDescriptor(driver));
+// ------------------------------------------------------------------------------------------------
+
+// this converts typed calls into the untyped-sized call.
+template<typename T>
+UTILS_ALWAYS_INLINE
+inline void FMaterialInstance::setParameterImpl(std::string_view const name, T const& value) {
+    static_assert(!std::is_same_v<T, mat3f>);
+    setParameterUntypedImpl<sizeof(T)>(name, &value);
+}
+
+// specialization for mat3f
+template<>
+inline void FMaterialInstance::setParameterImpl(std::string_view const name, mat3f const& value) {
+    ssize_t offset = mMaterial->getUniformInterfaceBlock().getFieldOffset(name, 0);
+    if (UTILS_LIKELY(offset >= 0)) {
+        mUniforms.setUniform(size_t(offset), value);
     }
-    if (mSamplers.isDirty()) {
-        driver.updateSamplerGroup(mSbHandle, std::move(mSamplers.toCommandStream()));
+}
+
+// ------------------------------------------------------------------------------------------------
+
+template<size_t Size>
+UTILS_NOINLINE
+void FMaterialInstance::setParameterUntypedImpl(std::string_view const name,
+        const void* value, size_t const count) {
+    ssize_t offset = mMaterial->getUniformInterfaceBlock().getFieldOffset(name, 0);
+    if (UTILS_LIKELY(offset >= 0)) {
+        mUniforms.setUniformArrayUntyped<Size>(size_t(offset), value, count);
     }
 }
 
 template<typename T>
-inline void FMaterialInstance::setParameter(const char* name, T value) noexcept {
-    ssize_t offset = mMaterial->getUniformInterfaceBlock().getUniformOffset(name, 0);
-    if (offset >= 0) {
-        mUniforms.setUniform<T>(size_t(offset), value);  // handles specialization for mat3f
-    }
+UTILS_ALWAYS_INLINE
+inline void FMaterialInstance::setParameterImpl(std::string_view const name,
+        const T* value, size_t const count) {
+    static_assert(!std::is_same_v<T, mat3f>);
+    setParameterUntypedImpl<sizeof(T)>(name, value, count);
 }
 
-template <typename T>
-inline void FMaterialInstance::setParameter(const char* name, const T* value, size_t count) noexcept {
-    ssize_t offset = mMaterial->getUniformInterfaceBlock().getUniformOffset(name, 0);
-    if (offset >= 0) {
-        mUniforms.setUniformArray<T>(size_t(offset), value, count);
-    }
+// ------------------------------------------------------------------------------------------------
+
+template<typename T, typename>
+void MaterialInstance::setParameter(const char* name, size_t nameLength, T const& value) {
+    downcast(this)->setParameterImpl({ name, nameLength }, value);
 }
 
-void FMaterialInstance::setParameter(const char* name,
-        Texture const* texture, TextureSampler const& sampler) noexcept {
-    setParameter(name, upcast(texture)->getHwHandle(), sampler.getSamplerParams());
+template<>
+UTILS_PUBLIC void MaterialInstance::setParameter(const char* name, size_t const nameLength, bool const& v) {
+    // this kills tail-call optimization
+    setParameter(name, nameLength, uint32_t(v));
 }
 
-void FMaterialInstance::setParameter(const char* name,
-        backend::Handle<backend::HwTexture> texture, backend::SamplerParams params) noexcept {
-    size_t index = mMaterial->getSamplerInterfaceBlock().getSamplerInfo(name)->offset;
-    mSamplers.setSampler(index, { texture, params });
+template<>
+UTILS_PUBLIC void MaterialInstance::setParameter(const char* name, size_t const nameLength, bool2 const& v) {
+    // this kills tail-call optimization
+    setParameter(name, nameLength, uint2(v));
 }
 
-void FMaterialInstance::setDoubleSided(bool doubleSided) noexcept {
-    if (!mMaterial->hasDoubleSidedCapability()) {
-        slog.w << "Parent material does not have double-sided capability." << io::endl;
-        return;
-    }
-    setParameter("_doubleSided", doubleSided);
+template<>
+UTILS_PUBLIC void MaterialInstance::setParameter(const char* name, size_t const nameLength, bool3 const& v) {
+    // this kills tail-call optimization
+    setParameter(name, nameLength, uint3(v));
+}
+
+template<>
+UTILS_PUBLIC void MaterialInstance::setParameter(const char* name, size_t const nameLength, bool4 const& v) {
+    // this kills tail-call optimization
+    setParameter(name, nameLength, uint4(v));
 }
 
 // explicit template instantiation of our supported types
-template UTILS_NOINLINE void FMaterialInstance::setParameter<bool>    (const char* name, bool     v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<float>   (const char* name, float    v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<int32_t> (const char* name, int32_t  v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<uint32_t>(const char* name, uint32_t v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<bool2>   (const char* name, bool2    v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<bool3>   (const char* name, bool3    v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<bool4>   (const char* name, bool4    v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<int2>    (const char* name, int2     v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<int3>    (const char* name, int3     v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<int4>    (const char* name, int4     v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<uint2>   (const char* name, uint2    v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<uint3>   (const char* name, uint3    v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<uint4>   (const char* name, uint4    v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<float2>  (const char* name, float2   v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<float3>  (const char* name, float3   v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<float4>  (const char* name, float4   v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<mat3f>   (const char* name, mat3f    v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<mat4f>   (const char* name, mat4f    v);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<bool>    (const char* name, const bool     *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<float>   (const char* name, const float    *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<int32_t> (const char* name, const int32_t  *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<uint32_t>(const char* name, const uint32_t *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<bool2>   (const char* name, const bool2    *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<bool3>   (const char* name, const bool3    *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<bool4>   (const char* name, const bool4    *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<int2>    (const char* name, const int2     *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<int3>    (const char* name, const int3     *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<int4>    (const char* name, const int4     *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<uint2>   (const char* name, const uint2    *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<uint3>   (const char* name, const uint3    *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<uint4>   (const char* name, const uint4    *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<float2>  (const char* name, const float2   *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<float3>  (const char* name, const float3   *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<float4>  (const char* name, const float4   *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<mat3f>   (const char* name, const mat3f    *v, size_t c);
-template UTILS_NOINLINE void FMaterialInstance::setParameter<mat4f>   (const char* name, const mat4f    *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<float>   (const char* name, size_t nameLength, float const&    v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<int32_t> (const char* name, size_t nameLength, int32_t const&  v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<uint32_t>(const char* name, size_t nameLength, uint32_t const& v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<int2>    (const char* name, size_t nameLength, int2 const&     v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<int3>    (const char* name, size_t nameLength, int3 const&     v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<int4>    (const char* name, size_t nameLength, int4 const&     v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<uint2>   (const char* name, size_t nameLength, uint2 const&    v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<uint3>   (const char* name, size_t nameLength, uint3 const&    v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<uint4>   (const char* name, size_t nameLength, uint4 const&    v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<float2>  (const char* name, size_t nameLength, float2 const&   v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<float3>  (const char* name, size_t nameLength, float3 const&   v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<float4>  (const char* name, size_t nameLength, float4 const&   v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<mat3f>   (const char* name, size_t nameLength, mat3f const&    v);
+template UTILS_PUBLIC void MaterialInstance::setParameter<mat4f>   (const char* name, size_t nameLength, mat4f const&    v);
 
-} // namespace details
+// ------------------------------------------------------------------------------------------------
 
-using namespace details;
+template <typename T, typename>
+void MaterialInstance::setParameter(const char* name, size_t nameLength, const T* values, size_t count) {
+    downcast(this)->setParameterImpl({ name, nameLength }, values, count);
+}
+
+template<>
+UTILS_PUBLIC void MaterialInstance::setParameter(const char* name, size_t const nameLength, const bool* v, size_t const c) {
+    auto* p = new uint32_t[c];
+    std::copy_n(v, c, p);
+    setParameter(name, nameLength, p, c);
+    delete [] p;
+}
+
+template<>
+UTILS_PUBLIC void MaterialInstance::setParameter(const char* name, size_t const nameLength, const bool2* v, size_t const c) {
+    auto* p = new uint2[c];
+    std::copy_n(v, c, p);
+    setParameter(name, nameLength, p, c);
+    delete [] p;
+}
+
+template<>
+UTILS_PUBLIC void MaterialInstance::setParameter(const char* name, size_t const nameLength, const bool3* v, size_t const c) {
+    auto* p = new uint3[c];
+    std::copy_n(v, c, p);
+    setParameter(name, nameLength, p, c);
+    delete [] p;
+}
+
+template<>
+UTILS_PUBLIC void MaterialInstance::setParameter(const char* name, size_t const nameLength, const bool4* v, size_t const c) {
+    auto* p = new uint4[c];
+    std::copy_n(v, c, p);
+    setParameter(name, nameLength, p, c);
+    delete [] p;
+}
+
+template<>
+UTILS_PUBLIC void MaterialInstance::setParameter<mat3f>(const char* name, size_t const nameLength, const mat3f* v, size_t const c) {
+    // pretend each mat3 is an array of 3 float3
+    setParameter(name, nameLength, reinterpret_cast<float3 const*>(v), c * 3);
+}
+
+template UTILS_PUBLIC void MaterialInstance::setParameter<float>   (const char* name, size_t nameLength, const float    *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<int32_t> (const char* name, size_t nameLength, const int32_t  *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<uint32_t>(const char* name, size_t nameLength, const uint32_t *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<int2>    (const char* name, size_t nameLength, const int2     *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<int3>    (const char* name, size_t nameLength, const int3     *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<int4>    (const char* name, size_t nameLength, const int4     *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<uint2>   (const char* name, size_t nameLength, const uint2    *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<uint3>   (const char* name, size_t nameLength, const uint3    *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<uint4>   (const char* name, size_t nameLength, const uint4    *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<float2>  (const char* name, size_t nameLength, const float2   *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<float3>  (const char* name, size_t nameLength, const float3   *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<float4>  (const char* name, size_t nameLength, const float4   *v, size_t c);
+template UTILS_PUBLIC void MaterialInstance::setParameter<mat4f>   (const char* name, size_t nameLength, const mat4f    *v, size_t c);
+
+// ------------------------------------------------------------------------------------------------
+
+template<typename T>
+T FMaterialInstance::getParameterImpl(std::string_view const name) const {
+    ssize_t offset = mMaterial->getUniformInterfaceBlock().getFieldOffset(name, 0);
+    assert_invariant(offset>=0);
+    return downcast(this)->getUniformBuffer().getUniform<T>(offset);
+}
+
+template<typename T>
+T MaterialInstance::getParameter(const char* name, size_t nameLength) const {
+    return downcast(this)->getParameterImpl<T>({ name, nameLength });
+}
+
+// explicit template instantiation of our supported types
+template UTILS_PUBLIC float MaterialInstance::getParameter<float>        (const char* name, size_t nameLength) const;
+template UTILS_PUBLIC int32_t MaterialInstance::getParameter<int32_t>  (const char* name, size_t nameLength) const;
+template UTILS_PUBLIC uint32_t MaterialInstance::getParameter<uint32_t>(const char* name, size_t nameLength) const;
+template UTILS_PUBLIC int2 MaterialInstance::getParameter<int2>        (const char* name, size_t nameLength) const;
+template UTILS_PUBLIC int3 MaterialInstance::getParameter<int3>        (const char* name, size_t nameLength) const;
+template UTILS_PUBLIC int4 MaterialInstance::getParameter<int4>        (const char* name, size_t nameLength) const;
+template UTILS_PUBLIC uint2 MaterialInstance::getParameter<uint2>      (const char* name, size_t nameLength) const;
+template UTILS_PUBLIC uint3 MaterialInstance::getParameter<uint3>      (const char* name, size_t nameLength) const;
+template UTILS_PUBLIC uint4 MaterialInstance::getParameter<uint4>      (const char* name, size_t nameLength) const;
+template UTILS_PUBLIC float2 MaterialInstance::getParameter<float2>      (const char* name, size_t nameLength) const;
+template UTILS_PUBLIC float3 MaterialInstance::getParameter<float3>      (const char* name, size_t nameLength) const;
+template UTILS_PUBLIC float4 MaterialInstance::getParameter<float4>      (const char* name, size_t nameLength) const;
+template UTILS_PUBLIC mat3f MaterialInstance::getParameter<mat3f>      (const char* name, size_t nameLength) const;
+
+// ------------------------------------------------------------------------------------------------
 
 Material const* MaterialInstance::getMaterial() const noexcept {
-    return upcast(this)->mMaterial;
+    return downcast(this)->getMaterial();
 }
 
-template <typename T>
-void MaterialInstance::setParameter(const char* name, T value) noexcept {
-    upcast(this)->setParameter<T>(name, value);
+const char* MaterialInstance::getName() const noexcept {
+    return downcast(this)->getName();
 }
 
-template <typename T>
-void MaterialInstance::setParameter(const char* name, const T* value, size_t count) noexcept {
-    upcast(this)->setParameter<T>(name, value, count);
+void MaterialInstance::setParameter(const char* name, size_t nameLength, Texture const* texture,
+        TextureSampler const& sampler) {
+    return downcast(this)->setParameterImpl({ name, nameLength }, downcast(texture), sampler);
 }
 
-// explicit template instantiation of our supported types
-template UTILS_PUBLIC void MaterialInstance::setParameter<bool>    (const char* name, bool     v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<float>   (const char* name, float    v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<int32_t> (const char* name, int32_t  v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<uint32_t>(const char* name, uint32_t v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<bool2>   (const char* name, bool2    v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<bool3>   (const char* name, bool3    v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<bool4>   (const char* name, bool4    v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<int2>    (const char* name, int2     v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<int3>    (const char* name, int3     v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<int4>    (const char* name, int4     v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<uint2>   (const char* name, uint2    v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<uint3>   (const char* name, uint3    v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<uint4>   (const char* name, uint4    v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<float2>  (const char* name, float2   v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<float3>  (const char* name, float3   v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<float4>  (const char* name, float4   v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<mat3f>   (const char* name, mat3f    v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<mat4f>   (const char* name, mat4f    v);
-template UTILS_PUBLIC void MaterialInstance::setParameter<bool>    (const char* name, const bool     *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<float>   (const char* name, const float    *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<int32_t> (const char* name, const int32_t  *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<uint32_t>(const char* name, const uint32_t *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<bool2>   (const char* name, const bool2    *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<bool3>   (const char* name, const bool3    *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<bool4>   (const char* name, const bool4    *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<int2>    (const char* name, const int2     *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<int3>    (const char* name, const int3     *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<int4>    (const char* name, const int4     *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<uint2>   (const char* name, const uint2    *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<uint3>   (const char* name, const uint3    *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<uint4>   (const char* name, const uint4    *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<float2>  (const char* name, const float2   *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<float3>  (const char* name, const float3   *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<float4>  (const char* name, const float4   *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<mat3f>   (const char* name, const mat3f    *v, size_t c);
-template UTILS_PUBLIC void MaterialInstance::setParameter<mat4f>   (const char* name, const mat4f    *v, size_t c);
-
-void MaterialInstance::setParameter(const char* name, Texture const* texture,
-        TextureSampler const& sampler) noexcept {
-    return upcast(this)->setParameter(name, texture, sampler);
+void MaterialInstance::setParameter(
+        const char* name, size_t nameLength, RgbType const type, float3 const color) {
+    downcast(this)->setParameterImpl<float3>({ name, nameLength }, Color::toLinear(type, color));
 }
 
-void MaterialInstance::setParameter(const char* name, RgbType type, float3 color) noexcept {
-    upcast(this)->setParameter<float3>(name, Color::toLinear(type, color));
+void MaterialInstance::setParameter(
+        const char* name, size_t nameLength, RgbaType const type, float4 const color) {
+    downcast(this)->setParameterImpl<float4>({ name, nameLength }, Color::toLinear(type, color));
 }
 
-void MaterialInstance::setParameter(const char* name, RgbaType type, float4 color) noexcept {
-    upcast(this)->setParameter<float4>(name, Color::toLinear(type, color));
-}
-
-void MaterialInstance::setScissor(uint32_t left, uint32_t bottom, uint32_t width,
-        uint32_t height) noexcept {
-    upcast(this)->setScissor(left, bottom, width, height);
+void MaterialInstance::setScissor(
+        uint32_t const left, uint32_t const bottom, uint32_t const width, uint32_t const height) noexcept {
+    downcast(this)->setScissor(left, bottom, width, height);
 }
 
 void MaterialInstance::unsetScissor() noexcept {
-    upcast(this)->unsetScissor();
+    downcast(this)->unsetScissor();
 }
 
-void MaterialInstance::setPolygonOffset(float scale, float constant) noexcept {
-    upcast(this)->setPolygonOffset(scale, constant);
+void MaterialInstance::setPolygonOffset(float const scale, float const constant) noexcept {
+    downcast(this)->setPolygonOffset(scale, constant);
 }
 
-void MaterialInstance::setMaskThreshold(float threshold) noexcept {
-    upcast(this)->setMaskThreshold(threshold);
+void MaterialInstance::setMaskThreshold(float const threshold) noexcept {
+    downcast(this)->setMaskThreshold(threshold);
 }
 
-void MaterialInstance::setSpecularAntiAliasingVariance(float variance) noexcept {
-    upcast(this)->setSpecularAntiAliasingVariance(variance);
+void MaterialInstance::setSpecularAntiAliasingVariance(float const variance) noexcept {
+    downcast(this)->setSpecularAntiAliasingVariance(variance);
 }
 
-void MaterialInstance::setSpecularAntiAliasingThreshold(float threshold) noexcept {
-    upcast(this)->setSpecularAntiAliasingThreshold(threshold);
+void MaterialInstance::setSpecularAntiAliasingThreshold(float const threshold) noexcept {
+    downcast(this)->setSpecularAntiAliasingThreshold(threshold);
 }
 
-void MaterialInstance::setDoubleSided(bool doubleSided) noexcept {
-    upcast(this)->setDoubleSided(doubleSided);
+void MaterialInstance::setDoubleSided(bool const doubleSided) noexcept {
+    downcast(this)->setDoubleSided(doubleSided);
+}
+
+void MaterialInstance::setTransparencyMode(TransparencyMode const mode) noexcept {
+    downcast(this)->setTransparencyMode(mode);
+}
+
+void MaterialInstance::setCullingMode(CullingMode const culling) noexcept {
+    downcast(this)->setCullingMode(culling);
+}
+
+void MaterialInstance::setCullingMode(CullingMode const colorPassCullingMode,
+    CullingMode const shadowPassCullingMode) noexcept {
+    downcast(this)->setCullingMode(colorPassCullingMode, shadowPassCullingMode);
+}
+
+void MaterialInstance::setColorWrite(bool const enable) noexcept {
+    downcast(this)->setColorWrite(enable);
+}
+
+void MaterialInstance::setDepthWrite(bool const enable) noexcept {
+    downcast(this)->setDepthWrite(enable);
+}
+
+void MaterialInstance::setDepthCulling(bool const enable) noexcept {
+    downcast(this)->setDepthCulling(enable);
+}
+
+void MaterialInstance::setDepthFunc(DepthFunc const depthFunc) noexcept {
+    downcast(this)->setDepthFunc(depthFunc);
+}
+
+MaterialInstance::DepthFunc MaterialInstance::getDepthFunc() const noexcept {
+    return downcast(this)->getDepthFunc();
+}
+
+void MaterialInstance::setStencilWrite(bool const enable) noexcept {
+    downcast(this)->setStencilWrite(enable);
+}
+
+void MaterialInstance::setStencilCompareFunction(StencilCompareFunc const func, StencilFace const face) noexcept {
+    downcast(this)->setStencilCompareFunction(func, face);
+}
+
+void MaterialInstance::setStencilOpStencilFail(StencilOperation const op, StencilFace const face) noexcept {
+    downcast(this)->setStencilOpStencilFail(op, face);
+}
+
+void MaterialInstance::setStencilOpDepthFail(StencilOperation const op, StencilFace const face) noexcept {
+    downcast(this)->setStencilOpDepthFail(op, face);
+}
+
+void MaterialInstance::setStencilOpDepthStencilPass(StencilOperation const op, StencilFace const face) noexcept {
+    downcast(this)->setStencilOpDepthStencilPass(op, face);
+}
+
+void MaterialInstance::setStencilReferenceValue(uint8_t const value, StencilFace const face) noexcept {
+    downcast(this)->setStencilReferenceValue(value, face);
+}
+
+void MaterialInstance::setStencilReadMask(uint8_t const readMask, StencilFace const face) noexcept {
+    downcast(this)->setStencilReadMask(readMask, face);
+}
+
+void MaterialInstance::setStencilWriteMask(uint8_t const writeMask, StencilFace const face) noexcept {
+    downcast(this)->setStencilWriteMask(writeMask, face);
+}
+
+MaterialInstance* MaterialInstance::duplicate(MaterialInstance const* other, const char* name) noexcept {
+    return FMaterialInstance::duplicate(downcast(other), name);
+}
+
+
+float MaterialInstance::getMaskThreshold() const noexcept {
+    return downcast(this)->getMaskThreshold();
+}
+
+float MaterialInstance::getSpecularAntiAliasingVariance() const noexcept {
+    return downcast(this)->getSpecularAntiAliasingVariance();
+}
+
+float MaterialInstance::getSpecularAntiAliasingThreshold() const noexcept {
+    return downcast(this)->getSpecularAntiAliasingThreshold();
+}
+
+bool MaterialInstance::isDoubleSided() const noexcept {
+    return downcast(this)->isDoubleSided();
+}
+
+TransparencyMode MaterialInstance::getTransparencyMode() const noexcept {
+    return downcast(this)->getTransparencyMode();
+}
+
+CullingMode MaterialInstance::getCullingMode() const noexcept {
+    return downcast(this)->getCullingMode();
+}
+
+CullingMode MaterialInstance::getShadowCullingMode() const noexcept {
+    return downcast(this)->getShadowCullingMode();
+}
+
+bool MaterialInstance::isColorWriteEnabled() const noexcept {
+    return downcast(this)->isColorWriteEnabled();
+}
+
+bool MaterialInstance::isDepthWriteEnabled() const noexcept {
+    return downcast(this)->isDepthWriteEnabled();
+}
+
+bool MaterialInstance::isStencilWriteEnabled() const noexcept {
+    return downcast(this)->isStencilWriteEnabled();
+}
+
+bool MaterialInstance::isDepthCullingEnabled() const noexcept {
+    return downcast(this)->isDepthCullingEnabled();
 }
 
 } // namespace filament

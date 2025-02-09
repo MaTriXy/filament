@@ -17,6 +17,7 @@
 #include <math.h>
 #include <random>
 #include <functional>
+#include <type_traits>
 
 #include <gtest/gtest.h>
 
@@ -24,6 +25,7 @@
 #include <math/mat4.h>
 #include <math/vec4.h>
 #include <math/vec3.h>
+#include <math/scalar.h>
 
 using namespace filament::math;
 
@@ -221,7 +223,7 @@ TEST_F(QuatTest, ArithmeticOps) {
 TEST_F(QuatTest, ArithmeticFunc) {
     quat q(1, 2, 3, 4);
     quat qc(conj(q));
-    __attribute__((unused)) quat qi(inverse(q));
+    MATH_UNUSED quat qi(inverse(q));
     quat qn(normalize(q));
 
     EXPECT_EQ(qc.x, -2);
@@ -235,7 +237,7 @@ TEST_F(QuatTest, ArithmeticFunc) {
     EXPECT_DOUBLE_EQ(1, length(qn));
     EXPECT_DOUBLE_EQ(1, dot(qn, qn));
 
-    quat qr = quat::fromAxisAngle(double3(0, 0, 1), M_PI / 2);
+    quat qr = quat::fromAxisAngle(double3(0, 0, 1), F_PI / 2);
     EXPECT_EQ(mat4(qr).toQuaternion(), qr);
     EXPECT_EQ(1_i, mat4(1_i).toQuaternion());
     EXPECT_EQ(1_j, mat4(1_j).toQuaternion());
@@ -252,9 +254,9 @@ TEST_F(QuatTest, ArithmeticFunc) {
     EXPECT_NEAR(qq.w, q2.w, 1e-15);
 
     quat qa = quat::fromAxisAngle(double3(0, 0, 1), 0);
-    quat qb = quat::fromAxisAngle(double3(0, 0, 1), M_PI / 2);
+    quat qb = quat::fromAxisAngle(double3(0, 0, 1), F_PI / 2);
     quat qs = slerp(qa, qb, 0.5);
-    qr = quat::fromAxisAngle(double3(0, 0, 1), M_PI / 4);
+    qr = quat::fromAxisAngle(double3(0, 0, 1), F_PI / 4);
     EXPECT_DOUBLE_EQ(qr.x, qs.x);
     EXPECT_DOUBLE_EQ(qr.y, qs.y);
     EXPECT_DOUBLE_EQ(qr.z, qs.z);
@@ -265,6 +267,27 @@ TEST_F(QuatTest, ArithmeticFunc) {
     EXPECT_DOUBLE_EQ(qr.y, qs.y);
     EXPECT_DOUBLE_EQ(qr.z, qs.z);
     EXPECT_DOUBLE_EQ(qr.w, qs.w);
+
+    // Ensure that we're taking the shortest path.
+    qa = {-0.707, 0, 0, 0.707};
+    qb = {1, 0, 0, 0};
+    qs = slerp(qa, qb, 0.5);
+    EXPECT_NEAR(qs[3], -0.92, 0.1);
+    EXPECT_NEAR(qs[2], +0.38, 0.1);
+
+    // Create two quats that are near to each other, but with opposite signs.
+    qa = { 0.76,   0.39,   0.51,  0.19};
+    qb = {-0.759, -0.385, -0.50, -0.19};
+    qs = slerp(qa, qb, 0.5);
+
+    // The rotation angle produced by v * slerp(A, B, .5) should be between the rotation angles
+    // produced by (v * A) and (v * B).
+    double3 v(0, 0, 1);
+    double3 va = qa * v;
+    double3 vb = qb * v;
+    double3 vs = qs * v;
+    EXPECT_LT(dot(v, va), dot(v, vs));
+    EXPECT_LT(dot(v, vs), dot(v, vb));
 }
 
 TEST_F(QuatTest, MultiplicationExhaustive) {
@@ -291,3 +314,114 @@ TEST_F(QuatTest, MultiplicationExhaustive) {
         ASSERT_FLOAT_EQ(ab.w, ab_other.w);
     }
 }
+
+TEST_F(QuatTest, NaN) {
+    quatf qa = {.5, .5, .5, .5};
+    quatf qb = {0.49995, 0.49998, 0.49998, 0.49995};
+    quatf qs = slerp(qa, qb, 0.034934);
+
+    EXPECT_NEAR(qs[0], 0.5, 0.1);
+    EXPECT_NEAR(qs[1], 0.5, 0.1);
+    EXPECT_NEAR(qs[2], 0.5, 0.1);
+    EXPECT_NEAR(qs[3], 0.5, 0.1);
+}
+
+TEST_F(QuatTest, Conversions) {
+    quat qd;
+    quatf qf;
+    float3 vf;
+    double3 vd;
+    double d = 0.0;
+    float f = 0.0f;
+
+    static_assert(std::is_same<details::arithmetic_result_t<float, float>, float>::value);
+    static_assert(std::is_same<details::arithmetic_result_t<float, double>, double>::value);
+    static_assert(std::is_same<details::arithmetic_result_t<double, float>, double>::value);
+    static_assert(std::is_same<details::arithmetic_result_t<double, double>, double>::value);
+
+    {
+        auto r1 = qd * d;
+        auto r2 = qd * f;
+        auto r3 = qf * d;
+        auto r4 = qf * f;
+        static_assert(std::is_same<decltype(r1), quat>::value);
+        static_assert(std::is_same<decltype(r2), quat>::value);
+        static_assert(std::is_same<decltype(r3), quat>::value);
+        static_assert(std::is_same<decltype(r4), quatf>::value);
+    }
+    {
+        auto r1 = qd / d;
+        auto r2 = qd / f;
+        auto r3 = qf / d;
+        auto r4 = qf / f;
+        static_assert(std::is_same<decltype(r1), quat>::value);
+        static_assert(std::is_same<decltype(r2), quat>::value);
+        static_assert(std::is_same<decltype(r3), quat>::value);
+        static_assert(std::is_same<decltype(r4), quatf>::value);
+    }
+    {
+        auto r1 = d * qd;
+        auto r2 = f * qd;
+        auto r3 = d * qf;
+        auto r4 = f * qf;
+        static_assert(std::is_same<decltype(r1), quat>::value);
+        static_assert(std::is_same<decltype(r2), quat>::value);
+        static_assert(std::is_same<decltype(r3), quat>::value);
+        static_assert(std::is_same<decltype(r4), quatf>::value);
+    }
+    {
+        auto r1 = qd * vd;
+        auto r2 = qf * vd;
+        auto r3 = qd * vf;
+        auto r4 = qf * vf;
+        static_assert(std::is_same<decltype(r1), double3>::value);
+        static_assert(std::is_same<decltype(r2), double3>::value);
+        static_assert(std::is_same<decltype(r3), double3>::value);
+        static_assert(std::is_same<decltype(r4), float3>::value);
+    }
+    {
+        auto r1 = qd * qd;
+        auto r2 = qf * qd;
+        auto r3 = qd * qf;
+        auto r4 = qf * qf;
+        static_assert(std::is_same<decltype(r1), quat>::value);
+        static_assert(std::is_same<decltype(r2), quat>::value);
+        static_assert(std::is_same<decltype(r3), quat>::value);
+        static_assert(std::is_same<decltype(r4), quatf>::value);
+    }
+    {
+        auto r1 = dot(qd, qd);
+        auto r2 = dot(qf, qd);
+        auto r3 = dot(qd, qf);
+        auto r4 = dot(qf, qf);
+        static_assert(std::is_same<decltype(r1), double>::value);
+        static_assert(std::is_same<decltype(r2), double>::value);
+        static_assert(std::is_same<decltype(r3), double>::value);
+        static_assert(std::is_same<decltype(r4), float>::value);
+    }
+    {
+        auto r1 = cross(qd, qd);
+        auto r2 = cross(qf, qd);
+        auto r3 = cross(qd, qf);
+        auto r4 = cross(qf, qf);
+        static_assert(std::is_same<decltype(r1), quat>::value);
+        static_assert(std::is_same<decltype(r2), quat>::value);
+        static_assert(std::is_same<decltype(r3), quat>::value);
+        static_assert(std::is_same<decltype(r4), quatf>::value);
+    }
+}
+
+template <typename L, typename R, typename = void>
+struct has_divide_assign : std::false_type {};
+
+template <typename L, typename R>
+struct has_divide_assign<L, R,
+        decltype(std::declval<L&>() /= std::declval<R>(), void())> : std::true_type {};
+
+// Static assertions to validate the availability of the /= operator for specific type
+// combinations. The first static_assert checks that the quat does not have a /= operator with Foo.
+// This ensures that quat does not provide an inappropriate overload that could be erroneously
+// selected.
+struct Foo {};
+static_assert(!has_divide_assign<quat, Foo>::value);
+static_assert(has_divide_assign<quat, float>::value);

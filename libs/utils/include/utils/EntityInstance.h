@@ -14,15 +14,14 @@
  * limitations under the License.
  */
 
-#ifndef TNT_FILAMENT_UTILS_ENTITYINSTANCE_H
-#define TNT_FILAMENT_UTILS_ENTITYINSTANCE_H
+#ifndef TNT_UTILS_ENTITYINSTANCE_H
+#define TNT_UTILS_ENTITYINSTANCE_H
 
 #include <utils/compiler.h>
 
 #include <type_traits>
 
 #include <stdint.h>
-
 
 namespace utils {
 
@@ -77,7 +76,7 @@ public:
     // return a value for this Instance (mostly needed for debugging
     constexpr uint32_t asValue() const noexcept { return mInstance; }
 
-    // auto convert to Type so it can be used as an index
+    // auto convert to Type, so it can be used as an index
     constexpr operator Type() const noexcept { return mInstance; } // NOLINT(google-explicit-constructor)
 
     // conversion from Type so we can initialize from an index
@@ -86,4 +85,4 @@ public:
 
 } // namespace utils
 
-#endif // TNT_FILAMENT_UTILS_ENTITYINSTANCE_H
+#endif // TNT_UTILS_ENTITYINSTANCE_H

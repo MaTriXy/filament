@@ -26,7 +26,52 @@ function getBufferDescriptor(buffer) {
     return buffer;
 }
 
+function isTexture(uri) {
+    // TODO: This is not a great way to determine if a resource is a texture, but we can
+    // remove it after gltfio gains support for concurrent downloading of vertex data:
+    // https://github.com/google/filament/issues/5909
+    if (uri.endsWith(".png")) {
+        return true;
+    }
+    if (uri.endsWith(".ktx2")) {
+        return true;
+    }
+    if (uri.endsWith(".jpg") || uri.endsWith(".jpeg")) {
+        return true;
+    }
+    return false;
+}
+
+Filament.vectorToArray = function(vector) {
+    const result = [];
+    for (let i = 0; i < vector.size(); i++) {
+        result.push(vector.get(i));
+    }
+    return result;
+};
+
+Filament.shadowOptions = function(overrides) {
+    const options = {
+        mapSize: 1024,
+        shadowCascades: 1,
+        constantBias: 0.001,
+        normalBias: 1.0,
+        shadowFar: 0.0,
+        shadowNearHint: 1.0,
+        shadowFarHint: 100.0,
+        stable: false,
+        polygonOffsetConstant: 0.5,
+        polygonOffsetSlope: 2.0,
+        screenSpaceContactShadows: false,
+        stepCount: 8,
+        maxShadowDistance: 0.3
+    };
+    return Object.assign(options, overrides);
+};
+
 Filament.loadClassExtensions = function() {
+
+    Filament.loadGeneratedExtensions();
 
     /// Engine ::core class::
 
@@ -39,22 +84,43 @@ Filament.loadClassExtensions = function() {
             majorVersion: 2,
             minorVersion: 0,
             antialias: false,
-            depth: false,
+            depth: true,
             alpha: false
         };
         options = Object.assign(defaults, options);
 
-        // Create the WebGL 2.0 context and register it with emscripten.
+        // Create the WebGL 2.0 context.
         const ctx = canvas.getContext("webgl2", options);
-        const handle = GL.registerContext(ctx, options);
-        GL.makeContextCurrent(handle);
 
         // Enable all desired extensions by calling getExtension on each one.
         ctx.getExtension('WEBGL_compressed_texture_s3tc');
+        ctx.getExtension('WEBGL_compressed_texture_s3tc_srgb');
         ctx.getExtension('WEBGL_compressed_texture_astc');
         ctx.getExtension('WEBGL_compressed_texture_etc');
 
-        return Filament.Engine._create();
+        // These transient globals are used temporarily during Engine construction.
+        window.filament_glOptions = options;
+        window.filament_glContext = ctx;
+
+        // Register the GL context with emscripten and create the Engine.
+        const engine = Filament.Engine._create();
+
+        // Annotate the engine with the GL context to support multiple canvases.
+        engine.context = window.filament_glContext;
+        engine.handle = window.filament_contextHandle;
+
+        // Ensure that we do not pollute the global namespace.
+        delete window.filament_glOptions;
+        delete window.filament_glContext;
+        delete window.filament_contextHandle;
+
+        return engine;
+    };
+
+    Filament.Engine.prototype.execute = function() {
+        window.filament_contextHandle = this.handle;
+        this._execute();
+        delete window.filament_contextHandle;
     };
 
     /// createMaterial ::method::
@@ -67,58 +133,87 @@ Filament.loadClassExtensions = function() {
         return result;
     };
 
-    /// createTextureFromKtx ::method:: Utility function that creates a [Texture] from a KTX file.
-    /// buffer ::argument:: asset string, or Uint8Array, or [Buffer] with KTX file contents
-    /// options ::argument:: Options dictionary. For now, the `rgbm` boolean is the only option.
+    /// createTextureFromKtx1 ::method:: Utility function that creates a [Texture] from a KTX1 file.
+    /// buffer ::argument:: asset string, or Uint8Array, or [Buffer] with KTX1 file contents
+    /// options ::argument:: Options dictionary.
     /// ::retval:: [Texture]
-    Filament.Engine.prototype.createTextureFromKtx = function(buffer, options) {
+    Filament.Engine.prototype.createTextureFromKtx1 = function(buffer, options) {
         buffer = getBufferDescriptor(buffer);
-        const result = Filament._createTextureFromKtx(buffer, this, options);
+        const result = Filament._createTextureFromKtx1(buffer, this, options);
         buffer.delete();
         return result;
     };
 
-    /// createIblFromKtx ::method:: Utility that creates an [IndirectLight] from a KTX file.
+    /// createTextureFromKtx2 ::method:: Utility function that creates a [Texture] from a KTX2 file.
+    /// buffer ::argument:: asset string, or Uint8Array, or [Buffer] with KTX2 file contents
+    /// options ::argument:: Options dictionary.
+    /// ::retval:: [Texture]
+    Filament.Engine.prototype.createTextureFromKtx2 = function(buffer, options) {
+        options = options || {};
+        buffer = getBufferDescriptor(buffer);
+
+        const engine = this;
+        const quiet = false;
+        const reader = new Filament.Ktx2Reader(engine, quiet);
+
+        reader.requestFormat(Filament.Texture$InternalFormat.RGBA8);
+        reader.requestFormat(Filament.Texture$InternalFormat.SRGB8_A8);
+
+        const formats = options.formats || [];
+        for (const format of formats) {
+            reader.requestFormat(format);
+        }
+
+        result = reader.load(buffer, options.srgb ? Filament.Ktx2Reader$TransferFunction.sRGB :
+            Filament.Ktx2Reader$TransferFunction.LINEAR);
+
+        reader.delete();
+        buffer.delete();
+        return result;
+    };
+
+    /// createIblFromKtx1 ::method:: Utility that creates an [IndirectLight] from a KTX file.
+    /// NOTE: To prevent a leak, please be sure to destroy the associated reflections texture.
     /// buffer ::argument:: asset string, or Uint8Array, or [Buffer] with KTX file contents
-    /// options ::argument:: Options dictionary. For now, the `rgbm` boolean is the only option.
+    /// options ::argument:: Options dictionary.
     /// ::retval:: [IndirectLight]
-    Filament.Engine.prototype.createIblFromKtx = function(buffer, options) {
+    Filament.Engine.prototype.createIblFromKtx1 = function(buffer, options) {
         buffer = getBufferDescriptor(buffer);
-        const result = Filament._createIblFromKtx(buffer, this, options);
+        const result = Filament._createIblFromKtx1(buffer, this, options);
         buffer.delete();
         return result;
     };
 
-    /// createSkyFromKtx ::method:: Utility function that creates a [Skybox] from a KTX file.
+    /// createSkyFromKtx1 ::method:: Utility function that creates a [Skybox] from a KTX file.
+    /// NOTE: To prevent a leak, please be sure to destroy the associated texture.
     /// buffer ::argument:: asset string, or Uint8Array, or [Buffer] with KTX file contents
-    /// options ::argument:: Options dictionary. For now, the `rgbm` boolean is the only option.
+    /// options ::argument:: Options dictionary.
     /// ::retval:: [Skybox]
-    Filament.Engine.prototype.createSkyFromKtx = function(buffer, options) {
-        options = options || {'rgbm': true};
-        const skytex = this.createTextureFromKtx(buffer, options);
+    Filament.Engine.prototype.createSkyFromKtx1 = function(buffer, options) {
+        const skytex = this.createTextureFromKtx1(buffer, options);
         return Filament.Skybox.Builder().environment(skytex).build(this);
     };
 
     /// createTextureFromPng ::method:: Creates a 2D [Texture] from the raw contents of a PNG file.
     /// buffer ::argument:: asset string, or Uint8Array, or [Buffer] with PNG file contents
-    /// options ::argument:: object with optional `srgb`, `rgbm`, `noalpha`, and `nomips` keys.
+    /// options ::argument:: object with optional `srgb`, `noalpha`, and `nomips` keys.
     /// ::retval:: [Texture]
     Filament.Engine.prototype.createTextureFromPng = function(buffer, options) {
         buffer = getBufferDescriptor(buffer);
-        const result = Filament._createTextureFromPng(buffer, this, options);
+        const result = Filament._createTextureFromImageFile(buffer, this, options);
         buffer.delete();
         return result;
     };
 
-    /// createTextureFromJpeg ::method:: Creates a 2D [Texture] from a JPEG image.
-    /// image ::argument:: asset string or DOM Image that has already been loaded
+    /// createTextureFromJpeg ::method:: Creates a 2D [Texture] from the contents of a JPEG file.
+    /// buffer ::argument:: asset string, or Uint8Array, or [Buffer] with JPEG file contents
     /// options ::argument:: JavaScript object with optional `srgb` and `nomips` keys.
     /// ::retval:: [Texture]
-    Filament.Engine.prototype.createTextureFromJpeg = function(image, options) {
-        if ('string' == typeof image || image instanceof String) {
-            image = Filament.assets[image];
-        }
-        return Filament._createTextureFromJpeg(image, this, options);
+    Filament.Engine.prototype.createTextureFromJpeg = function(buffer, options) {
+        buffer = getBufferDescriptor(buffer);
+        const result = Filament._createTextureFromImageFile(buffer, this, options);
+        buffer.delete();
+        return result;
     };
 
     /// loadFilamesh ::method:: Consumes the contents of a filamesh file and creates a renderable.
@@ -136,14 +231,130 @@ Filament.loadClassExtensions = function() {
         return result;
     };
 
-    /// createAssetLoader ::static method::
-    /// engine ::argument:: an instance of [Engine]
+    /// createAssetLoader ::method::
     /// ::retval:: an instance of [AssetLoader]
     /// Clients should create only one asset loader for the lifetime of their app, this prevents
     /// memory leaks and duplication of Material objects.
     Filament.Engine.prototype.createAssetLoader = function() {
-        const materials = new Filament.gltfio$UbershaderLoader(this);
+        const materials = new Filament.gltfio$UbershaderProvider(this);
         return new Filament.gltfio$AssetLoader(this, materials);
+    };
+
+    /// addEntities ::method::
+    /// entities ::argument:: array of entities
+    /// This method is equivalent to calling `addEntity` on each item in the array.
+    Filament.Scene.prototype.addEntities = function(entities) {
+        const vector = new Filament.EntityVector();
+        for (const entity of entities) {
+            vector.push_back(entity);
+        }
+        this._addEntities(vector);
+    };
+
+    /// removeEntities ::method::
+    /// entities ::argument:: array of entities
+    /// This method is equivalent to calling `remove` on each item in the array.
+    Filament.Scene.prototype.removeEntities = function(entities) {
+        const vector = new Filament.EntityVector();
+        for (const entity of entities) {
+            vector.push_back(entity);
+        }
+        this._removeEntities(vector);
+    };
+
+    /// setShadowOptions ::method::
+    /// instance ::argument:: Instance of a light component obtained from `getInstance`.
+    /// overrides ::argument:: Dictionary with one or more of the following properties: \
+    /// mapSize, shadowCascades, constantBias, normalBias, shadowFar, shadowNearHint, \
+    /// shadowFarHint, stable, polygonOffsetConstant, polygonOffsetSlope, \
+    // screenSpaceContactShadows, stepCount, maxShadowDistance.
+    Filament.LightManager.prototype.setShadowOptions = function(instance, overrides) {
+        this._setShadowOptions(instance, Filament.shadowOptions(overrides));
+    };
+
+    /// setClearOptions ::method::
+    /// overrides ::argument:: Dictionary with one or more of the following properties: \
+    /// clearColor, clear, discard.
+    Filament.Renderer.prototype.setClearOptions = function(overrides) {
+        const options = {
+            clearColor: [0, 0, 0, 0],
+            clear: false,
+            discard: true
+        };
+        Object.assign(options, overrides);
+        this._setClearOptions(options);
+    };
+
+    /// setAmbientOcclusionOptions ::method::
+    Filament.View.prototype.setAmbientOcclusionOptions = function(overrides) {
+        const options = this.setAmbientOcclusionOptionsDefaults(overrides);
+        this._setAmbientOcclusionOptions(options);
+    };
+
+    /// setDepthOfFieldOptions ::method::
+    Filament.View.prototype.setDepthOfFieldOptions = function(overrides) {
+        const options = this.setDepthOfFieldOptionsDefaults(overrides);
+        this._setDepthOfFieldOptions(options);
+    };
+
+    /// setMultiSampleAntiAliasingOptions ::method::
+    Filament.View.prototype.setMultiSampleAntiAliasingOptions = function(overrides) {
+        const options = this.setMultiSampleAntiAliasingOptionsDefaults(overrides);
+        this._setMultiSampleAntiAliasingOptions(options);
+    };
+
+    /// setTemporalAntiAliasingOptions ::method::
+    Filament.View.prototype.setTemporalAntiAliasingOptions = function(overrides) {
+        const options = this.setTemporalAntiAliasingOptionsDefaults(overrides);
+        this._setTemporalAntiAliasingOptions(options);
+    };
+
+    /// setScreenSpaceReflectionsOptions ::method::
+    Filament.View.prototype.setScreenSpaceReflectionsOptions = function(overrides) {
+        const options = this.setScreenSpaceReflectionsOptionsDefaults(overrides);
+        this._setScreenSpaceReflectionsOptions(options);
+    };
+
+    /// setBloomOptions ::method::
+    Filament.View.prototype.setBloomOptions = function(overrides) {
+        const options = this.setBloomOptionsDefaults(overrides);
+        this._setBloomOptions(options);
+    };
+
+    /// setFogOptions ::method::
+    Filament.View.prototype.setFogOptions = function(overrides) {
+        const options = this.setFogOptionsDefaults(overrides);
+        this._setFogOptions(options);
+    };
+
+    /// setVignetteOptions ::method::
+    Filament.View.prototype.setVignetteOptions = function(overrides) {
+        const options = this.setVignetteOptionsDefaults(overrides);
+        this._setVignetteOptions(options);
+    };
+
+    /// setGuardBandOptions ::method::
+    Filament.View.prototype.setGuardBandOptions = function(overrides) {
+        const options = this.setGuardBandOptionsDefaults(overrides);
+        this._setGuardBandOptions(options);
+    };
+
+    /// setStereoscopicOptions ::method::
+    Filament.View.prototype.setStereoscopicOptions = function(overrides) {
+        const options = this.setStereoscopicOptionsDefaults(overrides);
+        this._setStereoscopicOptions(options);
+    }
+
+    /// BufferObject ::core class::
+
+    /// setBuffer ::method::
+    /// engine ::argument:: [Engine]
+    /// buffer ::argument:: asset string, or Uint8Array, or [Buffer]
+    /// byteOffset ::argument:: non-negative integer
+    Filament.BufferObject.prototype.setBuffer = function(engine, buffer, byteOffset = 0) {
+        buffer = getBufferDescriptor(buffer);
+        this._setBuffer(engine, buffer, byteOffset);
+        buffer.delete();
     };
 
     /// VertexBuffer ::core class::
@@ -152,9 +363,10 @@ Filament.loadClassExtensions = function() {
     /// engine ::argument:: [Engine]
     /// bufferIndex ::argument:: non-negative integer
     /// buffer ::argument:: asset string, or Uint8Array, or [Buffer]
-    Filament.VertexBuffer.prototype.setBufferAt = function(engine, bufferIndex, buffer) {
+    /// byteOffset ::argument:: non-negative integer
+    Filament.VertexBuffer.prototype.setBufferAt = function(engine, bufferIndex, buffer, byteOffset = 0) {
         buffer = getBufferDescriptor(buffer);
-        this._setBufferAt(engine, bufferIndex, buffer);
+        this._setBufferAt(engine, bufferIndex, buffer, byteOffset);
         buffer.delete();
     };
 
@@ -163,10 +375,15 @@ Filament.loadClassExtensions = function() {
     /// setBuffer ::method::
     /// engine ::argument:: [Engine]
     /// buffer ::argument:: asset string, or Uint8Array, or [Buffer]
-    Filament.IndexBuffer.prototype.setBuffer = function(engine, buffer) {
+    /// byteOffset ::argument:: non-negative integer
+    Filament.IndexBuffer.prototype.setBuffer = function(engine, buffer, byteOffset = 0) {
         buffer = getBufferDescriptor(buffer);
-        this._setBuffer(engine, buffer);
+        this._setBuffer(engine, buffer, byteOffset);
         buffer.delete();
+    };
+
+    Filament.LightManager$Builder.prototype.shadowOptions = function(overrides) {
+        return this._shadowOptions(Filament.shadowOptions(overrides));
     };
 
     Filament.RenderableManager$Builder.prototype.build =
@@ -177,6 +394,8 @@ Filament.loadClassExtensions = function() {
             return result;
         };
 
+    Filament.ColorGrading$Builder.prototype.build =
+    Filament.RenderTarget$Builder.prototype.build =
     Filament.VertexBuffer$Builder.prototype.build =
     Filament.IndexBuffer$Builder.prototype.build =
     Filament.Texture$Builder.prototype.build =
@@ -188,14 +407,14 @@ Filament.loadClassExtensions = function() {
             return result;
         };
 
-    Filament.KtxBundle.prototype.getBlob = function(index) {
+    Filament.Ktx1Bundle.prototype.getBlob = function(index) {
         const blob = this._getBlob(index);
         const result = blob.getBytes();
         blob.delete();
         return result;
     }
 
-    Filament.KtxBundle.prototype.getCubeBlob = function(miplevel) {
+    Filament.Ktx1Bundle.prototype.getCubeBlob = function(miplevel) {
         const blob = this._getCubeBlob(miplevel);
         const result = blob.getBytes();
         blob.delete();
@@ -212,73 +431,249 @@ Filament.loadClassExtensions = function() {
         pbd.delete();
     }
 
+    Filament.Texture.prototype.getWidth = function(engine, level = 0) {
+        return this._getWidth(engine, level);
+    }
+
+    Filament.Texture.prototype.getHeight = function(engine, level = 0) {
+        return this._getHeight(engine, level);
+    }
+
+    Filament.Texture.prototype.getDepth = function(engine, level = 0) {
+        return this._getDepth(engine, level);
+    }
+
+    Filament.Texture.prototype.getLevels = function(engine) {
+        return this._getLevels(engine);
+    }
+
+    Filament.SurfaceOrientation$Builder.prototype.normals = function(buffer, stride = 0) {
+        buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        this.norPointer = Filament._malloc(buffer.byteLength);
+        Filament.HEAPU8.set(buffer, this.norPointer);
+        this._normals(this.norPointer, stride);
+    };
+
+    Filament.SurfaceOrientation$Builder.prototype.uvs = function(buffer, stride = 0) {
+        buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        this.uvsPointer = Filament._malloc(buffer.byteLength);
+        Filament.HEAPU8.set(buffer, this.uvsPointer);
+        this._uvs(this.uvsPointer, stride);
+    };
+
+    Filament.SurfaceOrientation$Builder.prototype.positions = function(buffer, stride = 0) {
+        buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        this.posPointer = Filament._malloc(buffer.byteLength);
+        Filament.HEAPU8.set(buffer, this.posPointer);
+        this._positions(this.posPointer, stride);
+    };
+
+    Filament.SurfaceOrientation$Builder.prototype.triangles16 = function(buffer) {
+        buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        this.t16Pointer = Filament._malloc(buffer.byteLength);
+        Filament.HEAPU8.set(buffer, this.t16Pointer);
+        this._triangles16(this.t16Pointer);
+    };
+
+    Filament.SurfaceOrientation$Builder.prototype.triangles32 = function(buffer) {
+        buffer = new Uint8Array(buffer.buffer, buffer.byteOffset, buffer.byteLength);
+        this.t32Pointer = Filament._malloc(buffer.byteLength);
+        Filament.HEAPU8.set(buffer, this.t32Pointer);
+        this._triangles32(this.t32Pointer);
+    };
+
     Filament.SurfaceOrientation$Builder.prototype.build = function() {
         const result = this._build();
         this.delete();
+        if ('norPointer' in this) Filament._free(this.norPointer);
+        if ('uvsPointer' in this) Filament._free(this.uvsPointer);
+        if ('posPointer' in this) Filament._free(this.posPointer);
+        if ('t16Pointer' in this) Filament._free(this.t16Pointer);
+        if ('t32Pointer' in this) Filament._free(this.t32Pointer);
         return result;
     };
 
-    Filament.gltfio$AssetLoader.prototype.createAssetFromJson = function(buffer) {
+    Filament.SurfaceOrientation.prototype.getQuats = function(nverts) {
+        const attribType = Filament.VertexBuffer$AttributeType.SHORT4;
+        const quatsBufferSize = 8 * nverts;
+        const quatsBuffer = Filament._malloc(quatsBufferSize);
+        this._getQuats(quatsBuffer, nverts, attribType);
+        const arrayBuffer = Filament.HEAPU8.subarray(quatsBuffer, quatsBuffer + quatsBufferSize).slice().buffer;
+        Filament._free(quatsBuffer);
+        return new Int16Array(arrayBuffer);
+    };
+
+    Filament.SurfaceOrientation.prototype.getQuatsHalf4 = function (nverts) {
+        const attribType = Filament.VertexBuffer$AttributeType.HALF4;
+        const quatsBufferSize = 8 * nverts;
+        const quatsBuffer = Filament._malloc(quatsBufferSize);
+        this._getQuats(quatsBuffer, nverts, attribType);
+        const arrayBuffer = Filament.HEAPU8.subarray(quatsBuffer, quatsBuffer + quatsBufferSize).slice().buffer;
+        Filament._free(quatsBuffer);
+        return new Uint16Array(arrayBuffer);
+    };
+
+    Filament.SurfaceOrientation.prototype.getQuatsFloat4 = function (nverts) {
+        const attribType = Filament.VertexBuffer$AttributeType.FLOAT4;
+        const quatsBufferSize = 16 * nverts;
+        const quatsBuffer = Filament._malloc(quatsBufferSize);
+        this._getQuats(quatsBuffer, nverts, attribType);
+        const arrayBuffer = Filament.HEAPU8.subarray(quatsBuffer, quatsBuffer + quatsBufferSize).slice().buffer;
+        Filament._free(quatsBuffer);
+        return new Float32Array(arrayBuffer);
+    };
+
+    Filament.gltfio$AssetLoader.prototype.createAsset = function(buffer) {
         buffer = getBufferDescriptor(buffer);
-        const result = this._createAssetFromJson(buffer);
+        const result = this._createAsset(buffer);
         buffer.delete();
         return result;
     };
 
-    Filament.gltfio$AssetLoader.prototype.createAssetFromBinary = function(buffer) {
+    Filament.gltfio$AssetLoader.prototype.createInstancedAsset = function(buffer, instances) {
         buffer = getBufferDescriptor(buffer);
-        const result = this._createAssetFromBinary(buffer);
+        const asset = this._createInstancedAsset(buffer, instances.length);
         buffer.delete();
-        return result;
+        const instancesVector = asset._getAssetInstances();
+        for (let i = 0; i < instancesVector.size(); i++) {
+            instances[i] = instancesVector.get(i);
+        }
+        return asset;
     };
 
     // See the C++ documentation for ResourceLoader and AssetLoader. The JavaScript API differs in
     // that it takes two optional callbacks:
     //
-    // - onDone is called after all resources have been downloaded, but before the
-    //   asset has been finalized. The onDone callback is passed the finalize function.
-    //
+    // - onDone is called after all resources have been downloaded and decoded.
     // - onFetched is called after each resource has finished downloading.
     //
-    // "Finalization" refers to decoding texture data, converting the format of the
-    // vertex data if needed, and potentially computing tangents.
-    Filament.gltfio$FilamentAsset.prototype.loadResources = function(onDone, onFetched) {
+    // Takes an optional base path for resolving the URI strings in the glTF file, which is
+    // typically the path to the parent glTF file. The given base path cannot itself be a relative
+    // URL, but clients can do the following to resolve a relative URL:
+    //    const basePath = '' + new URL(myRelativeUrl, document.location);
+    // If the given base path is null, document.location is used as the base.
+    //
+    // The optional asyncInterval argument allows clients to control how decoding is amortized
+    // over time. It represents the number of milliseconds between each texture decoding task.
+    //
+    // The optional config argument is an object with boolean field `normalizeSkinningWeights`.
+    Filament.gltfio$FilamentAsset.prototype.loadResources = function(onDone, onFetched, basePath,
+            asyncInterval, config) {
         const asset = this;
         const engine = this.getEngine();
-        const urlkeys = this.getResourceUrls();
-        const urlset = new Set();
-        for (var i = 0; i < urlkeys.size(); i++) {
-            const url = urlkeys.get(i);
-            if (url) {
-                urlset.add(url);
+        const interval = asyncInterval || 30;
+        const defaults = {
+            normalizeSkinningWeights: true,
+        };
+        config = Object.assign(defaults, config || {});
+
+        basePath = basePath || document.location;
+        onFetched = onFetched || ((name) => {});
+        onDone = onDone || (() => {});
+
+        // Construct two lists of URI strings to fetch: textures and non-textures.
+        let textureUris = new Set();
+        let bufferUris = new Set();
+        const absoluteToRelativeUri = {};
+        for (const relativeUri of this.getResourceUris()) {
+            const absoluteUri = '' + new URL(relativeUri, basePath);
+            absoluteToRelativeUri[absoluteUri] = relativeUri;
+            if (isTexture(relativeUri)) {
+                textureUris.add(absoluteUri);
+                continue;
             }
+            bufferUris.add(absoluteUri);
         }
-        const resourceLoader = new Filament.gltfio$ResourceLoader(engine);
-        Filament.fetch(Array.from(urlset), function() {
-            const finalize = function() {
-                resourceLoader.loadResources(asset);
+        textureUris = Array.from(textureUris);
+        bufferUris = Array.from(bufferUris);
 
-                // The buffer data won't get sent to the GPU until the next call to
-                // "renderer.render()", so wait two frames before freeing the CPU-side data.
-                window.requestAnimationFrame(function() {
-                    window.requestAnimationFrame(function() {
-                        resourceLoader.delete();
-                    });
-                });
+        // Construct a resource loader and start decoding after all textures are fetched.
+        const resourceLoader = new Filament.gltfio$ResourceLoader(engine,
+                config.normalizeSkinningWeights);
 
-            };
-            if (onDone) {
-                onDone(finalize);
-            } else {
-                finalize();
-            }
-        }, function(name) {
-            var buffer = getBufferDescriptor(name);
-            resourceLoader.addResourceData(name, buffer);
+        const stbProvider = new Filament.gltfio$StbProvider(engine);
+        const ktx2Provider = new Filament.gltfio$Ktx2Provider(engine);
+
+        resourceLoader.addStbProvider("image/jpeg", stbProvider);
+        resourceLoader.addStbProvider("image/png", stbProvider);
+        resourceLoader.addKtx2Provider("image/ktx2", ktx2Provider);
+
+        const onComplete = () => {
+            resourceLoader.asyncBeginLoad(asset);
+
+            // NOTE: This decodes in the wasm layer instead of using Canvas2D, which allows Filament
+            // to have more control (handling of alpha, srgb, etc) and improves parity with native
+            // platforms. In the future we may wish to offload this to web workers.
+
+            // Decode a single PNG or JPG every 30 milliseconds, or at the specified interval.
+            const timer = setInterval(() => {
+                resourceLoader.asyncUpdateLoad();
+                const progress = resourceLoader.asyncGetLoadProgress();
+                if (progress >= 1) {
+                    clearInterval(timer);
+                    resourceLoader.delete();
+                    stbProvider.delete();
+                    onDone();
+                }
+            }, interval);
+        };
+
+        // Download all non-texture resources and invoke the callback when done.
+        if (bufferUris.length == 0) {
+            onComplete();
+        } else {
+            Filament.fetch(bufferUris, onComplete, function(absoluteUri) {
+                const buffer = getBufferDescriptor(absoluteUri);
+                const relativeUri = absoluteToRelativeUri[absoluteUri];
+                resourceLoader.addResourceData(relativeUri, buffer);
+                buffer.delete();
+                onFetched(relativeUri);
+            });
+        }
+
+        // Begin downloading all texture resources, no completion callback necessary.
+        Filament.fetch(textureUris, null, function(absoluteUri) {
+            const buffer = getBufferDescriptor(absoluteUri);
+            const relativeUri = absoluteToRelativeUri[absoluteUri];
+            resourceLoader.addResourceData(relativeUri, buffer);
             buffer.delete();
-            if (onFetched) {
-                onFetched(name);
-            }
+            onFetched(relativeUri);
         });
     };
+
+    Filament.gltfio$FilamentAsset.prototype.getEntities = function() {
+        return Filament.vectorToArray(this._getEntities());
+    };
+
+    Filament.gltfio$FilamentAsset.prototype.getEntitiesByName = function(name) {
+        return Filament.vectorToArray(this._getEntitiesByName(name));
+    };
+
+    Filament.gltfio$FilamentAsset.prototype.getEntitiesByPrefix = function(prefix) {
+        return Filament.vectorToArray(this._getEntitiesByPrefix(prefix));
+    };
+
+    Filament.gltfio$FilamentAsset.prototype.getLightEntities = function() {
+        return Filament.vectorToArray(this._getLightEntities());
+    };
+
+    Filament.gltfio$FilamentAsset.prototype.getRenderableEntities = function() {
+        return Filament.vectorToArray(this._getRenderableEntities());
+    };
+
+    Filament.gltfio$FilamentAsset.prototype.getCameraEntities = function() {
+        return Filament.vectorToArray(this._getCameraEntities());
+    };
+
+    Filament.gltfio$FilamentAsset.prototype.getResourceUris = function() {
+        return Filament.vectorToArray(this._getResourceUris());
+    }
+
+    Filament.gltfio$FilamentAsset.prototype.getAssetInstances = function() {
+        return Filament.vectorToArray(this._getAssetInstances());
+    }
+
+    Filament.gltfio$FilamentInstance.prototype.getMaterialVariantNames = function() {
+        return Filament.vectorToArray(this._getMaterialVariantNames());
+    }
 };

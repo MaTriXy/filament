@@ -24,6 +24,7 @@
 #include <math/mat4.h>
 #include <math/mat3.h>
 #include <math/quat.h>
+#include <math/scalar.h>
 
 using namespace filament::math;
 
@@ -31,8 +32,150 @@ class MatTest : public testing::Test {
 protected:
 };
 
+//------------------------------------------------------------------------------
+// A macro to help with vector comparisons within floating point range.
+#define EXPECT_VEC_EQ(VEC1, VEC2)                               \
+do {                                                            \
+    const decltype(VEC1) v1 = VEC1;                             \
+    const decltype(VEC2) v2 = VEC2;                             \
+    if (std::is_same<TypeParam,float>::value) {                 \
+        for (int i = 0; i < v1.size(); ++i) {                   \
+            EXPECT_FLOAT_EQ(v1[i], v2[i]);                      \
+        }                                                       \
+    } else if (std::is_same<TypeParam,double>::value) {         \
+        for (int i = 0; i < v1.size(); ++i) {                   \
+            EXPECT_DOUBLE_EQ(v1[i], v2[i]);                     \
+        }                                                       \
+    } else {                                                    \
+        for (int i = 0; i < v1.size(); ++i) {                   \
+            EXPECT_EQ(v1[i], v2[i]);                            \
+        }                                                       \
+    }                                                           \
+} while(0)
+
+//------------------------------------------------------------------------------
+// A macro to help with vector comparisons within a range.
+#define EXPECT_VEC_NEAR(VEC1, VEC2, eps)                        \
+do {                                                            \
+    const decltype(VEC1) v1 = VEC1;                             \
+    const decltype(VEC2) v2 = VEC2;                             \
+    for (int i = 0; i < v1.size(); ++i) {                       \
+        EXPECT_NEAR(v1[i], v2[i], eps);                         \
+    }                                                           \
+} while(0)
+
+
+//------------------------------------------------------------------------------
+// A macro to help with type comparisons within floating point range.
+#define ASSERT_TYPE_EQ(T1, T2)                                  \
+do {                                                            \
+    const decltype(T1) t1 = T1;                                 \
+    const decltype(T2) t2 = T2;                                 \
+    if (std::is_same<TypeParam,float>::value) {                 \
+        ASSERT_FLOAT_EQ(t1, t2);                                \
+    } else if (std::is_same<TypeParam,double>::value) {         \
+        ASSERT_DOUBLE_EQ(t1, t2);                               \
+    } else {                                                    \
+        ASSERT_EQ(t1, t2);                                      \
+    }                                                           \
+} while(0)
+
+
+
+TEST_F(MatTest, LargeFloatRotationsWithOrthogonalization) {
+     double3 const t = { 2304097.1410110965, -4688442.9915525438, -3639452.5611694567 };
+     mat4 const T = mat4::translation(t);
+    for (float d = 0; d < 90; d = d + 1.0) {
+        mat3f const R = mat3f::rotation(d * f::DEG_TO_RAD, float3{ 0, 1, 0 });
+        mat3 RR = orthogonalize(mat3{ R });
+        ASSERT_NEAR(dot(RR[0], RR[0]), 1.0, 1e-12);
+        ASSERT_NEAR(dot(RR[1], RR[1]), 1.0, 1e-12);
+        ASSERT_NEAR(dot(RR[2], RR[2]), 1.0, 1e-12);
+        mat4 M = mat4{ RR } * T;
+        double3 const t2 = transpose(M.upperLeft()) * M[3].xyz;
+        EXPECT_VEC_NEAR(t, t2, 0.0001);  // 0.1mm
+     }
+}
+
+TEST_F(MatTest, ConstexprMat2) {
+    constexpr float a = F_PI;
+    constexpr mat2f M;
+    constexpr mat2f M0(a);
+    constexpr mat2f M1(float2{a, a});
+    constexpr mat2f M2(1,2,3,4);
+    constexpr mat2f M3(M2);
+    constexpr mat2f M4(float2{1,2}, float2{3,4});
+    constexpr float2 f0 = M0 * float2{1,2};
+    constexpr float2 f1 = float2{1,2} * M1;
+    CONSTEXPR_IF_NOT_MSVC mat2f M5 = M2 * 2;
+    CONSTEXPR_IF_NOT_MSVC mat2f M7 = 2 * M2;
+    constexpr float2 f3 = diag(M0);
+    constexpr mat2f M8 = transpose(M0);
+    constexpr mat2f M9 = inverse(M0);
+    constexpr mat2f M12 = abs(M0);
+    constexpr mat2f M11 = details::matrix::cof(M0);
+    constexpr mat2f M10 = M8 * M9;
+    constexpr float s0 = trace(M0);
+    constexpr float f4 = M[0][0];
+    constexpr float f5 = M(0, 0);
+}
+
+TEST_F(MatTest, ConstexprMat3) {
+    constexpr float a = F_PI;
+    constexpr mat3f M;
+    constexpr mat3f M0(a);
+    constexpr mat3f M1(float3{a, a, a});
+    constexpr mat3f M2(1,2,3,4,5,6,7,8,9);
+    constexpr mat3f M3(M2);
+    constexpr mat3f M4(float3{1,2,3}, float3{4,5,6}, float3{7,8,9});
+    constexpr float3 f0 = M0 * float3{1,2,3};
+    constexpr float3 f1 = float3{1,2,3} * M1;
+    CONSTEXPR_IF_NOT_MSVC mat3f M5 = M2 * 2;
+    CONSTEXPR_IF_NOT_MSVC mat3f M7 = 2 * M2;
+    constexpr float3 f3 = diag(M0);
+    constexpr mat3f M8 = transpose(M0);
+    constexpr mat3f M9 = inverse(M0);
+    constexpr mat3f M12 = details::matrix::cof(M0);
+    constexpr mat3f M10 = M8 * M9;
+    constexpr float s0 = trace(M0);
+    constexpr quatf q;
+    constexpr mat3f M11{q};
+}
+
+TEST_F(MatTest, ConstexprMat4) {
+    constexpr float a = F_PI;
+    constexpr mat4f M;
+    constexpr mat4f M0(a);
+    constexpr mat4f M1(float4{a, a, a, a});
+    constexpr mat4f M2(1,2,3,4,5,6,7,8,9,10,11,12,13,14,15,16);
+    constexpr mat4f M3(M2);
+    constexpr mat4f M4(float4{1,2,3,4}, float4{5,6,7,8}, float4{9,10,11,12}, float4{13,14,15,16});
+    constexpr float4 f0 = M0 * float4{1,2,3,4};
+    constexpr float4 f1 = float4{1,2,3,4} * M1;
+    CONSTEXPR_IF_NOT_MSVC mat4f M5 = M2 * 2;
+    CONSTEXPR_IF_NOT_MSVC mat4f M7 = 2 * M2;
+    constexpr float4 f3 = diag(M0);
+    constexpr mat4f M8 = transpose(M0);
+    constexpr mat4f M9 = inverse(M0);
+    constexpr mat4f M16 = details::matrix::cof(M0);
+    constexpr mat4f M10 = M8 * M9;
+    constexpr float s0 = trace(M0);
+    constexpr quatf q;
+    constexpr mat4f M11{q};
+    constexpr mat4f M13{mat3f{}};
+    constexpr mat4f M14{mat3f{}, float3{}};
+    constexpr mat4f M15{mat3f{}, float4{}};
+    constexpr mat4f O = mat4f::ortho(0, 1, 0, 1, -1, 1);
+    constexpr mat4f F = mat4f::frustum(0, 1, 0, 1, -1, 1);
+    constexpr float4 f4 = mat4f::project(F, float4{1,2,3,1});
+    constexpr float3 f5 = mat4f::project(F, float3{1,2,3});
+    constexpr mat3f U = M11.upperLeft();
+    constexpr mat4f T = mat4f::translation(f5);
+    constexpr mat4f S = mat4f::scaling(f5);
+    constexpr mat4f V = mat4f::scaling(s0);
+}
+
 TEST_F(MatTest, Basics) {
-    mat4 m0;
     EXPECT_EQ(sizeof(mat4), sizeof(double)*16);
 }
 
@@ -72,8 +215,6 @@ TEST_F(MatTest, Constructors) {
     EXPECT_EQ(m1, m2);
     EXPECT_EQ(m2, m3);
     EXPECT_EQ(m3, m1);
-
-    mat4 m4(double4(1), double4(2), double4(3), double4(4));
 }
 
 TEST_F(MatTest, ArithmeticOps) {
@@ -169,7 +310,6 @@ protected:
 };
 
 TEST_F(Mat3Test, Basics) {
-    mat3 m0;
     EXPECT_EQ(sizeof(mat3), sizeof(double)*9);
 }
 
@@ -276,7 +416,6 @@ protected:
 };
 
 TEST_F(Mat2Test, Basics) {
-    mat2 m0;
     EXPECT_EQ(sizeof(mat2), sizeof(double)*4);
 }
 
@@ -366,17 +505,20 @@ public:
 
 typedef ::testing::Types<float,double> TestMatrixValueTypes;
 
-TYPED_TEST_CASE(MatTestT, TestMatrixValueTypes);
+TYPED_TEST_SUITE(MatTestT, TestMatrixValueTypes);
 
 #define TEST_MATRIX_INVERSE(MATRIX, EPSILON)                                \
 {                                                                           \
     typedef decltype(MATRIX) MatrixType;                                    \
     MatrixType inv1 = inverse(MATRIX);                                      \
     MatrixType ident1 = MATRIX * inv1;                                      \
+    MatrixType inv2 = transpose(cof(MATRIX))/det(MATRIX);                   \
+    MatrixType ident2 = MATRIX * inv2;                                      \
     static const MatrixType IDENTITY;                                       \
     for (int row = 0; row < MatrixType::ROW_SIZE; ++row) {                  \
         for (int col = 0; col < MatrixType::COL_SIZE; ++col) {              \
             EXPECT_NEAR(ident1[row][col], IDENTITY[row][col], EPSILON);     \
+            EXPECT_NEAR(ident2[row][col], IDENTITY[row][col], EPSILON);     \
         }                                                                   \
     }                                                                       \
 }
@@ -475,41 +617,34 @@ TYPED_TEST(MatTestT, Inverse2) {
     TEST_MATRIX_INVERSE(m4, 20.0 * std::numeric_limits<TypeParam>::epsilon());
 }
 
-//------------------------------------------------------------------------------
-// A macro to help with vector comparisons within floating point range.
-#define EXPECT_VEC_EQ(VEC1, VEC2)                               \
-do {                                                            \
-    const decltype(VEC1) v1 = VEC1;                             \
-    const decltype(VEC2) v2 = VEC2;                             \
-    if (std::is_same<TypeParam,float>::value) {                 \
-        for (int i = 0; i < v1.size(); ++i) {                   \
-            EXPECT_FLOAT_EQ(v1[i], v2[i]);                      \
-        }                                                       \
-    } else if (std::is_same<TypeParam,double>::value) {         \
-        for (int i = 0; i < v1.size(); ++i) {                   \
-            EXPECT_DOUBLE_EQ(v1[i], v2[i]);                     \
-        }                                                       \
-    } else {                                                    \
-        for (int i = 0; i < v1.size(); ++i) {                   \
-            EXPECT_EQ(v1[i], v2[i]);                            \
-        }                                                       \
-    }                                                           \
-} while(0)
 
-//------------------------------------------------------------------------------
-// A macro to help with type comparisons within floating point range.
-#define ASSERT_TYPE_EQ(T1, T2)                                  \
-do {                                                            \
-    const decltype(T1) t1 = T1;                                 \
-    const decltype(T2) t2 = T2;                                 \
-    if (std::is_same<TypeParam,float>::value) {                 \
-        ASSERT_FLOAT_EQ(t1, t2);                                \
-    } else if (std::is_same<TypeParam,double>::value) {         \
-        ASSERT_DOUBLE_EQ(t1, t2);                               \
-    } else {                                                    \
-        ASSERT_EQ(t1, t2);                                      \
-    }                                                           \
-} while(0)
+TYPED_TEST(MatTestT, NormalsNegativeScale) {
+    typedef filament::math::details::TMat33<TypeParam> M33T;
+    typedef filament::math::details::TVec3<TypeParam> V3T;
+
+    M33T m(-1,  0,  0,
+            0,  1,  0,
+            0,  0,  1);
+
+    V3T n = V3T(0, 0, 1);
+    V3T n_prime = M33T::getTransformForNormals(m) * n;
+
+    // The normal should be flipped for mirroring transformations (ie when the det < 0).
+    //
+    // This is intuitive using Grassmann algebra, or when visualizing the mirroring of the
+    // tangent + bivector pair rather than the normal itself.
+    //
+    // Another way of thinking about this is in terms of polygon winding: since the winding is
+    // flipped, we render its underside and thus need to flip the shading normal.
+    //
+    // The following shadertoy is illuminating: https://www.shadertoy.com/view/3s33zj.
+    // The shadertoy is interesting for several reasons: (1) it uses the adjoint matrix for
+    // transforming normals and (2) it negates the normal when scale is negative (look for
+    // "isFlipped") and (3) it demonstrates that inverse-transpose computation is slow.
+
+    ASSERT_LT(det(m), 0);
+    EXPECT_VEC_EQ(n_prime, -n);
+}
 
 //------------------------------------------------------------------------------
 // Test some translation stuff.
@@ -585,8 +720,8 @@ static void verifyOrthonormal(const MATRIX& A) {
 TYPED_TEST(MatTestT, EulerZYX_44) {
     typedef filament::math::details::TMat44<TypeParam> M44T;
 
-    std::default_random_engine generator(82828);
-    std::uniform_real_distribution<double> distribution(-6.0 * 2.0*M_PI, 6.0 * 2.0*M_PI);
+    std::default_random_engine generator(82828); // NOLINT
+    std::uniform_real_distribution<TypeParam> distribution(-6.0 * 2.0*F_PI, 6.0 * 2.0*F_PI);
     auto rand_gen = std::bind(distribution, generator);
 
     for (size_t i = 0; i < 100; ++i) {
@@ -604,8 +739,8 @@ TYPED_TEST(MatTestT, EulerZYX_33) {
 
     typedef filament::math::details::TMat33<TypeParam> M33T;
 
-    std::default_random_engine generator(112233);
-    std::uniform_real_distribution<double> distribution(-6.0 * 2.0*M_PI, 6.0 * 2.0*M_PI);
+    std::default_random_engine generator(112233); // NOLINT
+    std::uniform_real_distribution<TypeParam> distribution(-6.0 * 2.0*F_PI, 6.0 * 2.0*F_PI);
     auto rand_gen = std::bind(distribution, generator);
 
     for (size_t i = 0; i < 100; ++i) {
@@ -622,12 +757,11 @@ TYPED_TEST(MatTestT, EulerZYX_33) {
 TYPED_TEST(MatTestT, ToQuaternionPostTranslation) {
 
     typedef filament::math::details::TMat44<TypeParam> M44T;
-    typedef filament::math::details::TVec4<TypeParam> V4T;
     typedef filament::math::details::TVec3<TypeParam> V3T;
     typedef filament::math::details::TQuaternion<TypeParam> QuatT;
 
-    std::default_random_engine generator(112233);
-    std::uniform_real_distribution<double> distribution(-6.0 * 2.0*M_PI, 6.0 * 2.0*M_PI);
+    std::default_random_engine generator(112233); // NOLINT
+    std::uniform_real_distribution<TypeParam> distribution(-6.0 * 2.0*F_PI, 6.0 * 2.0*F_PI);
     auto rand_gen = std::bind(distribution, generator);
 
     for (size_t i = 0; i < 100; ++i) {
@@ -665,8 +799,8 @@ TYPED_TEST(MatTestT, ToQuaternionPointTransformation33) {
     typedef filament::math::details::TVec3<TypeParam> V3T;
     typedef filament::math::details::TQuaternion<TypeParam> QuatT;
 
-    std::default_random_engine generator(112233);
-    std::uniform_real_distribution<double> distribution(-100.0, 100.0);
+    std::default_random_engine generator(112233); // NOLINT
+    std::uniform_real_distribution<TypeParam> distribution(-100.0, 100.0);
     auto rand_gen = std::bind(distribution, generator);
 
     for (size_t i = 0; i < 100; ++i) {
@@ -694,8 +828,8 @@ TYPED_TEST(MatTestT, ToQuaternionPointTransformation44) {
     typedef filament::math::details::TVec3<TypeParam> V3T;
     typedef filament::math::details::TQuaternion<TypeParam> QuatT;
 
-    std::default_random_engine generator(992626);
-    std::uniform_real_distribution<double> distribution(-100.0, 100.0);
+    std::default_random_engine generator(992626); // NOLINT
+    std::uniform_real_distribution<TypeParam> distribution(-100.0, 100.0);
     auto rand_gen = std::bind(distribution, generator);
 
     for (size_t i = 0; i < 100; ++i) {
@@ -714,5 +848,29 @@ TYPED_TEST(MatTestT, ToQuaternionPointTransformation44) {
         ASSERT_NEAR(pr.z, pq.z, value_eps);
     }
 }
+
+
+TYPED_TEST(MatTestT, cofactor) {
+    static constexpr TypeParam value_eps =
+            TypeParam(1000) * std::numeric_limits<TypeParam>::epsilon();
+
+    typedef filament::math::details::TMat33<TypeParam> M33T;
+
+    std::default_random_engine generator(992626); // NOLINT
+    std::uniform_real_distribution<TypeParam> distribution(-100.0, 100.0);
+    auto rand_gen = std::bind(distribution, generator);
+
+    for (size_t i = 0; i < 100; ++i) {
+        M33T r = M33T::eulerZYX(rand_gen(), rand_gen(), rand_gen());
+        M33T c0 = details::matrix::cofactor(r);
+        M33T c1 = details::matrix::fastCofactor3(r);
+
+        EXPECT_VEC_NEAR(c0[0], c1[0], value_eps);
+        EXPECT_VEC_NEAR(c0[1], c1[1], value_eps);
+        EXPECT_VEC_NEAR(c0[2], c1[2], value_eps);
+    }
+}
+
+
 
 #undef TEST_MATRIX_INVERSE

@@ -28,6 +28,7 @@
 
 #include "CameraManipulator.h"
 
+#include <utils/EntityManager.h>
 #include <utils/Path.h>
 
 using namespace filament;
@@ -35,7 +36,7 @@ using namespace filament::math;
 using utils::Entity;
 using utils::EntityManager;
 
-namespace gltfio {
+namespace filament::gltfio {
     class AssetLoader;
     class MaterialProvider;
     class FilamentAsset;
@@ -60,8 +61,6 @@ private:
     void setupMesh();
     void setupView();
 
-    static void parseSphereHarmonics(const char* str, float3 harmonics[9]);
-
     void* nativeLayer = nullptr;
     uint32_t width, height;
     const utils::Path resourcePath;
@@ -81,9 +80,9 @@ private:
         Skybox* skybox = nullptr;
         Entity sun;
 
-        gltfio::AssetLoader* assetLoader;
-        gltfio::MaterialProvider* materialProvider;
-        gltfio::FilamentAsset* asset;
+        filament::gltfio::AssetLoader* assetLoader;
+        filament::gltfio::MaterialProvider* materialProvider;
+        filament::gltfio::FilamentAsset* asset;
     } app;
 
     CameraManipulator cameraManipulator;

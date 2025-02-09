@@ -22,7 +22,13 @@
 #include <filament/FilamentAPI.h>
 
 #include <utils/compiler.h>
-#include <utils/Entity.h>
+#include <utils/Invocable.h>
+
+#include <stddef.h>
+
+namespace utils {
+    class Entity;
+} // namespace utils
 
 namespace filament {
 
@@ -63,13 +69,20 @@ class UTILS_PUBLIC Scene : public FilamentAPI {
 public:
 
     /**
-     * Sets the SkyBox.
+     * Sets the Skybox.
      *
      * The Skybox is drawn last and covers all pixels not touched by geometry.
      *
      * @param skybox The Skybox to use to fill untouched pixels, or nullptr to unset the Skybox.
      */
-    void setSkybox(Skybox const* skybox) noexcept;
+    void setSkybox(Skybox* UTILS_NULLABLE skybox) noexcept;
+
+    /**
+     * Returns the Skybox associated with the Scene.
+     *
+     * @return The associated Skybox, or nullptr if there is none.
+     */
+    Skybox* UTILS_NULLABLE getSkybox() const noexcept;
 
     /**
      * Set the IndirectLight to use when rendering the Scene.
@@ -78,9 +91,17 @@ public:
      * IndirectLight.
      *
      * @param ibl The IndirectLight to use when rendering the Scene or nullptr to unset.
+     * @see getIndirectLight
      */
-    void setIndirectLight(IndirectLight const* ibl) noexcept;
+    void setIndirectLight(IndirectLight* UTILS_NULLABLE ibl) noexcept;
 
+    /**
+     * Get the IndirectLight or nullptr if none is set.
+     *
+     * @return the the IndirectLight or nullptr if none is set
+     * @see setIndirectLight
+     */
+    IndirectLight* UTILS_NULLABLE getIndirectLight() const noexcept;
 
     /**
      * Adds an Entity to the Scene.
@@ -94,12 +115,12 @@ public:
     void addEntity(utils::Entity entity);
 
     /**
-     * Adds a contiguous list of entities to the Scene.
+     * Adds a list of entities to the Scene.
      *
      * @param entities Array containing entities to add to the scene.
      * @param count Size of the entity array.
      */
-    void addEntities(const utils::Entity* entities, size_t count);
+    void addEntities(const utils::Entity* UTILS_NONNULL entities, size_t count);
 
     /**
      * Removes the Renderable from the Scene.
@@ -110,16 +131,38 @@ public:
     void remove(utils::Entity entity);
 
     /**
-     * Returns the number of Renderable objects in the Scene.
+     * Removes a list of entities to the Scene.
      *
-     * @return number of Renderable objects in the Scene.
+     * This is equivalent to calling remove in a loop.
+     * If any of the specified entities do not exist in the scene, they are skipped.
+     *
+     * @param entities Array containing entities to remove from the scene.
+     * @param count Size of the entity array.
+     */
+    void removeEntities(const utils::Entity* UTILS_NONNULL entities, size_t count);
+
+    /**
+     * Remove all entities to the Scene.
+     */
+    void removeAllEntities() noexcept;
+
+    /**
+     * Returns the total number of Entities in the Scene, whether alive or not.
+     * @return Total number of Entities in the Scene.
+     */
+    size_t getEntityCount() const noexcept;
+
+    /**
+     * Returns the number of active (alive) Renderable objects in the Scene.
+     *
+     * @return The number of active (alive) Renderable objects in the Scene.
      */
     size_t getRenderableCount() const noexcept;
 
     /**
-     * Returns the total number of Light objects in the Scene.
+     * Returns the number of active (alive) Light objects in the Scene.
      *
-     * @return The total number of Light objects in the Scene.
+     * @return The number of active (alive) Light objects in the Scene.
      */
     size_t getLightCount() const noexcept;
 
@@ -129,6 +172,19 @@ public:
      * @return Whether the given entity is in the Scene.
      */
     bool hasEntity(utils::Entity entity) const noexcept;
+
+    /**
+     * Invokes user functor on each entity in the scene.
+     *
+     * It is not allowed to add or remove an entity from the scene within the functor.
+     *
+     * @param functor User provided functor called for each entity in the scene
+     */
+    void forEach(utils::Invocable<void(utils::Entity entity)>&& functor) const noexcept;
+
+protected:
+    // prevent heap allocation
+    ~Scene() = default;
 };
 
 } // namespace filament

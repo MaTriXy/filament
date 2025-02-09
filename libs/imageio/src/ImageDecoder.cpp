@@ -20,13 +20,14 @@
 
 #include <cstdint>
 #include <cstring> // for memcmp
-#include <istream>
+#include <iostream> // for cerr
 #include <limits>
 #include <memory>
 #include <sstream>
 
 #include <png.h>
 
+// for ntohs
 #if defined(WIN32)
 #    include <Winsock2.h>
 #    include <utils/unwindows.h>
@@ -43,6 +44,8 @@
 
 #include <image/ColorTransform.h>
 #include <image/ImageOps.h>
+
+#include <imageio/HDRDecoder.h>
 
 namespace image {
 
@@ -71,29 +74,6 @@ private:
 
     png_structp mPNG = nullptr;
     png_infop mInfo = nullptr;
-    std::istream& mStream;
-    std::streampos mStreamStartPos;
-};
-
-// -----------------------------------------------------------------------------------------------
-
-class HDRDecoder : public ImageDecoder::Decoder {
-public:
-    static HDRDecoder* create(std::istream& stream);
-    static bool checkSignature(char const* buf);
-
-    HDRDecoder(const HDRDecoder&) = delete;
-    HDRDecoder& operator=(const HDRDecoder&) = delete;
-
-private:
-    explicit HDRDecoder(std::istream& stream);
-    ~HDRDecoder() override;
-
-    // ImageDecoder::Decoder interface
-    LinearImage decode() override;
-
-    static const char sigRadiance[];
-    static const char sigRGBE[];
     std::istream& mStream;
     std::streampos mStreamStartPos;
 };
@@ -244,12 +224,23 @@ LinearImage PNGDecoder::decode() {
         if (colorType == PNG_COLOR_TYPE_PALETTE) {
             png_set_palette_to_rgb(mPNG);
         }
-        if (colorType == PNG_COLOR_TYPE_GRAY) {
+        if (colorType == PNG_COLOR_TYPE_GRAY || colorType == PNG_COLOR_TYPE_GRAY_ALPHA) {
+            if (bitDepth < 8) {
+                png_set_expand_gray_1_2_4_to_8(mPNG);
+            }
             png_set_gray_to_rgb(mPNG);
         }
+        if (png_get_valid(mPNG, mInfo, PNG_INFO_tRNS)) {
+            png_set_tRNS_to_alpha(mPNG);
+        }
         if (getColorSpace() == ImageDecoder::ColorSpace::SRGB) {
-            png_set_alpha_mode(mPNG, PNG_ALPHA_PNG, PNG_DEFAULT_sRGB);
+            double gamma = 1.0;
+            png_get_gAMA(mPNG, mInfo, &gamma);
+            if (gamma != 1.0) {
+                png_set_alpha_mode(mPNG, PNG_ALPHA_PNG, PNG_DEFAULT_sRGB);
+            }
         } else {
+            png_set_gamma_fixed(mPNG, PNG_FP_1, PNG_FP_1);
             png_set_alpha_mode(mPNG, PNG_ALPHA_PNG, PNG_GAMMA_LINEAR);
         }
         if (bitDepth < 16) {
@@ -257,6 +248,10 @@ LinearImage PNGDecoder::decode() {
         }
 
         png_read_update_info(mPNG, mInfo);
+
+        // Read updated color type since we may have asked for a conversion before
+        colorType = png_get_color_type(mPNG, mInfo);
+
         uint32_t width  = png_get_image_width(mPNG, mInfo);
         uint32_t height = png_get_image_height(mPNG, mInfo);
         size_t rowBytes = png_get_rowbytes(mPNG, mInfo);
@@ -272,23 +267,23 @@ LinearImage PNGDecoder::decode() {
         if (colorType == PNG_COLOR_TYPE_RGBA) {
             if (getColorSpace() == ImageDecoder::ColorSpace::SRGB) {
                 return toLinearWithAlpha<uint16_t>(width, height, rowBytes, imageData,
-                        [ ](uint16_t v) -> uint16_t { return ntohs(v); },
-                        sRGBToLinear< filament::math::float4>);
+                        [](uint16_t v) -> uint16_t { return ntohs(v); },
+                        sRGBToLinear<filament::math::float4>);
             } else {
                 return toLinearWithAlpha<uint16_t>(width, height, rowBytes, imageData,
-                        [ ](uint16_t v) -> uint16_t { return ntohs(v); },
-                        [ ](const filament::math::float4& color) ->  filament::math::float4 { return color; });
+                        [](uint16_t v) -> uint16_t { return ntohs(v); },
+                        [](const filament::math::float4& color) ->  filament::math::float4 { return color; });
             }
         } else {
             // Convert to linear float (PNG 16 stores data in network order (big endian).
             if (getColorSpace() == ImageDecoder::ColorSpace::SRGB) {
                 return toLinear<uint16_t>(width, height, rowBytes, imageData,
-                        [ ](uint16_t v) -> uint16_t { return ntohs(v); },
+                        [](uint16_t v) -> uint16_t { return ntohs(v); },
                         sRGBToLinear< filament::math::float3>);
             } else {
                 return toLinear<uint16_t>(width, height, rowBytes, imageData,
-                        [ ](uint16_t v) -> uint16_t { return ntohs(v); },
-                        [ ](const filament::math::float3& color) ->  filament::math::float3 { return color; });
+                        [](uint16_t v) -> uint16_t { return ntohs(v); },
+                        [](const filament::math::float3& color) ->  filament::math::float3 { return color; });
             }
         }
     } catch(std::runtime_error& e) {
@@ -319,128 +314,6 @@ void PNGDecoder::cb_error(png_structp png, png_const_charp) {
 
 void PNGDecoder::error() {
     throw std::runtime_error("Error while decoding PNG stream.");
-}
-
-// -----------------------------------------------------------------------------------------------
-
-const char HDRDecoder::sigRadiance[] = { '#', '?', 'R', 'A', 'D', 'I', 'A', 'N', 'C', 'E', 0xa };
-const char HDRDecoder::sigRGBE[]     = { '#', '?', 'R', 'G', 'B', 'E', 0xa };
-
-HDRDecoder* HDRDecoder::create(std::istream& stream) {
-    HDRDecoder* decoder = new HDRDecoder(stream);
-    return decoder;
-}
-
-bool HDRDecoder::checkSignature(char const* buf) {
-    return !memcmp(buf, sigRadiance, sizeof(sigRadiance)) ||
-            !memcmp(buf, sigRGBE, sizeof(sigRGBE));
-}
-
-HDRDecoder::HDRDecoder(std::istream& stream)
-    : mStream(stream), mStreamStartPos(stream.tellg()) {
-}
-
-HDRDecoder::~HDRDecoder() = default;
-
-LinearImage HDRDecoder::decode() {
-    try {
-        float gamma;
-        float exposure;
-        char sy, sx;
-        unsigned int height, width;
-
-        {
-            char buf[1024];
-            do {
-                char format[128];
-                mStream.getline(buf, sizeof(buf), 0xa);
-                if (buf[0] == '#') continue;
-                sscanf(buf, "FORMAT=%127s", format); // NOLINT
-                sscanf(buf, "GAMMA=%f", &gamma); // NOLINT
-                sscanf(buf, "EXPOSURE=%f", &exposure); // NOLINT
-                if ((sscanf(buf, "%cY %u %cX %u", &sy, &height, &sx, &width) == 4)||   // NOLINT
-                    (sscanf(buf, "%cX %u %cY %u", &sx, &width, &sy, &height) == 4)) {  // NOLINT
-                    break;
-                }
-            } while (true);
-        }
-
-        LinearImage image(width, height, 3);
-
-        if (sx == '-') image = horizontalFlip(image);
-        if (sy == '+') image = verticalFlip(image);
-
-        uint16_t w;
-        uint16_t magic;
-        std::unique_ptr<uint8_t[]> rgbe(new uint8_t[width * 4]);
-
-        if (width < 8 || width > 32767) {
-            for (uint32_t y = 0; y < height; y++) {
-                 filament::math::float3* i = reinterpret_cast< filament::math::float3*>(image.getPixelRef(0, y));
-                mStream.read((char*) &rgbe, width * 4);
-                // (rgb/256) * 2^(e-128)
-                size_t pixel = 0;
-                for (size_t x = 0; x < width; x++, pixel += 4) {
-                     filament::math::float3 v(rgbe[pixel], rgbe[pixel + 1], rgbe[pixel + 2]);
-                    i[x] = v * std::ldexp(1.0f, rgbe[pixel + 3] - (128 + 8));
-                }
-            }
-        } else {
-            for (uint32_t y = 0; y < height; y++) {
-                //std::cout << "line: " << y << std::endl;
-                mStream.read((char*) &magic, 2);
-                if (magic != 0x0202) {
-                    throw std::runtime_error("invalid scanline (magic)");
-                }
-                mStream.read((char*) &w, 2);
-                if (ntohs(w) != width) {
-                    throw std::runtime_error("invalid scanline (width)");
-                }
-
-                char* d = (char*) rgbe.get();
-                for (size_t p = 0; p < 4; p++) {
-                    size_t num_bytes = 0;
-                    while (num_bytes < width) {
-                        uint8_t rle_count;
-                        mStream.read((char*) &rle_count, 1);
-                        if (rle_count > 128) {
-                            char v;
-                            mStream.read(&v, 1);
-                            memset(d, v, size_t(rle_count - 128));
-                            d += rle_count - 128;
-                            num_bytes += rle_count - 128;
-                        } else {
-                            if (rle_count == 0) {
-                                throw std::runtime_error("run length is zero");
-                            }
-                            mStream.read(d, rle_count);
-                            d += rle_count;
-                            num_bytes += rle_count;
-                        }
-                    }
-                }
-
-                uint8_t const* r = &rgbe[0];
-                uint8_t const* g = &rgbe[width];
-                uint8_t const* b = &rgbe[2 * width];
-                uint8_t const* e = &rgbe[3 * width];
-                 filament::math::float3* i = reinterpret_cast< filament::math::float3*>(image.getPixelRef(0, y));
-                // (rgb/256) * 2^(e-128)
-                for (size_t x = 0; x < width; x++, r++, g++, b++, e++) {
-                     filament::math::float3 v(r[0], g[0], b[0]);
-                    i[x] = v * std::ldexp(1.0f, e[0] - (128 + 8));
-                }
-            }
-        }
-
-        return image;
-
-    } catch(std::runtime_error& e) {
-        // reset the stream, like we found it
-        std::cerr << "Runtime error while decoding HDR: " << e.what() << std::endl;
-        mStream.seekg(mStreamStartPos);
-    }
-    return LinearImage();
 }
 
 // -----------------------------------------------------------------------------------------------
@@ -605,7 +478,8 @@ LinearImage EXRDecoder::decode() {
         size_t i = 0;
         for (uint32_t y = 0; y < height; y++) {
             for (uint32_t x = 0; x < width; x++) {
-                 filament::math::float3& pixel = *reinterpret_cast< filament::math::float3*>(image.getPixelRef(x, y));
+                filament::math::float3& pixel =
+                        *reinterpret_cast< filament::math::float3*>(image.getPixelRef(x, y));
                 pixel.r = rgba[i++];
                 pixel.g = rgba[i++];
                 pixel.b = rgba[i++];

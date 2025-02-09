@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.19)
 project(tinyexr)
 
 set(TARGET tinyexr)
@@ -20,7 +20,4 @@ include_directories(${PUBLIC_HDR_DIR})
 add_library(${TARGET} STATIC ${PUBLIC_HDRS} ${SRCS})
 target_include_directories (${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
 target_link_libraries(${TARGET} LINK_PUBLIC z)
-
-if (CLANG_CL)
-    target_compile_options(${TARGET} PRIVATE -Wno-unused-variable)
-endif()
+set_target_properties(${TARGET} PROPERTIES FOLDER ThirdParty)

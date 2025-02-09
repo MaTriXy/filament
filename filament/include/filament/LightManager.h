@@ -24,19 +24,21 @@
 #include <utils/Entity.h>
 #include <utils/EntityInstance.h>
 
-#include <math/vec3.h>
+#include <math/mathfwd.h>
+#include <math/quat.h>
 
-#include <math.h>
+#include <stdint.h>
+#include <stddef.h>
+
+namespace utils {
+    class Entity;
+} // namespace utils
 
 namespace filament {
 
 class Engine;
-
-namespace details {
 class FEngine;
 class FLightManager;
-} // namespace details
-
 
 /**
  * LightManager allows to create a light source in the scene, such as a sun or street lights.
@@ -79,7 +81,7 @@ class FLightManager;
  * parallel and come from infinitely far away and from everywhere. Typically a directional light
  * is used to simulate the sun.
  *
- * Directional lights are able to cast shadows.
+ * Directional lights and spot lights are able to cast shadows.
  *
  * To create a directional light use Type.DIRECTIONAL or Type.SUN, both are similar, but the later
  * also draws a sun's disk in the sky and its reflection on glossy objects.
@@ -115,7 +117,7 @@ class FLightManager;
  * changing volume. The coupling of illumination and the outer cone means that an artist cannot
  * tweak the influence cone of a spot light without also changing the perceived illumination.
  * It therefore makes sense to provide artists with a parameter to disable this coupling. This
- * is the difference between Type.SPOT and Type.FOCUSED_SPOT.
+ * is the difference between Type.FOCUSED_SPOT and Type.SPOT.
  *
  * @see Builder.position(), Builder.direction(), Builder.falloff(), Builder.spotLightCone()
  *
@@ -144,11 +146,37 @@ public:
     using Instance = utils::EntityInstance<LightManager>;
 
     /**
+     * Returns the number of component in the LightManager, note that component are not
+     * guaranteed to be active. Use the EntityManager::isAlive() before use if needed.
+     *
+     * @return number of component in the LightManager
+     */
+    size_t getComponentCount() const noexcept;
+
+    /**
      * Returns whether a particular Entity is associated with a component of this LightManager
      * @param e An Entity.
      * @return true if this Entity has a component associated with this manager.
      */
     bool hasComponent(utils::Entity e) const noexcept;
+
+    /**
+     * @return true if the this manager has no components
+     */
+    bool empty() const noexcept;
+
+    /**
+     * Retrieve the `Entity` of the component from its `Instance`.
+     * @param i Instance of the component obtained from getInstance()
+     * @return
+     */
+    utils::Entity getEntity(Instance i) const noexcept;
+
+    /**
+     * Retrieve the Entities of all the components of this manager.
+     * @return A list, in no particular order, of all the entities managed by this manager.
+     */
+    utils::Entity const* UTILS_NONNULL getEntities() const noexcept;
 
     /**
      * Gets an Instance representing the Light component associated with the given Entity.
@@ -168,31 +196,70 @@ public:
         SUN,            //!< Directional light that also draws a sun's disk in the sky.
         DIRECTIONAL,    //!< Directional light, emits light in a given direction.
         POINT,          //!< Point light, emits light from a position, in all directions.
-        FOCUSED_SPOT,   //!< Spot light with coupling of outer cone and illumination disabled.
-        SPOT,           //!< Physically correct spot light.
+        FOCUSED_SPOT,   //!< Physically correct spot light.
+        SPOT,           //!< Spot light with coupling of outer cone and illumination disabled.
     };
 
     /**
      * Control the quality / performance of the shadow map associated to this light
      */
     struct ShadowOptions {
-        /** Size of the shadow map in texels. Must be a power-of-two. */
+        /** Size of the shadow map in texels. Must be a power-of-two and larger or equal to 8. */
         uint32_t mapSize = 1024;
+
+        /**
+         * Number of shadow cascades to use for this light. Must be between 1 and 4 (inclusive).
+         * A value greater than 1 turns on cascaded shadow mapping (CSM).
+         * Only applicable to Type.SUN or Type.DIRECTIONAL lights.
+         *
+         * When using shadow cascades, cascadeSplitPositions must also be set.
+         *
+         * @see ShadowOptions::cascadeSplitPositions
+         */
+        uint8_t shadowCascades = 1;
+
+        /**
+         * The split positions for shadow cascades.
+         *
+         * Cascaded shadow mapping (CSM) partitions the camera frustum into cascades. These values
+         * determine the planes along the camera's Z axis to split the frustum. The camera near
+         * plane is represented by 0.0f and the far plane represented by 1.0f.
+         *
+         * For example, if using 4 cascades, these values would set a uniform split scheme:
+         * { 0.25f, 0.50f, 0.75f }
+         *
+         * For N cascades, N - 1 split positions will be read from this array.
+         *
+         * Filament provides utility methods inside LightManager::ShadowCascades to help set these
+         * values. For example, to use a uniform split scheme:
+         *
+         * ~~~~~~~~~~~{.cpp}
+         *   LightManager::ShadowCascades::computeUniformSplits(options.splitPositions, 4);
+         * ~~~~~~~~~~~
+         *
+         * @see ShadowCascades::computeUniformSplits
+         * @see ShadowCascades::computeLogSplits
+         * @see ShadowCascades::computePracticalSplits
+         */
+        float cascadeSplitPositions[3] = { 0.125f, 0.25f, 0.50f };
 
         /** Constant bias in world units (e.g. meters) by which shadows are moved away from the
          * light. 1mm by default.
+         * This is ignored when the View's ShadowType is set to VSM.
          */
         float constantBias = 0.001f;
 
         /** Amount by which the maximum sampling error is scaled. The resulting value is used
          * to move the shadow away from the fragment normal. Should be 1.0.
+         * This is ignored when the View's ShadowType is set to VSM.
          */
         float normalBias = 1.0f;
 
-        /** Distance from the camera after which shadows are clipped. this is used to clip
+        /** Distance from the camera after which shadows are clipped. This is used to clip
          * shadows that are too far and wouldn't contribute to the scene much, improving
          * performance and quality. This value is always positive.
          * Use 0.0f to use the camera far distance.
+         * This only affect directional lights.
          */
         float shadowFar = 0.0f;
 
@@ -215,13 +282,34 @@ public:
          * Controls whether the shadow map should be optimized for resolution or stability.
          * When set to true, all resolution enhancing features that can affect stability are
          * disabling, resulting in significantly lower resolution shadows, albeit stable ones.
+         *
+         * Setting this flag to true always disables LiSPSM (see below).
+         *
+         * @see lispsm
          */
         bool stable = false;
+
+        /**
+         * LiSPSM, or light-space perspective shadow-mapping is a technique allowing to better
+         * optimize the use of the shadow-map texture. When enabled the effective resolution of
+         * shadows is greatly improved and yields result similar to using cascades without the
+         * extra cost. LiSPSM comes with some drawbacks however, in particular it is incompatible
+         * with blurring because it effectively affects the blur kernel size.
+         *
+         * Blurring is only an issue when using ShadowType::VSM with a large blur or with
+         * ShadowType::PCSS however.
+         *
+         * If these blurring artifacts become problematic, this flag can be used to disable LiSPSM.
+         *
+         * @see stable
+         */
+        bool lispsm = true;
 
         /**
          * Constant bias in depth-resolution units by which shadows are moved away from the
          * light. The default value of 0.5 is used to round depth values up.
          * Generally this value shouldn't be changed or at least be small and positive.
+         * This is ignored when the View's ShadowType is set to VSM.
          */
         float polygonOffsetConstant = 0.5f;
 
@@ -230,8 +318,116 @@ public:
          * away from the light. The default value of 2.0 works well with SHADOW_SAMPLING_PCF_LOW.
          * Generally this value is between 0.5 and the size in texel of the PCF filter.
          * Setting this value correctly is essential for LISPSM shadow-maps.
+         * This is ignored when the View's ShadowType is set to VSM.
          */
         float polygonOffsetSlope = 2.0f;
+
+        /**
+         * Whether screen-space contact shadows are used. This applies regardless of whether a
+         * Renderable is a shadow caster.
+         * Screen-space contact shadows are typically useful in large scenes.
+         * (off by default)
+         */
+        bool screenSpaceContactShadows = false;
+
+        /**
+         * Number of ray-marching steps for screen-space contact shadows (8 by default).
+         *
+         * CAUTION: this parameter is ignored for all lights except the directional/sun light,
+         *          all other lights use the same value set for the directional/sun light.
+         *
+         */
+        uint8_t stepCount = 8;
+
+        /**
+         * Maximum shadow-occluder distance for screen-space contact shadows (world units).
+         * (30 cm by default)
+         *
+         * CAUTION: this parameter is ignored for all lights except the directional/sun light,
+         *          all other lights use the same value set for the directional/sun light.
+         *
+         */
+        float maxShadowDistance = 0.3f;
+
+        /**
+         * Options available when the View's ShadowType is set to VSM.
+         *
+         * @warning This API is still experimental and subject to change.
+         * @see View::setShadowType
+         */
+        struct Vsm {
+            /**
+             * When elvsm is set to true, "Exponential Layered VSM without Layers" are used. It is
+             * an improvement to the default EVSM which suffers important light leaks. Enabling
+             * ELVSM for a single shadowmap doubles the memory usage of all shadow maps.
+             * ELVSM is mostly useful when large blurs are used.
+             */
+            bool elvsm = false;
+
+            /**
+             * Blur width for the VSM blur. Zero do disable.
+             * The maximum value is 125.
+             */
+            float blurWidth = 0.0f;
+        } vsm;
+
+        /**
+         * Light bulb radius used for soft shadows. Currently this is only used when DPCF or PCSS is
+         * enabled. (2cm by default).
+         */
+        float shadowBulbRadius = 0.02f;
+
+        /**
+         * Transforms the shadow direction. Must be a unit quaternion.
+         * The default is identity.
+         * Ignored if the light type isn't directional. For artistic use. Use with caution.
+         */
+        math::quatf transform{ 1.0f };
+    };
+
+    struct ShadowCascades {
+        /**
+         * Utility method to compute ShadowOptions::cascadeSplitPositions according to a uniform
+         * split scheme.
+         *
+         * @param splitPositions    a float array of at least size (cascades - 1) to write the split
+         *                          positions into
+         * @param cascades          the number of shadow cascades, at most 4
+         */
+        static void computeUniformSplits(float* UTILS_NONNULL splitPositions, uint8_t cascades);
+
+        /**
+         * Utility method to compute ShadowOptions::cascadeSplitPositions according to a logarithmic
+         * split scheme.
+         *
+         * @param splitPositions    a float array of at least size (cascades - 1) to write the split
+         *                          positions into
+         * @param cascades          the number of shadow cascades, at most 4
+         * @param near              the camera near plane
+         * @param far               the camera far plane
+         */
+        static void computeLogSplits(float* UTILS_NONNULL splitPositions, uint8_t cascades,
+                float near, float far);
+
+        /**
+         * Utility method to compute ShadowOptions::cascadeSplitPositions according to a practical
+         * split scheme.
+         *
+         * The practical split scheme uses uses a lambda value to interpolate between the logarithmic
+         * and uniform split schemes. Start with a lambda value of 0.5f and adjust for your scene.
+         *
+         * See: Zhang et al 2006, "Parallel-split shadow maps for large-scale virtual environments"
+         *
+         * @param splitPositions    a float array of at least size (cascades - 1) to write the split
+         *                          positions into
+         * @param cascades          the number of shadow cascades, at most 4
+         * @param near              the camera near plane
+         * @param far               the camera far plane
+         * @param lambda            a float in the range [0, 1] that interpolates between log and
+         *                          uniform split schemes
+         */
+        static void computePracticalSplits(float* UTILS_NONNULL splitPositions, uint8_t cascades,
+                float near, float far, float lambda);
     };
 
     //! Use Builder to construct a Light object instance
@@ -251,17 +447,28 @@ public:
         Builder& operator=(Builder&& rhs) noexcept;
 
         /**
+         * Enables or disables a light channel. Light channel 0 is enabled by default.
+         *
+         * @param channel Light channel to enable or disable, between 0 and 7.
+         * @param enable Whether to enable or disable the light channel.
+         * @return This Builder, for chaining calls.
+         */
+        Builder& lightChannel(unsigned int channel, bool enable = true) noexcept;
+
+        /**
          * Whether this Light casts shadows (disabled by default)
          *
          * @param enable Enables or disables casting shadows from this Light.
          *
          * @return This Builder, for chaining calls.
-         *
-         * @warning
-         * - Only a Type.DIRECTIONAL or Type.SUN light can cast shadows
          */
         Builder& castShadows(bool enable) noexcept;
 
+        /**
+         * Sets the shadow-map options for this light.
+         *
+         * @return This Builder, for chaining calls.
+         */
         Builder& shadowOptions(const ShadowOptions& options) noexcept;
 
         /**
@@ -324,8 +531,25 @@ public:
          *
          * For example, the sun's illuminance is about 100,000 lux.
          *
+         * This method overrides any prior calls to intensity or intensityCandela.
+         *
          */
         Builder& intensity(float intensity) noexcept;
+
+        /**
+         * Sets the initial intensity of a spot or point light in candela.
+         *
+         * @param intensity Luminous intensity in *candela*.
+         *
+         * @return This Builder, for chaining calls.
+         *
+         * @note
+         * This method is equivalent to calling intensity(float intensity) for directional lights
+         * (Type.DIRECTIONAL or Type.SUN).
+         *
+         * This method overrides any prior calls to intensity or intensityCandela.
+         */
+        Builder& intensityCandela(float intensity) noexcept;
 
         /**
          * Sets the initial intensity of a light in watts.
@@ -349,6 +573,8 @@ public:
          *
          * @note
          * This call is equivalent to `Builder::intensity(efficiency * 683 * watts);`
+         *
+         * This method overrides any prior calls to intensity or intensityCandela.
          */
         Builder& intensity(float watts, float efficiency) noexcept;
 
@@ -375,14 +601,16 @@ public:
         /**
          * Defines a spot light'st angular falloff attenuation.
          *
-         * A spot light is defined by a position, a direction and two cone angles,
-         * \p inner and \p outer. These two angles are used to define the angular falloff
-         * attenuation of the spot light.
+         * A spot light is defined by a position, a direction and two cones, \p inner and \p outer.
+         * These two cones are used to define the angular falloff attenuation of the spot light
+         * and are defined by the angle from the center axis to where the falloff begins (i.e.
+         * cones are defined by their half-angle).
          *
-         * @param inner inner cone angle in *radians* between 0 and @f$ \pi @f$
-
-         * @param outer outer cone angle in *radians* between 0 and @f$ \pi @f$
-
+         * Both inner and outer are silently clamped to a minimum value of 0.5 degrees
+         * (~0.00873 radians) to avoid floating-point precision issues during rendering.
+         *
+         * @param inner inner cone angle in *radians* between 0.00873 and \p outer
+         * @param outer outer cone angle in *radians* between 0.00873 inner and @f$ \pi/2 @f$
          * @return This Builder, for chaining calls.
          *
          * @note
@@ -398,7 +626,7 @@ public:
          * The Sun as seen from Earth has an angular size of 0.526° to 0.545°
          *
          * @param angularRadius sun's radius in degree. Default is 0.545°.
-
+         *
          * @return This Builder, for chaining calls.
          */
         Builder& sunAngularRadius(float angularRadius) noexcept;
@@ -448,8 +676,8 @@ public:
         Result build(Engine& engine, utils::Entity entity);
 
     private:
-        friend class details::FEngine;
-        friend class details::FLightManager;
+        friend class FEngine;
+        friend class FLightManager;
     };
 
     static constexpr float EFFICIENCY_INCANDESCENT = 0.0220f;   //!< Typical efficiency of an incandescent light bulb (2.2%)
@@ -466,7 +694,7 @@ public:
      * @return      true is this light is a type of directional light
      */
     inline bool isDirectional(Instance i) const noexcept {
-        Type type = getType(i);
+        Type const type = getType(i);
         return type == Type::DIRECTIONAL || type == Type::SUN;
     }
 
@@ -487,9 +715,24 @@ public:
      * @return      true is this light is a type of spot light
      */
     inline bool isSpotLight(Instance i) const noexcept {
-        Type type = getType(i);
+        Type const type = getType(i);
         return type == Type::SPOT || type == Type::FOCUSED_SPOT;
     }
+
+    /**
+     * Enables or disables a light channel. Light channel 0 is enabled by default.
+     * @param channel light channel to enable or disable, between 0 and 7.
+     * @param enable whether to enable (true) or disable (false) the specified light channel.
+     */
+    void setLightChannel(Instance i, unsigned int channel, bool enable = true) noexcept;
+
+    /**
+     * Returns whether a light channel is enabled on a specified light.
+     * @param i        Instance of the component obtained from getInstance().
+     * @param channel  Light channel to query
+     * @return         true if the light channel is enabled, false otherwise
+     */
+    bool getLightChannel(Instance i, unsigned int channel) const noexcept;
 
     /**
      * Dynamically updates the light's position.
@@ -573,13 +816,27 @@ public:
     }
 
     /**
-     * returns the light's luminous intensity in lumen.
+     * Dynamically updates the light's intensity in candela. The intensity can be negative.
+     *
+     * @param i         Instance of the component obtained from getInstance().
+     * @param intensity Luminous intensity in *candela*.
+     *
+     * @note
+     * This method is equivalent to calling setIntensity(float intensity) for directional lights
+     * (Type.DIRECTIONAL or Type.SUN).
+     *
+     * @see Builder.intensityCandela(float intensity)
+     */
+    void setIntensityCandela(Instance i, float intensity) noexcept;
+
+    /**
+     * returns the light's luminous intensity in candela.
      *
      * @param i     Instance of the component obtained from getInstance().
      *
      * @note for Type.FOCUSED_SPOT lights, the returned value depends on the \p outer cone angle.
      *
-     * @return luminous intensity in lumen.
+     * @return luminous intensity in candela.
      */
     float getIntensity(Instance i) const noexcept;
 
@@ -604,12 +861,30 @@ public:
      * Dynamically updates a spot light's cone as angles
      *
      * @param i     Instance of the component obtained from getInstance().
-     * @param inner inner cone angle in *radians* between 0 and @f$ \pi @f$
-     * @param outer outer cone angle in *radians* between 0 and @f$ \pi @f$
+     * @param inner inner cone angle in *radians* between 0.00873 and outer
+     * @param outer outer cone angle in *radians* between 0.00873 and pi/2
      *
      * @see Builder.spotLightCone()
      */
     void setSpotLightCone(Instance i, float inner, float outer) noexcept;
+
+    /**
+     * returns the outer cone angle in *radians* between inner and pi/2.
+     * @param i     Instance of the component obtained from getInstance().
+     * @return the outer cone angle of this light.
+     */
+    float getSpotLightOuterCone(Instance i) const noexcept;
+
+    /**
+     * returns the inner cone angle in *radians* between 0 and pi/2.
+     * 
+     * The value is recomputed from the initial values, thus is not precisely
+     * the same as the one passed to setSpotLightCone() or Builder.spotLightCone().
+     * 
+     * @param i     Instance of the component obtained from getInstance().
+     * @return the inner cone angle of this light.
+     */
+    float getSpotLightInnerCone(Instance i) const noexcept;
 
     /**
      * Dynamically updates the angular radius of a Type.SUN light
@@ -674,6 +949,27 @@ public:
      * @param options  A ShadowOption structure
      */
     void setShadowOptions(Instance i, ShadowOptions const& options) noexcept;
+
+    /**
+     * Whether this Light casts shadows (disabled by default)
+     *
+     * @param i     Instance of the component obtained from getInstance().
+     * @param shadowCaster Enables or disables casting shadows from this Light.
+     *
+     * @warning
+     * - Only a Type.DIRECTIONAL, Type.SUN, Type.SPOT, or Type.FOCUSED_SPOT light can cast shadows
+     */
+    void setShadowCaster(Instance i, bool shadowCaster) noexcept;
+
+    /**
+     * returns whether this light casts shadows.
+     * @param i     Instance of the component obtained from getInstance().
+     */
+    bool isShadowCaster(Instance i) const noexcept;
+
+protected:
+    // prevent heap allocation
+    ~LightManager() = default;
 };
 
 } // namespace filament

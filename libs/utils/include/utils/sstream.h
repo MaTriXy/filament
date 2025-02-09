@@ -14,24 +14,23 @@
  * limitations under the License.
  */
 
-#ifndef TNT_SSTREAM_H
-#define TNT_SSTREAM_H
+#ifndef TNT_UTILS_SSTREAM_H
+#define TNT_UTILS_SSTREAM_H
 
+#include <utils/compiler.h>
 #include <utils/ostream.h>
 
-namespace utils {
-namespace io {
+#include <stddef.h>
 
-class sstream : public ostream {
+namespace utils::io {
+
+class UTILS_PUBLIC sstream : public ostream {
 public:
-
-    ostream &flush() noexcept override;
-
+    ostream& flush() noexcept override;
     const char* c_str() const noexcept;
-
+    size_t length() const noexcept;
 };
 
-} // namespace io
-} // namespace utils
+} // namespace utils::io
 
-#endif //TNT_SSTREAM_H
+#endif // TNT_UTILS_SSTREAM_H

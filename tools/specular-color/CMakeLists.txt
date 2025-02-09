@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.19)
 project(specular-color)
 
 set(TARGET specular-color)
@@ -14,6 +14,8 @@ set(SRCS src/main.cpp)
 add_executable(${TARGET} ${SRCS})
 
 target_link_libraries(${TARGET} getopt utils math)
+
+set_target_properties(${TARGET} PROPERTIES FOLDER Tools)
 
 # =================================================================================================
 # Licenses

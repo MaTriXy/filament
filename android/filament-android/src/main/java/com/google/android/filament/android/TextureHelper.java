@@ -17,13 +17,11 @@
 package com.google.android.filament.android;
 
 import android.graphics.Bitmap;
-import android.support.annotation.IntRange;
-import android.support.annotation.NonNull;
+import androidx.annotation.IntRange;
+import androidx.annotation.NonNull;
 
 import com.google.android.filament.Engine;
 import com.google.android.filament.Texture;
-
-import java.lang.reflect.Method;
 
 public final class TextureHelper {
     // Keep in sync with Texture.cpp
@@ -34,21 +32,6 @@ public final class TextureHelper {
     private static final int BITMAP_CONFIG_RGBA_F16   = 4;
     private static final int BITMAP_CONFIG_HARDWARE   = 5;
 
-    private static Method sEngineGetNativeObject;
-    private static Method sTextureGetNativeObject;
-
-    static {
-        try {
-            sEngineGetNativeObject = Engine.class.getDeclaredMethod("getNativeObject");
-            sTextureGetNativeObject = Texture.class.getDeclaredMethod("getNativeObject");
-
-            sEngineGetNativeObject.setAccessible(true);
-            sTextureGetNativeObject.setAccessible(true);
-        } catch (NoSuchMethodException e) {
-            // Cannot happen
-        }
-    }
-
     private TextureHelper() {
     }
 
@@ -56,6 +39,14 @@ public final class TextureHelper {
             @NonNull Texture texture, @IntRange(from = 0) int level, @NonNull Bitmap bitmap) {
         setBitmap(engine, texture,
                 level, 0, 0, texture.getWidth(level), texture.getHeight(level), bitmap);
+    }
+
+    public static void setBitmap(@NonNull Engine engine,
+            @NonNull Texture texture, @IntRange(from = 0) int level, @NonNull Bitmap bitmap,
+            Object handler, Runnable callback) {
+        setBitmap(engine, texture,
+                level, 0, 0, texture.getWidth(level), texture.getHeight(level), bitmap,
+                handler, callback);
     }
 
     public static void setBitmap(@NonNull Engine engine,
@@ -69,14 +60,27 @@ public final class TextureHelper {
             throw new IllegalArgumentException("Unsupported config: ARGB_4444 or HARDWARE");
         }
 
-        try {
-            long nativeTexture = (Long) sTextureGetNativeObject.invoke(texture);
-            long nativeEngine = (Long) sEngineGetNativeObject.invoke(engine);
-            nSetBitmap(nativeTexture, nativeEngine, level, xoffset, yoffset, width, height,
-                    bitmap, format);
-        } catch (Exception e) {
-            // Ignored
+        long nativeTexture = texture.getNativeObject();
+        long nativeEngine = engine.getNativeObject();
+        nSetBitmap(nativeTexture, nativeEngine, level, xoffset, yoffset, width, height,
+                bitmap, format);
+    }
+
+    public static void setBitmap(@NonNull Engine engine,
+            @NonNull Texture texture, @IntRange(from = 0) int level,
+            @IntRange(from = 0) int xoffset, @IntRange(from = 0) int yoffset,
+            @IntRange(from = 0) int width, @IntRange(from = 0) int height,
+            @NonNull Bitmap bitmap, Object handler, Runnable callback) {
+
+        int format = toNativeFormat(bitmap.getConfig());
+        if (format == BITMAP_CONFIG_RGBA_4444 || format == BITMAP_CONFIG_HARDWARE) {
+            throw new IllegalArgumentException("Unsupported config: ARGB_4444 or HARDWARE");
         }
+
+        long nativeTexture = texture.getNativeObject();
+        long nativeEngine = engine.getNativeObject();
+        nSetBitmapWithCallback(nativeTexture, nativeEngine, level, xoffset, yoffset, width, height,
+                bitmap, format, handler, callback);
     }
 
     private static int toNativeFormat(Bitmap.Config config) {
@@ -93,4 +97,8 @@ public final class TextureHelper {
 
     private static native void nSetBitmap(long nativeTexture, long nativeEngine,
             int level, int xoffset, int yoffset, int width, int height, Bitmap bitmap, int format);
+
+    private static native void nSetBitmapWithCallback(long nativeTexture, long nativeEngine,
+            int level, int xoffset, int yoffset, int width, int height, Bitmap bitmap, int format,
+            Object handler, Runnable callback);
 }

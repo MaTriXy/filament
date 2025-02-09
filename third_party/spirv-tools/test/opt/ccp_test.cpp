@@ -26,8 +26,6 @@ namespace {
 
 using CCPTest = PassTest<::testing::Test>;
 
-// TODO(dneto): Add Effcee as required dependency, and make this unconditional.
-#ifdef SPIRV_EFFCEE
 TEST_F(CCPTest, PropagateThroughPhis) {
   const std::string spv_asm = R"(
                OpCapability Shader
@@ -572,10 +570,10 @@ TEST_F(CCPTest, SkipSpecConstantInstrucitons) {
          %10 = OpSpecConstantFalse %bool
        %main = OpFunction %void None %4
          %11 = OpLabel
-         %12 = OpBranchConditional %10 %l1 %l2
-         %l1 = OpLabel
+               OpBranchConditional %10 %L1 %L2
+         %L1 = OpLabel
                OpReturn
-         %l2 = OpLabel
+         %L2 = OpLabel
                OpReturn
                OpFunctionEnd
   )";
@@ -584,11 +582,41 @@ TEST_F(CCPTest, SkipSpecConstantInstrucitons) {
   EXPECT_EQ(std::get<1>(res), Pass::Status::SuccessWithoutChange);
 }
 
+TEST_F(CCPTest, FoldConstantCompositeInstrucitonsWithSpecConst) {
+  const std::string spv_asm = R"(
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %1 "main"
+               OpExecutionMode %1 OriginUpperLeft
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+       %bool = OpTypeBool
+     %v3bool = OpTypeVector %bool 3
+  %_struct_8 = OpTypeStruct %v3bool
+       %true = OpConstantTrue %bool
+; CHECK: [[spec_const:%\w+]] = OpSpecConstantComposite %v3bool
+         %11 = OpSpecConstantComposite %v3bool %true %true %true
+         %12 = OpConstantComposite %_struct_8 %11
+; CHECK: OpFunction
+          %1 = OpFunction %void None %4
+         %29 = OpLabel
+         %31 = OpCompositeExtract %v3bool %12 0
+; CHECK: OpCompositeExtract %bool [[spec_const]] 0
+         %32 = OpCompositeExtract %bool %31 0
+               OpReturn
+               OpFunctionEnd
+  )";
+
+  auto result = SinglePassRunAndMatch<CCPPass>(spv_asm, true);
+  EXPECT_EQ(std::get<1>(result), Pass::Status::SuccessWithChange);
+}
+
 TEST_F(CCPTest, UpdateSubsequentPhisToVarying) {
   const std::string text = R"(
 OpCapability Shader
 OpMemoryModel Logical GLSL450
 OpEntryPoint Fragment %func "func" %in
+OpExecutionMode %func OriginUpperLeft
 %void = OpTypeVoid
 %bool = OpTypeBool
 %int = OpTypeInt 32 1
@@ -599,6 +627,11 @@ OpEntryPoint Fragment %func "func" %in
 %int_ptr_Input = OpTypePointer Input %int
 %in = OpVariable %int_ptr_Input Input
 %undef = OpUndef %int
+
+; Although no constants are propagated in this function, the propagator
+; generates a new %true value while visiting conditional statements.
+; CHECK: %true = OpConstantTrue %bool
+
 %functy = OpTypeFunction %void
 %func = OpFunction %void None %functy
 %1 = OpLabel
@@ -640,8 +673,8 @@ OpReturn
 OpFunctionEnd
 )";
 
-  auto res = SinglePassRunToBinary<CCPPass>(text, true);
-  EXPECT_EQ(std::get<1>(res), Pass::Status::SuccessWithoutChange);
+  auto result = SinglePassRunAndMatch<CCPPass>(text, true);
+  EXPECT_EQ(std::get<1>(result), Pass::Status::SuccessWithChange);
 }
 
 TEST_F(CCPTest, UndefInPhi) {
@@ -743,6 +776,7 @@ TEST_F(CCPTest, NullBranchCondition) {
 OpCapability Shader
 OpMemoryModel Logical GLSL450
 OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
 %void = OpTypeVoid
 %bool = OpTypeBool
 %int = OpTypeInt 32 1
@@ -774,6 +808,7 @@ TEST_F(CCPTest, UndefBranchCondition) {
 OpCapability Shader
 OpMemoryModel Logical GLSL450
 OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
 %void = OpTypeVoid
 %bool = OpTypeBool
 %int = OpTypeInt 32 1
@@ -805,6 +840,7 @@ TEST_F(CCPTest, NullSwitchCondition) {
 OpCapability Shader
 OpMemoryModel Logical GLSL450
 OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
 %void = OpTypeVoid
 %int = OpTypeInt 32 1
 %null = OpConstantNull %int
@@ -835,6 +871,7 @@ TEST_F(CCPTest, UndefSwitchCondition) {
 OpCapability Shader
 OpMemoryModel Logical GLSL450
 OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
 %void = OpTypeVoid
 %int = OpTypeInt 32 1
 %undef = OpUndef %int
@@ -865,6 +902,7 @@ TEST_F(CCPTest, CompositeConstructOfGlobalValue) {
 OpCapability Shader
 OpMemoryModel Logical GLSL450
 OpEntryPoint Fragment %func "func" %in
+OpExecutionMode %func OriginUpperLeft
 %void = OpTypeVoid
 %int = OpTypeInt 32 1
 %bool = OpTypeBool
@@ -891,7 +929,419 @@ OpFunctionEnd
 
   SinglePassRunAndMatch<CCPPass>(text, true);
 }
-#endif
+
+TEST_F(CCPTest, FoldWithDecoration) {
+  const std::string text = R"(
+; CHECK: OpCapability
+; CHECK-NOT: OpDecorate
+; CHECK: OpFunctionEnd
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %2 "main"
+               OpExecutionMode %2 OriginUpperLeft
+               OpSource ESSL 310
+               OpDecorate %3 RelaxedPrecision
+       %void = OpTypeVoid
+          %5 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v3float = OpTypeVector %float 3
+    %float_0 = OpConstant %float 0
+    %v4float = OpTypeVector %float 4
+         %10 = OpConstantComposite %v4float %float_0 %float_0 %float_0 %float_0
+          %2 = OpFunction %void None %5
+         %11 = OpLabel
+          %3 = OpVectorShuffle %v3float %10 %10 0 1 2
+               OpReturn
+               OpFunctionEnd
+)";
+
+  SinglePassRunAndMatch<CCPPass>(text, true);
+}
+
+TEST_F(CCPTest, DebugSimpleFoldConstant) {
+  const std::string text = R"(
+               OpCapability Shader
+               OpCapability Linkage
+        %ext = OpExtInstImport "OpenCL.DebugInfo.100"
+               OpMemoryModel Logical GLSL450
+  %file_name = OpString "test"
+ %float_name = OpString "float"
+  %main_name = OpString "main"
+     %f_name = OpString "f"
+               OpDecorate %1 LinkageAttributes "func" Export
+       %void = OpTypeVoid
+       %bool = OpTypeBool
+      %float = OpTypeFloat 32
+    %float_0 = OpConstant %float 0
+
+; CHECK: [[float1:%\w+]] = OpConstant {{%\w+}} 1
+    %float_1 = OpConstant %float 1
+       %uint = OpTypeInt 32 0
+    %uint_32 = OpConstant %uint 32
+          %8 = OpTypeFunction %float
+  %null_expr = OpExtInst %void %ext DebugExpression
+        %src = OpExtInst %void %ext DebugSource %file_name
+         %cu = OpExtInst %void %ext DebugCompilationUnit 1 4 %src HLSL
+     %dbg_tf = OpExtInst %void %ext DebugTypeBasic %float_name %uint_32 Float
+    %main_ty = OpExtInst %void %ext DebugTypeFunction FlagIsProtected|FlagIsPrivate %dbg_tf
+   %dbg_main = OpExtInst %void %ext DebugFunction %main_name %main_ty %src 0 0 %cu %main_name FlagIsProtected|FlagIsPrivate 10 %1
+      %dbg_f = OpExtInst %void %ext DebugLocalVariable %f_name %dbg_tf %src 0 0 %dbg_main FlagIsLocal
+          %1 = OpFunction %float None %8
+         %10 = OpLabel
+
+; CHECK: OpExtInst %void [[ext:%\w+]] DebugScope
+; CHECK: OpLine [[file:%\w+]] 1 0
+; CHECK: OpExtInst %void [[ext]] DebugValue {{%\w+}} %float_1
+         %s0 = OpExtInst %void %ext DebugScope %dbg_main
+               OpLine %file_name 1 0
+         %17 = OpFAdd %float %float_0 %float_1
+        %val = OpExtInst %void %ext DebugValue %dbg_f %17 %null_expr
+
+; CHECK: OpLine [[file]] 2 0
+; CHECK: OpReturnValue [[float1]]
+               OpLine %file_name 2 0
+               OpReturnValue %17
+               OpFunctionEnd
+)";
+
+  SinglePassRunAndMatch<CCPPass>(text, true);
+}
+
+TEST_F(CCPTest, DebugFoldMultipleForSingleConstant) {
+  const std::string text = R"(
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+        %ext = OpExtInstImport "OpenCL.DebugInfo.100"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %outparm
+               OpExecutionMode %main OriginUpperLeft
+               OpSource GLSL 450
+  %file_name = OpString "test"
+ %float_name = OpString "float"
+  %main_name = OpString "main"
+     %f_name = OpString "f"
+               OpName %main "main"
+               OpName %outparm "outparm"
+               OpDecorate %outparm Location 0
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+        %int = OpTypeInt 32 1
+       %bool = OpTypeBool
+%_ptr_Function_int = OpTypePointer Function %int
+      %int_4 = OpConstant %int 4
+      %int_3 = OpConstant %int 3
+      %int_1 = OpConstant %int 1
+       %uint = OpTypeInt 32 0
+    %uint_32 = OpConstant %uint 32
+%_ptr_Output_int = OpTypePointer Output %int
+    %outparm = OpVariable %_ptr_Output_int Output
+  %null_expr = OpExtInst %void %ext DebugExpression
+        %src = OpExtInst %void %ext DebugSource %file_name
+         %cu = OpExtInst %void %ext DebugCompilationUnit 1 4 %src HLSL
+     %dbg_tf = OpExtInst %void %ext DebugTypeBasic %float_name %uint_32 Float
+    %main_ty = OpExtInst %void %ext DebugTypeFunction FlagIsProtected|FlagIsPrivate %dbg_tf
+   %dbg_main = OpExtInst %void %ext DebugFunction %main_name %main_ty %src 0 0 %cu %main_name FlagIsProtected|FlagIsPrivate 10 %main
+        %bb0 = OpExtInst %void %ext DebugLexicalBlock %src 0 0 %dbg_main
+        %bb1 = OpExtInst %void %ext DebugLexicalBlock %src 1 0 %dbg_main
+        %bb2 = OpExtInst %void %ext DebugLexicalBlock %src 2 0 %dbg_main
+        %bb3 = OpExtInst %void %ext DebugLexicalBlock %src 3 0 %dbg_main
+      %dbg_f0 = OpExtInst %void %ext DebugLocalVariable %f_name %dbg_tf %src 0 0 %dbg_main FlagIsLocal
+      %dbg_f1 = OpExtInst %void %ext DebugLocalVariable %f_name %dbg_tf %src 1 0 %dbg_main FlagIsLocal
+      %dbg_f2 = OpExtInst %void %ext DebugLocalVariable %f_name %dbg_tf %src 2 0 %dbg_main FlagIsLocal
+       %main = OpFunction %void None %3
+          %4 = OpLabel
+
+; CHECK: OpExtInst %void [[ext:%\w+]] DebugScope
+; CHECK: OpLine [[file:%\w+]] 1 0
+; CHECK: OpIAdd %int %int_4 %int_3
+; CHECK: OpExtInst %void [[ext]] DebugValue {{%\w+}} %int_7
+         %s0 = OpExtInst %void %ext DebugScope %bb0
+               OpLine %file_name 1 0
+          %9 = OpIAdd %int %int_4 %int_3
+       %val0 = OpExtInst %void %ext DebugValue %dbg_f0 %9 %null_expr
+
+; CHECK: OpLine [[file]] 2 0
+; CHECK: OpSGreaterThan %bool %int_7 %int_3
+; CHECK: OpExtInst %void [[ext]] DebugValue {{%\w+}} %true
+               OpLine %file_name 2 0
+          %6 = OpSGreaterThan %bool %9 %int_3
+       %val1 = OpExtInst %void %ext DebugValue %dbg_f1 %6 %null_expr
+
+               OpSelectionMerge %25 None
+               OpBranchConditional %6 %22 %23
+         %22 = OpLabel
+         %s1 = OpExtInst %void %ext DebugScope %bb1
+          %7 = OpCopyObject %int %9
+       %val2 = OpExtInst %void %ext DebugValue %dbg_f2 %7 %null_expr
+               OpBranch %25
+         %23 = OpLabel
+         %s2 = OpExtInst %void %ext DebugScope %bb2
+          %8 = OpCopyObject %int %int_4
+               OpBranch %25
+         %25 = OpLabel
+         %s3 = OpExtInst %void %ext DebugScope %bb3
+         %35 = OpPhi %int %7 %22 %8 %23
+               OpStore %outparm %35
+               OpReturn
+               OpFunctionEnd
+)";
+
+  SinglePassRunAndMatch<CCPPass>(text, true);
+}
+
+// Test from https://github.com/KhronosGroup/SPIRV-Tools/issues/3636
+TEST_F(CCPTest, CCPNoChangeFailure) {
+  const std::string text = R"(
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %4 "main"
+               OpExecutionMode %4 OriginUpperLeft
+               OpSource ESSL 320
+          %2 = OpTypeVoid
+          %3 = OpTypeFunction %2
+          %6 = OpTypeInt 32 1
+          %7 = OpConstant %6 2
+         %13 = OpConstant %6 4
+         %21 = OpConstant %6 1
+         %10 = OpTypeBool
+         %17 = OpTypePointer Function %6
+
+; CCP is generating two new constants during propagation that end up being
+; dead because they cannot be replaced anywhere in the IR.  CCP was wrongly
+; considering the IR to be unmodified because of this.
+; CHECK: %true = OpConstantTrue %bool
+; CHECK: %int_3 = OpConstant %int 3
+
+          %4 = OpFunction %2 None %3
+         %11 = OpLabel
+               OpBranch %5
+          %5 = OpLabel
+         %23 = OpPhi %6 %7 %11 %20 %15
+          %9 = OpSLessThan %10 %23 %13
+               OpLoopMerge %8 %15 None
+               OpBranchConditional %9 %15 %8
+         %15 = OpLabel
+         %20 = OpIAdd %6 %23 %21
+               OpBranch %5
+          %8 = OpLabel
+               OpReturn
+               OpFunctionEnd
+)";
+
+  auto result = SinglePassRunAndMatch<CCPPass>(text, true);
+  EXPECT_EQ(std::get<1>(result), Pass::Status::SuccessWithChange);
+}
+
+// Test from https://github.com/KhronosGroup/SPIRV-Tools/issues/3738
+// Similar to the previous one but more than one constant is generated in a
+// single call to the instruction folder.
+TEST_F(CCPTest, CCPNoChangeFailureSeveralConstantsDuringFolding) {
+  const std::string text = R"(
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %2 "main"
+               OpExecutionMode %2 OriginUpperLeft
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v3float = OpTypeVector %float 3
+       %uint = OpTypeInt 32 0
+     %uint_0 = OpConstant %uint 0
+       %bool = OpTypeBool
+     %v3bool = OpTypeVector %bool 3
+    %float_0 = OpConstant %float 0
+         %12 = OpConstantComposite %v3float %float_0 %float_0 %float_0
+%float_0_300000012 = OpConstant %float 0.300000012
+         %14 = OpConstantComposite %v3float %float_0_300000012 %float_0_300000012 %float_0_300000012
+
+; CCP is generating several constants during a single instruction evaluation.
+; When folding %19, it generates the constants %true and %24.  They are dead
+; because they cannot be replaced anywhere in the IR.  CCP was wrongly
+; considering the IR to be unmodified because of this.
+;
+; CHECK: %true = OpConstantTrue %bool
+; CHECK: %24 = OpConstantComposite %v3bool %true %true %true
+; CHECK: %float_1 = OpConstant %float 1
+; CHECK: %float_0_699999988 = OpConstant %float 0.699999988
+
+          %2 = OpFunction %void None %4
+         %15 = OpLabel
+               OpBranch %16
+         %16 = OpLabel
+         %17 = OpPhi %v3float %12 %15 %14 %18
+         %19 = OpFOrdLessThan %v3bool %17 %14
+         %20 = OpAll %bool %19
+               OpLoopMerge %21 %18 None
+               OpBranchConditional %20 %18 %21
+         %18 = OpLabel
+               OpBranch %16
+         %21 = OpLabel
+         %22 = OpExtInst %v3float %1 FMix %12 %17 %14
+               OpReturn
+               OpFunctionEnd
+)";
+
+  auto result = SinglePassRunAndMatch<CCPPass>(text, true);
+  EXPECT_EQ(std::get<1>(result), Pass::Status::SuccessWithChange);
+}
+
+// Test from https://github.com/KhronosGroup/SPIRV-Tools/issues/3991
+// Similar to the previous one but constants are created even when no
+// instruction are ever folded during propagation.
+TEST_F(CCPTest, CCPNoChangeFailureWithUnfoldableInstr) {
+  const std::string text = R"(
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %2 "main"
+               OpExecutionMode %2 OriginUpperLeft
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v3float = OpTypeVector %float 3
+       %uint = OpTypeInt 32 0
+     %uint_0 = OpConstant %uint 0
+       %bool = OpTypeBool
+    %float_0 = OpConstant %float 0
+         %11 = OpConstantComposite %v3float %float_0 %float_0 %float_0
+%float_0_300000012 = OpConstant %float 0.300000012
+         %13 = OpConstantComposite %v3float %float_0_300000012 %float_0_300000012 %float_0_300000012
+
+; CCP generates two constants when trying to fold an instruction, which it
+; ultimately fails to fold. The instruction folder in CCP was only
+; checking for newly added constants if the instruction folds successfully.
+;
+; CHECK: %float_1 = OpConstant %float 1
+; CHECK: %float_0_699999988 = OpConstant %float 0.69999998
+
+          %2 = OpFunction %void None %4
+         %14 = OpLabel
+         %15 = OpBitcast %uint %float_0_300000012
+         %16 = OpUGreaterThan %bool %15 %uint_0
+               OpBranch %17
+         %17 = OpLabel
+         %18 = OpPhi %v3float %11 %14 %13 %19
+               OpLoopMerge %20 %19 None
+               OpBranchConditional %16 %19 %20
+         %19 = OpLabel
+               OpBranch %17
+         %20 = OpLabel
+         %21 = OpExtInst %v3float %1 FMix %11 %18 %13
+               OpReturn
+               OpFunctionEnd
+)";
+
+  auto result = SinglePassRunAndMatch<CCPPass>(text, true);
+  EXPECT_EQ(std::get<1>(result), Pass::Status::SuccessWithChange);
+}
+
+TEST_F(CCPTest, FunctionDeclaration) {
+  // Make sure the pass works with a function declaration that is called.
+  const std::string text = R"(OpCapability Addresses
+OpCapability Linkage
+OpCapability Kernel
+OpCapability Int8
+%1 = OpExtInstImport "OpenCL.std"
+OpMemoryModel Physical64 OpenCL
+OpEntryPoint Kernel %2 "_Z23julia__1166_kernel_77094Bool"
+OpExecutionMode %2 ContractionOff
+OpSource Unknown 0
+OpDecorate %3 LinkageAttributes "julia_error_7712" Import
+%void = OpTypeVoid
+%5 = OpTypeFunction %void
+%3 = OpFunction %void None %5
+OpFunctionEnd
+%2 = OpFunction %void None %5
+%6 = OpLabel
+%7 = OpFunctionCall %void %3
+OpReturn
+OpFunctionEnd
+)";
+
+  SinglePassRunAndCheck<CCPPass>(text, text, false);
+}
+
+// Test from https://github.com/KhronosGroup/SPIRV-Tools/issues/4462.
+// The test was causing a lateral movement in the constant lattice, which was
+// not being detected as varying by CCP. In this test, FClamp is evaluated
+// twice.  On the first evaluation, if computes FClamp(0.5, 0.5, -1) which
+// returns -1.  On the second evaluation, it computes FClamp(0.5, 0.5, VARYING)
+// which returns 0.5.
+//
+// Both fold() computations are correct given the semantics of FClamp() but
+// this causes a lateral transition in the constant lattice which was not being
+// considered VARYING by CCP.
+TEST_F(CCPTest, LateralLatticeTransition) {
+  const std::string text = R"(OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %main "main" %gl_FragCoord %outColor
+               OpExecutionMode %main OriginUpperLeft
+               OpSource ESSL 310
+               OpName %main "main"
+               OpName %gl_FragCoord "gl_FragCoord"
+               OpName %outColor "outColor"
+               OpDecorate %gl_FragCoord BuiltIn FragCoord
+               OpDecorate %outColor Location 0
+       %void = OpTypeVoid
+          %6 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+  %float_0_5 = OpConstant %float 0.5
+    %v4float = OpTypeVector %float 4
+%_ptr_Input_v4float = OpTypePointer Input %v4float
+%gl_FragCoord = OpVariable %_ptr_Input_v4float Input
+       %uint = OpTypeInt 32 0
+     %uint_0 = OpConstant %uint 0
+%_ptr_Input_float = OpTypePointer Input %float
+    %float_0 = OpConstant %float 0
+       %bool = OpTypeBool
+   %float_n1 = OpConstant %float -1
+    %float_1 = OpConstant %float 1
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+   %outColor = OpVariable %_ptr_Output_v4float Output
+
+; This constant is created during the first evaluation of the CompositeConstruct
+; CHECK: [[new_constant:%\d+]] = OpConstantComposite %v4float %float_n1 %float_0_5 %float_0 %float_1
+
+       %main = OpFunction %void None %6
+         %19 = OpLabel
+         %20 = OpAccessChain %_ptr_Input_float %gl_FragCoord %uint_0
+         %21 = OpLoad %float %20
+         %22 = OpFOrdLessThan %bool %21 %float_0
+               OpSelectionMerge %23 None
+               OpBranchConditional %22 %24 %25
+         %24 = OpLabel
+               OpBranch %23
+         %25 = OpLabel
+               OpBranch %26
+         %26 = OpLabel
+               OpBranch %23
+         %23 = OpLabel
+         %27 = OpPhi %float %float_n1 %24 %float_0_5 %26
+         %28 = OpExtInst %float %1 FClamp %float_0_5 %float_0_5 %27
+
+         ; On first evaluation, the result from FClamp will return 0.5.
+         ; But on second evaluation, FClamp should return VARYING.  Check
+         ; that CCP is not keeping the first result.
+         ; CHECK-NOT: %29 = OpCompositeConstruct %v4float %float_0_5 %float_0_5 %float_0 %float_1
+         %29 = OpCompositeConstruct %v4float %28 %float_0_5 %float_0 %float_1
+
+         ; CHECK-NOT: OpCopyObject %v4float [[new_constant]]
+         %42 = OpCopyObject %v4float %29
+
+         ; CHECK-NOT: OpStore %outColor [[new_constant]]
+               OpStore %outColor %42
+
+               OpReturn
+               OpFunctionEnd
+)";
+
+  auto result = SinglePassRunAndMatch<CCPPass>(text, true);
+  EXPECT_EQ(std::get<1>(result), Pass::Status::SuccessWithChange);
+}
 
 }  // namespace
 }  // namespace opt

@@ -1,10 +1,11 @@
 material {
-    name : bakedColor,
+    name : BakedColor,
     requires : [
         color
     ],
     shadingModel : unlit,
-    culling : none
+    culling : none,
+    featureLevel : 0
 }
 
 fragment {

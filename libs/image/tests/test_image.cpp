@@ -15,7 +15,7 @@
  */
 
 #include <image/ColorTransform.h>
-#include <image/KtxBundle.h>
+#include <image/Ktx1Bundle.h>
 #include <image/ImageOps.h>
 #include <image/ImageSampler.h>
 #include <image/LinearImage.h>
@@ -366,7 +366,7 @@ TEST_F(ImageTest, Ktx) { // NOLINT
     uint8_t foo[] = {1, 2, 3};
     uint8_t* data;
     uint32_t size;
-    KtxBundle nascent(2, 1, true);
+    Ktx1Bundle nascent(2, 1, true);
     ASSERT_EQ(nascent.getNumMipLevels(), 2);
     ASSERT_EQ(nascent.getArrayLength(), 1);
     ASSERT_TRUE(nascent.isCubemap());
@@ -388,9 +388,9 @@ TEST_F(ImageTest, Ktx) { // NOLINT
         const auto fileSize = getFileSize(path.c_str());
         ASSERT_GT(fileSize, 0);
         vector<uint8_t> buffer(fileSize);
-        std::ifstream in(path, std::ifstream::in);
+        std::ifstream in(path, std::ifstream::in | std::ifstream::binary);
         ASSERT_TRUE(in.read((char*) buffer.data(), fileSize));
-        KtxBundle deserialized(buffer.data(), buffer.size());
+        Ktx1Bundle deserialized(buffer.data(), buffer.size());
 
         ASSERT_EQ(deserialized.getNumMipLevels(), 1);
         ASSERT_EQ(deserialized.getArrayLength(), 1);
@@ -421,10 +421,66 @@ TEST_F(ImageTest, Ktx) { // NOLINT
         reserialized.resize(serializedSize);
         ASSERT_TRUE(deserialized.serialize(reserialized.data(), serializedSize));
 
-        KtxBundle bundleWithMetadata(reserialized.data(), reserialized.size());
+        Ktx1Bundle bundleWithMetadata(reserialized.data(), reserialized.size());
         val = string(bundleWithMetadata.getMetadata("foo"));
         ASSERT_EQ(val, "bar");
     }
+}
+
+TEST_F(ImageTest, getSphericalHarmonics) {
+    Ktx1Bundle ktx(2, 1, true);
+
+    const char* sphereHarmonics = R"(0.199599 0.197587 0.208682
+    0.0894955 0.126985 0.187462
+    0.0921711 0.102497 0.105308
+    -0.0322833 -0.053886 -0.0661181
+    -0.0734081 -0.0808731 -0.0788446
+    0.0620748 0.0851526 0.100914
+    0.00763482 0.00564362 -0.000848833
+    -0.102654 -0.102815 -0.0930881
+    -0.022778 -0.0281883 -0.0377256
+    )";
+
+    ktx.setMetadata("sh", sphereHarmonics);
+
+    float3 harmonics[9];
+    ktx.getSphericalHarmonics(harmonics);
+
+    ASSERT_FLOAT_EQ(harmonics[0].x, 0.199599);
+    ASSERT_FLOAT_EQ(harmonics[0].y, 0.197587);
+    ASSERT_FLOAT_EQ(harmonics[0].z, 0.208682);
+
+    ASSERT_FLOAT_EQ(harmonics[1].x, 0.0894955);
+    ASSERT_FLOAT_EQ(harmonics[1].y, 0.126985);
+    ASSERT_FLOAT_EQ(harmonics[1].z, 0.187462);
+
+    ASSERT_FLOAT_EQ(harmonics[2].x, 0.0921711);
+    ASSERT_FLOAT_EQ(harmonics[2].y, 0.102497);
+    ASSERT_FLOAT_EQ(harmonics[2].z, 0.105308);
+
+    ASSERT_FLOAT_EQ(harmonics[3].x, -0.0322833);
+    ASSERT_FLOAT_EQ(harmonics[3].y, -0.053886);
+    ASSERT_FLOAT_EQ(harmonics[3].z, -0.0661181);
+
+    ASSERT_FLOAT_EQ(harmonics[4].x, -0.0734081);
+    ASSERT_FLOAT_EQ(harmonics[4].y, -0.0808731);
+    ASSERT_FLOAT_EQ(harmonics[4].z, -0.0788446);
+
+    ASSERT_FLOAT_EQ(harmonics[5].x, 0.0620748);
+    ASSERT_FLOAT_EQ(harmonics[5].y, 0.0851526);
+    ASSERT_FLOAT_EQ(harmonics[5].z, 0.100914);
+
+    ASSERT_FLOAT_EQ(harmonics[6].x, 0.00763482);
+    ASSERT_FLOAT_EQ(harmonics[6].y, 0.00564362);
+    ASSERT_FLOAT_EQ(harmonics[6].z, -0.000848833);
+
+    ASSERT_FLOAT_EQ(harmonics[7].x, -0.102654);
+    ASSERT_FLOAT_EQ(harmonics[7].y, -0.102815);
+    ASSERT_FLOAT_EQ(harmonics[7].z, -0.0930881);
+
+    ASSERT_FLOAT_EQ(harmonics[8].x, -0.022778);
+    ASSERT_FLOAT_EQ(harmonics[8].y, -0.0281883);
+    ASSERT_FLOAT_EQ(harmonics[8].z, -0.0377256);
 }
 
 static void printUsage(const char* name) {
@@ -615,8 +671,9 @@ static bool intersect(Ray ray, Sphere sphere, float* t) {
 
 static LinearImage diffImages(const LinearImage& a, const LinearImage& b) {
     const uint32_t width = a.getWidth(), height = a.getHeight(), nchan = a.getChannels();
-    ASSERT_PRECONDITION(width == b.getWidth() && height == b.getHeight() &&
-            nchan == b.getChannels(), "Images must have same shape.");
+    FILAMENT_CHECK_PRECONDITION(
+            width == b.getWidth() && height == b.getHeight() && nchan == b.getChannels())
+            << "Images must have same shape.";
     LinearImage result(width, height, nchan);
     float* dst = result.getPixelRef();
     float const* srca = a.getPixelRef();

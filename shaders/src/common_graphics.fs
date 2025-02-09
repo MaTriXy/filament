@@ -24,6 +24,22 @@ void unpremultiply(inout vec4 color) {
     color.rgb /= max(color.a, FLT_EPS);
 }
 
+/**
+ * Applies a full range YCbCr to sRGB conversion and returns an RGB color.
+ *
+ * @public-api
+ */
+vec3 ycbcrToRgb(float luminance, vec2 cbcr) {
+    // Taken from https://developer.apple.com/documentation/arkit/arframe/2867984-capturedimage
+    const mat4 ycbcrToRgbTransform = mat4(
+         1.0000,  1.0000,  1.0000,  0.0000,
+         0.0000, -0.3441,  1.7720,  0.0000,
+         1.4020, -0.7141,  0.0000,  0.0000,
+        -0.7010,  0.5291, -0.8860,  1.0000
+    );
+    return (ycbcrToRgbTransform * vec4(luminance, cbcr, 1.0)).rgb;
+}
+
 //------------------------------------------------------------------------------
 // Tone mapping operations
 //------------------------------------------------------------------------------
@@ -31,8 +47,8 @@ void unpremultiply(inout vec4 color) {
 /*
  * The input must be in the [0, 1] range.
  */
-vec3 Inverse_Tonemap_Unreal(const vec3 x) {
-    return (x * -0.155) / (x - 1.019);
+vec3 Inverse_Tonemap_Filmic(const vec3 x) {
+    return (0.03 - 0.59 * x - sqrt(0.0009 + 1.3702 * x - 1.0127 * x * x)) / (-5.02 + 4.86 * x);
 }
 
 /**
@@ -45,7 +61,7 @@ vec3 Inverse_Tonemap_Unreal(const vec3 x) {
 vec3 inverseTonemapSRGB(vec3 color) {
     // sRGB input
     color = clamp(color, 0.0, 1.0);
-    return Inverse_Tonemap_Unreal(color);
+    return Inverse_Tonemap_Filmic(pow(color, vec3(2.2)));
 }
 
 /**
@@ -57,8 +73,7 @@ vec3 inverseTonemapSRGB(vec3 color) {
  */
 vec3 inverseTonemap(vec3 linear) {
     // Linear input
-    linear = clamp(linear, 0.0, 1.0);
-    return Inverse_Tonemap_Unreal(pow(linear, vec3(1.0 / 2.2)));
+    return Inverse_Tonemap_Filmic(clamp(linear, 0.0, 1.0));
 }
 
 //------------------------------------------------------------------------------
@@ -71,6 +86,20 @@ vec3 inverseTonemap(vec3 linear) {
 vec3 decodeRGBM(vec4 c) {
     c.rgb *= (c.a * 16.0);
     return c.rgb * c.rgb;
+}
+
+//------------------------------------------------------------------------------
+// Common screen-space operations
+//------------------------------------------------------------------------------
+
+// returns the frag coord in the GL convention with (0, 0) at the bottom-left
+// resolution : width, height
+highp vec2 getFragCoord(const highp vec2 resolution) {
+#if defined(TARGET_METAL_ENVIRONMENT) || defined(TARGET_VULKAN_ENVIRONMENT)
+    return vec2(gl_FragCoord.x, resolution.y - gl_FragCoord.y);
+#else
+    return gl_FragCoord.xy;
+#endif
 }
 
 //------------------------------------------------------------------------------

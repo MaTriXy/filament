@@ -19,6 +19,7 @@
 #include "MetalContext.h"
 
 #include <utils/Panic.h>
+#include <utils/Log.h>
 #include <utils/trap.h>
 
 #include <thread>
@@ -26,7 +27,6 @@
 
 namespace filament {
 namespace backend {
-namespace metal {
 
 MetalBufferPoolEntry const* MetalBufferPool::acquireBuffer(size_t numBytes) {
     std::lock_guard<std::mutex> lock(mMutex);
@@ -42,14 +42,20 @@ MetalBufferPoolEntry const* MetalBufferPool::acquireBuffer(size_t numBytes) {
     }
 
     // We were not able to find a sufficiently large stage, so create a new one.
-    id<MTLBuffer> buffer = [mContext.device newBufferWithLength:numBytes
-                                                        options:MTLResourceStorageModeShared];
-    MetalBufferPoolEntry* stage = new MetalBufferPoolEntry({
-        .buffer = buffer,
+    id<MTLBuffer> buffer = nil;
+    {
+        ScopedAllocationTimer timer("staging");
+        buffer = [mContext.device newBufferWithLength:numBytes
+                                              options:MTLResourceStorageModeShared];
+    }
+    FILAMENT_CHECK_POSTCONDITION(buffer)
+            << "Could not allocate Metal staging buffer of size " << numBytes << ".";
+    MetalBufferPoolEntry* stage = new MetalBufferPoolEntry {
+        .buffer = { buffer, TrackedMetalBuffer::Type::STAGING },
         .capacity = numBytes,
         .lastAccessed = mCurrentFrame,
         .referenceCount = 1
-    });
+    };
     mUsedStages.insert(stage);
 
     return stage;
@@ -81,15 +87,18 @@ void MetalBufferPool::releaseBuffer(MetalBufferPoolEntry const *stage) noexcept 
 }
 
 void MetalBufferPool::gc() noexcept {
+    // If this is one of the first few frames, return early to avoid wrapping unsigned integers.
+    if (++mCurrentFrame <= TIME_BEFORE_EVICTION) {
+        return;
+    }
+    const uint64_t evictionTime = mCurrentFrame - TIME_BEFORE_EVICTION;
+
     std::lock_guard<std::mutex> lock(mMutex);
 
-    mCurrentFrame++;
     decltype(mFreeStages) stages;
     stages.swap(mFreeStages);
-    const uint64_t evictionTime = mCurrentFrame - TIME_BEFORE_EVICTION;
     for (auto pair : stages) {
         if (pair.second->lastAccessed < evictionTime) {
-            [pair.second->buffer release];
             delete pair.second;
         } else {
             mFreeStages.insert(pair);
@@ -100,14 +109,46 @@ void MetalBufferPool::gc() noexcept {
 void MetalBufferPool::reset() noexcept {
     std::lock_guard<std::mutex> lock(mMutex);
 
-    assert(mUsedStages.empty());
+    assert_invariant(mUsedStages.empty());
     for (auto pair : mFreeStages) {
-        [pair.second->buffer release];
         delete pair.second;
     }
     mFreeStages.clear();
 }
 
-} // namespace metal
+MetalBumpAllocator::MetalBumpAllocator(id<MTLDevice> device, size_t capacity)
+    : mDevice(device), mCapacity(capacity) {
+    if (mCapacity > 0) {
+        mCurrentUploadBuffer = { [device newBufferWithLength:capacity options:MTLStorageModeShared],
+            TrackedMetalBuffer::Type::STAGING };
+    }
+}
+
+std::pair<id<MTLBuffer>, size_t> MetalBumpAllocator::allocateStagingArea(size_t size) {
+    if (size == 0) {
+        return { nil, 0 };
+    }
+    if (size > mCapacity) {
+        return { [mDevice newBufferWithLength:size options:MTLStorageModeShared], 0 };
+    }
+    assert_invariant(mCurrentUploadBuffer);
+
+    // Align the head to a 4-byte boundary.
+    mHead = (mHead + 3) & ~3;
+
+    if (UTILS_LIKELY(mHead + size <= mCapacity)) {
+        const size_t oldHead = mHead;
+        mHead += size;
+        return { mCurrentUploadBuffer.get(), oldHead };
+    }
+
+    // We're finished with the current allocation.
+    mCurrentUploadBuffer = { [mDevice newBufferWithLength:mCapacity options:MTLStorageModeShared],
+        TrackedMetalBuffer::Type::STAGING };
+    mHead = size;
+
+    return { mCurrentUploadBuffer.get(), 0 };
+}
+
 } // namespace backend
 } // namespace filament

@@ -21,9 +21,12 @@
 #include <filament/Material.h>
 #include <filament/MaterialInstance.h>
 
-#include <array>
+#include <utils/compiler.h>
 
-namespace gltfio {
+#include <array>
+#include <string>
+
+namespace filament::gltfio {
 
 enum class AlphaMode : uint8_t {
     OPAQUE,
@@ -31,7 +34,16 @@ enum class AlphaMode : uint8_t {
     BLEND
 };
 
-// NOTE: This key is processed by MurmurHashFn so please make padding explicit.
+// The following struct gets hashed so all padding bits should be explicit.
+// Tell the compiler to emit a warning if it adds any padding.
+UTILS_WARNING_PUSH
+UTILS_WARNING_ENABLE_PADDED
+
+/**
+ * \struct MaterialKey MaterialProvider.h gltfio/MaterialProvider.h
+ * \brief Small POD structure that specifies the requirements for a glTF material.
+ * \note This key is processed by MurmurHashFn so please make padding explicit.
+ */
 struct alignas(4) MaterialKey {
     // -- 32 bit boundary --
     bool doubleSided : 1;
@@ -56,61 +68,154 @@ struct alignas(4) MaterialKey {
     };
     uint8_t baseColorUV;
     // -- 32 bit boundary --
+    bool hasClearCoatTexture : 1;
+    uint8_t clearCoatUV : 7;
+    bool hasClearCoatRoughnessTexture : 1;
+    uint8_t clearCoatRoughnessUV : 7;
+    bool hasClearCoatNormalTexture : 1;
+    uint8_t clearCoatNormalUV : 7;
+    bool hasClearCoat : 1;
+    bool hasTransmission : 1;
+    bool hasTextureTransforms : 6;
+    // -- 32 bit boundary --
     uint8_t emissiveUV;
     uint8_t aoUV;
     uint8_t normalUV;
-    bool hasTextureTransforms : 8;
+    bool hasTransmissionTexture : 1;
+    uint8_t transmissionUV : 7;
+    // -- 32 bit boundary --
+    bool hasSheenColorTexture : 1;
+    uint8_t sheenColorUV : 7;
+    bool hasSheenRoughnessTexture : 1;
+    uint8_t sheenRoughnessUV : 7;
+    bool hasVolumeThicknessTexture : 1;
+    uint8_t volumeThicknessUV : 7;
+    bool hasSheen : 1;
+    bool hasIOR : 1;
+    bool hasVolume : 1;
+    bool hasSpecular : 1;
+    bool hasSpecularTexture : 1;
+    bool hasSpecularColorTexture : 1;
+    bool padding : 2;
+    // -- 32 bit boundary --
+    uint8_t specularTextureUV;
+    uint8_t specularColorTextureUV;
+    uint16_t padding2;
 };
 
-static_assert(sizeof(MaterialKey) == 8, "MaterialKey has unexpected padding.");
+static_assert(sizeof(MaterialKey) == 20, "MaterialKey has unexpected size.");
+
+UTILS_WARNING_POP
 
 bool operator==(const MaterialKey& k1, const MaterialKey& k2);
 
 // Define a mapping from a uv set index in the source asset to one of Filament's uv sets.
 enum UvSet : uint8_t { UNUSED, UV0, UV1 };
-using UvMap = std::array<UvSet, 8>;
+constexpr int UvMapSize = 8;
+using UvMap = std::array<UvSet, UvMapSize>;
 
-enum MaterialSource {
-    GENERATE_SHADERS,
-    LOAD_UBERSHADERS,
+inline uint8_t getNumUvSets(const UvMap& uvmap) {
+    return std::max({
+        uvmap[0], uvmap[1], uvmap[2], uvmap[3],
+        uvmap[4], uvmap[5], uvmap[6], uvmap[7],
+    });
 };
 
 /**
- * MaterialProvider is an interface to a provider of glTF materials with two implementations.
+ * \class MaterialProvider MaterialProvider.h gltfio/MaterialProvider.h
+ * \brief Interface to a provider of glTF materials (has two implementations).
  *
- * - The "MaterialGenerator" implementation generates materials at run time (which can be slow)
- *   and requires the filamat library, but produces streamlined shaders.
+ * - The \c JitShaderProvider implementation generates materials at run time (which can be slow) and
+ *   requires the filamat library, but produces streamlined shaders. See createJitShaderProvider().
  *
- * - The "UbershaderLoader" implementation uses a small number of pre-built materials with complex
- *   fragment shaders, but does not require any run time work or usage of filamat.
+ * - The \c UbershaderProvider implementation uses a small number of pre-built materials with complex
+ *   fragment shaders, but does not require any run time work or usage of filamat. See
+ *   createUbershaderProvider().
+ *
+ * Both implementations of MaterialProvider maintain a small cache of materials which must be
+ * explicitly freed using destroyMaterials(). These materials are not freed automatically when the
+ * MaterialProvider is destroyed, which allows clients to take ownership if desired.
+ *
  */
-class MaterialProvider {
+class UTILS_PUBLIC MaterialProvider {
 public:
     virtual ~MaterialProvider() {}
 
-    virtual MaterialSource getSource() const noexcept = 0;
+    /**
+     * Creates or fetches a compiled Filament material, then creates an instance from it.
+     *
+     * @param config Specifies requirements; might be mutated due to resource constraints.
+     * @param uvmap Output argument that gets populated with a small table that maps from a glTF uv
+     *              index to a Filament uv index.
+     * @param label Optional tag that is not a part of the cache key.
+     * @param extras Optional extras as stringified JSON (not a part of the cache key).
+     *               Does not store the pointer.
+     */
+    virtual MaterialInstance* createMaterialInstance(MaterialKey* config, UvMap* uvmap,
+            const char* label = "material", const char* extras = nullptr) = 0;
 
-    // Creates or fetches a compiled Filament material, then creates an instance from it. The given
-    // configuration key might be mutated due to resource constraints. The second argument is
-    // populated with a small table that maps from a glTF uv index to a Filament uv index. The third
-    // argument is an optional tag that is not a part of the cache key.
-    virtual filament::MaterialInstance* createMaterialInstance(MaterialKey* config, UvMap* uvmap,
-            const char* label = "material") = 0;
+    /**
+     * Creates or fetches a compiled Filament material corresponding to the given config.
+     */
+    virtual Material* getMaterial(MaterialKey* config, UvMap* uvmap,
+            const char* label = "material") { return nullptr; }
 
+    /**
+     * Gets a weak reference to the array of cached materials.
+     */
+    virtual const Material* const* getMaterials() const noexcept = 0;
+
+    /**
+     * Gets the number of cached materials.
+     */
     virtual size_t getMaterialsCount() const noexcept = 0;
-    virtual const filament::Material* const* getMaterials() const noexcept = 0;
+
+    /**
+     * Destroys all cached materials.
+     *
+     * This is not called automatically when MaterialProvider is destroyed, which allows
+     * clients to take ownership of the cache if desired.
+     */
     virtual void destroyMaterials() = 0;
+
+    /**
+     * Returns true if the presence of the given vertex attribute is required.
+     *
+     * Some types of providers (e.g. ubershader) require dummy attribute values
+     * if the glTF model does not provide them.
+     */
+    virtual bool needsDummyData(VertexAttribute attrib) const noexcept = 0;
 };
 
-namespace details {
-    void constrainMaterial(MaterialKey* key, UvMap* uvmap);
-    void processShaderString(std::string* shader, const UvMap& uvmap,
-            const MaterialKey& config);
-}
+void constrainMaterial(MaterialKey* key, UvMap* uvmap);
 
-MaterialProvider* createMaterialGenerator(filament::Engine* engine);
-MaterialProvider* createUbershaderLoader(filament::Engine* engine);
+void processShaderString(std::string* shader, const UvMap& uvmap,
+        const MaterialKey& config);
 
-} // namespace gltfio
+/**
+ * Creates a material provider that builds materials on the fly, composing GLSL at run time.
+ *
+ * @param optimizeShaders Optimizes shaders, but at significant cost to construction time.
+ * @return New material provider that can build materials at run time.
+ *
+ * Requires \c libfilamat to be linked in. Not available in \c libgltfio_core.
+ *
+ * @see createUbershaderProvider
+ */
+UTILS_PUBLIC
+MaterialProvider* createJitShaderProvider(Engine* engine, bool optimizeShaders = false);
+
+/**
+ * Creates a material provider that loads a small set of pre-built materials.
+ *
+ * @return New material provider that can quickly load a material from a cache.
+ *
+ * @see createJitShaderProvider
+ */
+UTILS_PUBLIC
+MaterialProvider* createUbershaderProvider(Engine* engine, const void* archive,
+        size_t archiveByteCount);
+
+} // namespace filament::gltfio
 
 #endif // GLTFIO_MATERIALPROVIDER_H

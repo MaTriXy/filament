@@ -14,32 +14,47 @@
  * limitations under the License.
  */
 
-#ifndef TNT_FILAMENT_DRIVER_GLUTILS_H
-#define TNT_FILAMENT_DRIVER_GLUTILS_H
+#ifndef TNT_FILAMENT_BACKEND_OPENGL_GLUTILS_H
+#define TNT_FILAMENT_BACKEND_OPENGL_GLUTILS_H
 
 #include <utils/compiler.h>
+#include <utils/debug.h>
 #include <utils/Log.h>
 
 #include <backend/DriverEnums.h>
 
+#include <string_view>
+#include <unordered_set>
+
+#include <stdint.h>
+#include <stddef.h>
+#include <string.h>
+
 #include "gl_headers.h"
 
-namespace filament {
+namespace filament::backend {
 namespace GLUtils {
 
-void checkGLError(utils::io::ostream& out, const char* function, size_t line) noexcept;
-void checkFramebufferStatus(utils::io::ostream& out, const char* function, size_t line) noexcept;
+const char* getGLError(GLenum error) noexcept;
+GLenum checkGLError(utils::io::ostream& out, const char* function, size_t line) noexcept;
+void assertGLError(utils::io::ostream& out, const char* function, size_t line) noexcept;
+
+const char* getFramebufferStatus(GLenum err) noexcept;
+GLenum checkFramebufferStatus(utils::io::ostream& out, GLenum target, const char* function, size_t line) noexcept;
+void assertFramebufferStatus(utils::io::ostream& out, GLenum target, const char* function, size_t line) noexcept;
 
 #ifdef NDEBUG
-#define CHECK_GL_ERROR(out)
-#define CHECK_GL_FRAMEBUFFER_STATUS(out)
+#   define CHECK_GL_ERROR(out)
+#   define CHECK_GL_ERROR_NON_FATAL(out)
+#   define CHECK_GL_FRAMEBUFFER_STATUS(out, target)
 #else
-#define CHECK_GL_ERROR(out) { GLUtils::checkGLError(out, __PRETTY_FUNCTION__, __LINE__); }
-#define CHECK_GL_FRAMEBUFFER_STATUS(out) { GLUtils::checkFramebufferStatus(out, __PRETTY_FUNCTION__, __LINE__); }
+#   define CHECK_GL_ERROR(out) { GLUtils::assertGLError(out, __func__, __LINE__); }
+#   define CHECK_GL_ERROR_NON_FATAL(out) { GLUtils::checkGLError(out, __func__, __LINE__); }
+#   define CHECK_GL_FRAMEBUFFER_STATUS(out, target) { GLUtils::checkFramebufferStatus(out, target, __func__, __LINE__); }
 #endif
 
-constexpr inline GLuint getComponentCount(backend::ElementType type) noexcept {
-    using ElementType = backend::ElementType;
+constexpr GLuint getComponentCount(ElementType type) noexcept {
+    using ElementType = ElementType;
     switch (type) {
         case ElementType::BYTE:
         case ElementType::UBYTE:
@@ -78,36 +93,56 @@ constexpr inline GLuint getComponentCount(backend::ElementType type) noexcept {
 // Our enums to GLenum conversions
 // ------------------------------------------------------------------------------------------------
 
-constexpr inline GLbitfield getAttachmentBitfield(backend::TargetBufferFlags flags) noexcept {
+constexpr GLbitfield getAttachmentBitfield(TargetBufferFlags flags) noexcept {
     GLbitfield mask = 0;
-    if (flags & backend::TargetBufferFlags::COLOR) {
-        mask |= GL_COLOR_BUFFER_BIT;
+    if (any(flags & TargetBufferFlags::COLOR_ALL)) {
+        mask |= (GLbitfield)GL_COLOR_BUFFER_BIT;
     }
-    if (flags  & backend::TargetBufferFlags::DEPTH) {
-        mask |= GL_DEPTH_BUFFER_BIT;
+    if (any(flags & TargetBufferFlags::DEPTH)) {
+        mask |= (GLbitfield)GL_DEPTH_BUFFER_BIT;
     }
-    if (flags  & backend::TargetBufferFlags::STENCIL) {
-        mask |= GL_STENCIL_BUFFER_BIT;
+    if (any(flags & TargetBufferFlags::STENCIL)) {
+        mask |= (GLbitfield)GL_STENCIL_BUFFER_BIT;
     }
     return mask;
 }
 
-constexpr inline GLenum getBufferUsage(backend::BufferUsage usage) noexcept {
+constexpr GLenum getBufferUsage(BufferUsage usage) noexcept {
     switch (usage) {
-        case backend::BufferUsage::STATIC:
+        case BufferUsage::STATIC:
             return GL_STATIC_DRAW;
-        case backend::BufferUsage::DYNAMIC:
-        case backend::BufferUsage::STREAM:
+        default:
             return GL_DYNAMIC_DRAW;
     }
 }
 
-constexpr inline GLboolean getNormalization(bool normalized) noexcept {
+constexpr GLenum getBufferBindingType(BufferObjectBinding bindingType) noexcept {
+    switch (bindingType) {
+        case BufferObjectBinding::VERTEX:
+            return GL_ARRAY_BUFFER;
+        case BufferObjectBinding::UNIFORM:
+#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
+            return GL_UNIFORM_BUFFER;
+#else
+            utils::panic(__func__, __FILE__, __LINE__, "UNIFORM not supported");
+            return 0x8A11;
+#endif
+        case BufferObjectBinding::SHADER_STORAGE:
+#ifdef BACKEND_OPENGL_LEVEL_GLES31
+            return GL_SHADER_STORAGE_BUFFER;
+#else
+            utils::panic(__func__, __FILE__, __LINE__, "SHADER_STORAGE not supported");
+            return 0x90D2; // just to return something
+#endif
+    }
+}
+
+constexpr GLboolean getNormalization(bool normalized) noexcept {
     return GLboolean(normalized ? GL_TRUE : GL_FALSE);
 }
 
-constexpr inline GLenum getComponentType(backend::ElementType type) noexcept {
-    using ElementType = backend::ElementType;
+constexpr GLenum getComponentType(ElementType type) noexcept {
+    using ElementType = ElementType;
     switch (type) {
         case ElementType::BYTE:
         case ElementType::BYTE2:
@@ -142,16 +177,40 @@ constexpr inline GLenum getComponentType(backend::ElementType type) noexcept {
         case ElementType::HALF2:
         case ElementType::HALF3:
         case ElementType::HALF4:
+            // on ES2 we should never end-up here
+#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
             return GL_HALF_FLOAT;
+#else
+            return GL_HALF_FLOAT_OES;
+#endif
     }
 }
 
-constexpr inline GLenum getCubemapTarget(backend::TextureCubemapFace face) noexcept {
-    return GL_TEXTURE_CUBE_MAP_POSITIVE_X + GLenum(face);
+constexpr GLenum getTextureTargetNotExternal(SamplerType target) noexcept {
+    switch (target) {
+        case SamplerType::SAMPLER_2D:
+            return GL_TEXTURE_2D;
+        case SamplerType::SAMPLER_3D:
+            return GL_TEXTURE_3D;
+        case SamplerType::SAMPLER_2D_ARRAY:
+            return GL_TEXTURE_2D_ARRAY;
+        case SamplerType::SAMPLER_CUBEMAP:
+            return GL_TEXTURE_CUBE_MAP;
+        case SamplerType::SAMPLER_CUBEMAP_ARRAY:
+            return GL_TEXTURE_CUBE_MAP_ARRAY;
+        case SamplerType::SAMPLER_EXTERNAL:
+            // we should never be here
+            return GL_TEXTURE_2D;
+    }
 }
 
-constexpr inline GLenum getWrapMode(backend::SamplerWrapMode mode) noexcept {
-    using SamplerWrapMode = backend::SamplerWrapMode;
+constexpr GLenum getCubemapTarget(uint16_t layer) noexcept {
+    assert_invariant(layer <= 5);
+    return GL_TEXTURE_CUBE_MAP_POSITIVE_X + layer;
+}
+
+constexpr GLenum getWrapMode(SamplerWrapMode mode) noexcept {
+    using SamplerWrapMode = SamplerWrapMode;
     switch (mode) {
         case SamplerWrapMode::REPEAT:
             return GL_REPEAT;
@@ -162,8 +221,8 @@ constexpr inline GLenum getWrapMode(backend::SamplerWrapMode mode) noexcept {
     }
 }
 
-constexpr inline GLenum getTextureFilter(backend::SamplerMinFilter filter) noexcept {
-    using SamplerMinFilter = backend::SamplerMinFilter;
+constexpr GLenum getTextureFilter(SamplerMinFilter filter) noexcept {
+    using SamplerMinFilter = SamplerMinFilter;
     switch (filter) {
         case SamplerMinFilter::NEAREST:
         case SamplerMinFilter::LINEAR:
@@ -177,13 +236,13 @@ constexpr inline GLenum getTextureFilter(backend::SamplerMinFilter filter) noexc
     }
 }
 
-constexpr inline GLenum getTextureFilter(backend::SamplerMagFilter filter) noexcept {
+constexpr GLenum getTextureFilter(SamplerMagFilter filter) noexcept {
     return GL_NEAREST + GLenum(filter);
 }
 
 
-constexpr inline GLenum getBlendEquationMode(backend::BlendEquation mode) noexcept {
-    using BlendEquation = backend::BlendEquation;
+constexpr GLenum getBlendEquationMode(BlendEquation mode) noexcept {
+    using BlendEquation = BlendEquation;
     switch (mode) {
         case BlendEquation::ADD:               return GL_FUNC_ADD;
         case BlendEquation::SUBTRACT:          return GL_FUNC_SUBTRACT;
@@ -193,8 +252,8 @@ constexpr inline GLenum getBlendEquationMode(backend::BlendEquation mode) noexce
     }
 }
 
-constexpr inline GLenum getBlendFunctionMode(backend::BlendFunction mode) noexcept {
-    using BlendFunction = backend::BlendFunction;
+constexpr GLenum getBlendFunctionMode(BlendFunction mode) noexcept {
+    using BlendFunction = BlendFunction;
     switch (mode) {
         case BlendFunction::ZERO:                  return GL_ZERO;
         case BlendFunction::ONE:                   return GL_ONE;
@@ -210,13 +269,7 @@ constexpr inline GLenum getBlendFunctionMode(backend::BlendFunction mode) noexce
     }
 }
 
-constexpr inline GLenum getTextureCompareMode(backend::SamplerCompareMode mode) noexcept {
-    return mode == backend::SamplerCompareMode::NONE ?
-           GL_NONE : GL_COMPARE_REF_TO_TEXTURE;
-}
-
-constexpr inline GLenum getTextureCompareFunc(backend::SamplerCompareFunc func) noexcept {
-    using SamplerCompareFunc = backend::SamplerCompareFunc;
+constexpr GLenum getCompareFunc(SamplerCompareFunc func) noexcept {
     switch (func) {
         case SamplerCompareFunc::LE:    return GL_LEQUAL;
         case SamplerCompareFunc::GE:    return GL_GEQUAL;
@@ -229,55 +282,167 @@ constexpr inline GLenum getTextureCompareFunc(backend::SamplerCompareFunc func) 
     }
 }
 
-constexpr inline GLenum getDepthFunc(backend::SamplerCompareFunc func) noexcept {
-    return getTextureCompareFunc(func);
+#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
+constexpr GLenum getTextureCompareMode(SamplerCompareMode mode) noexcept {
+    return mode == SamplerCompareMode::NONE ?
+           GL_NONE : GL_COMPARE_REF_TO_TEXTURE;
 }
 
-constexpr inline GLenum getFormat(backend::PixelDataFormat format) noexcept {
-    using PixelDataFormat = backend::PixelDataFormat;
+constexpr GLenum getTextureCompareFunc(SamplerCompareFunc func) noexcept {
+    return getCompareFunc(func);
+}
+#endif
+
+constexpr GLenum getDepthFunc(SamplerCompareFunc func) noexcept {
+    return getCompareFunc(func);
+}
+
+constexpr GLenum getStencilFunc(SamplerCompareFunc func) noexcept {
+    return getCompareFunc(func);
+}
+
+constexpr GLenum getStencilOp(StencilOperation op) noexcept {
+    switch (op) {
+        case StencilOperation::KEEP:        return GL_KEEP;
+        case StencilOperation::ZERO:        return GL_ZERO;
+        case StencilOperation::REPLACE:     return GL_REPLACE;
+        case StencilOperation::INCR:        return GL_INCR;
+        case StencilOperation::INCR_WRAP:   return GL_INCR_WRAP;
+        case StencilOperation::DECR:        return GL_DECR;
+        case StencilOperation::DECR_WRAP:   return GL_DECR_WRAP;
+        case StencilOperation::INVERT:      return GL_INVERT;
+    }
+}
+
+constexpr GLenum getFormat(PixelDataFormat format) noexcept {
+    using PixelDataFormat = PixelDataFormat;
     switch (format) {
+        case PixelDataFormat::RGB:              return GL_RGB;
+        case PixelDataFormat::RGBA:             return GL_RGBA;
+        case PixelDataFormat::UNUSED:           return GL_RGBA; // should never happen (used to be rgbm)
+        case PixelDataFormat::DEPTH_COMPONENT:  return GL_DEPTH_COMPONENT;
+        case PixelDataFormat::ALPHA:            return GL_ALPHA;
+        case PixelDataFormat::DEPTH_STENCIL:    return GL_DEPTH_STENCIL;
+#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
+        // when context is ES2 we should never end-up here
         case PixelDataFormat::R:                return GL_RED;
         case PixelDataFormat::R_INTEGER:        return GL_RED_INTEGER;
         case PixelDataFormat::RG:               return GL_RG;
         case PixelDataFormat::RG_INTEGER:       return GL_RG_INTEGER;
-        case PixelDataFormat::RGB:              return GL_RGB;
         case PixelDataFormat::RGB_INTEGER:      return GL_RGB_INTEGER;
-        case PixelDataFormat::RGBA:             return GL_RGBA;
         case PixelDataFormat::RGBA_INTEGER:     return GL_RGBA_INTEGER;
-        case PixelDataFormat::RGBM:             return GL_RGBA;
-        case PixelDataFormat::DEPTH_COMPONENT:  return GL_DEPTH_COMPONENT;
-        case PixelDataFormat::DEPTH_STENCIL:    return GL_DEPTH_STENCIL;
-        case PixelDataFormat::ALPHA:            return GL_ALPHA;
+#else
+        // silence compiler warning in ES2 headers mode
+        default: return GL_NONE;
+#endif
     }
 }
 
-constexpr inline GLenum getType(backend::PixelDataType type) noexcept {
-    using PixelDataType = backend::PixelDataType;
+constexpr GLenum getType(PixelDataType type) noexcept {
+    using PixelDataType = PixelDataType;
     switch (type) {
-        case PixelDataType::UBYTE:              return GL_UNSIGNED_BYTE;
-        case PixelDataType::BYTE:               return GL_BYTE;
-        case PixelDataType::USHORT:             return GL_UNSIGNED_SHORT;
-        case PixelDataType::SHORT:              return GL_SHORT;
-        case PixelDataType::UINT:               return GL_UNSIGNED_INT;
-        case PixelDataType::INT:                return GL_INT;
-        case PixelDataType::HALF:               return GL_HALF_FLOAT;
-        case PixelDataType::FLOAT:              return GL_FLOAT;
-        case PixelDataType::COMPRESSED:         return 0; // should never happen
+        case PixelDataType::UBYTE:                return GL_UNSIGNED_BYTE;
+        case PixelDataType::BYTE:                 return GL_BYTE;
+        case PixelDataType::USHORT:               return GL_UNSIGNED_SHORT;
+        case PixelDataType::SHORT:                return GL_SHORT;
+        case PixelDataType::UINT:                 return GL_UNSIGNED_INT;
+        case PixelDataType::INT:                  return GL_INT;
+        case PixelDataType::FLOAT:                return GL_FLOAT;
+        case PixelDataType::USHORT_565:           return GL_UNSIGNED_SHORT_5_6_5;
+#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
+        // when context is ES2 we should never end-up here
+        case PixelDataType::HALF:                 return GL_HALF_FLOAT;
+        case PixelDataType::UINT_10F_11F_11F_REV: return GL_UNSIGNED_INT_10F_11F_11F_REV;
+        case PixelDataType::UINT_2_10_10_10_REV:  return GL_UNSIGNED_INT_2_10_10_10_REV;
+        case PixelDataType::COMPRESSED:           return 0; // should never happen
+#else
+        // silence compiler warning in ES2 headers mode
+        default: return GL_NONE;
+#endif
     }
 }
 
-// clang looses it on this one, and generates a huge jump table when
+#if !defined(__EMSCRIPTEN__)  && !defined(FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2)
+constexpr GLenum getSwizzleChannel(TextureSwizzle c) noexcept {
+    using TextureSwizzle = TextureSwizzle;
+    switch (c) {
+        case TextureSwizzle::SUBSTITUTE_ZERO:   return GL_ZERO;
+        case TextureSwizzle::SUBSTITUTE_ONE:    return GL_ONE;
+        case TextureSwizzle::CHANNEL_0:         return GL_RED;
+        case TextureSwizzle::CHANNEL_1:         return GL_GREEN;
+        case TextureSwizzle::CHANNEL_2:         return GL_BLUE;
+        case TextureSwizzle::CHANNEL_3:         return GL_ALPHA;
+    }
+}
+#endif
+
+constexpr GLenum getCullingMode(CullingMode mode) noexcept {
+    switch (mode) {
+        case CullingMode::NONE:
+            // should never happen
+            return GL_FRONT_AND_BACK;
+        case CullingMode::FRONT:
+            return GL_FRONT;
+        case CullingMode::BACK:
+            return GL_BACK;
+        case CullingMode::FRONT_AND_BACK:
+            return GL_FRONT_AND_BACK;
+    }
+}
+
+// ES2 supported internal formats for texturing and how they  map to a format/type
+constexpr std::pair<GLenum, GLenum> textureFormatToFormatAndType(
+        TextureFormat format) noexcept {
+    switch (format) {
+        case TextureFormat::R8:         return { 0x1909 /*GL_LUMINANCE*/, GL_UNSIGNED_BYTE };
+        case TextureFormat::RGB8:       return { GL_RGB,                  GL_UNSIGNED_BYTE };
+        case TextureFormat::SRGB8:      return { GL_RGB,                  GL_UNSIGNED_BYTE };
+        case TextureFormat::RGBA8:      return { GL_RGBA,                 GL_UNSIGNED_BYTE };
+        case TextureFormat::SRGB8_A8:   return { GL_RGBA,                 GL_UNSIGNED_BYTE };
+        case TextureFormat::RGB565:     return { GL_RGB,                  GL_UNSIGNED_SHORT_5_6_5 };
+        case TextureFormat::RGB5_A1:    return { GL_RGBA,                 GL_UNSIGNED_SHORT_5_5_5_1 };
+        case TextureFormat::RGBA4:      return { GL_RGBA,                 GL_UNSIGNED_SHORT_4_4_4_4 };
+        case TextureFormat::DEPTH16:    return { GL_DEPTH_COMPONENT,      GL_UNSIGNED_SHORT };
+        case TextureFormat::DEPTH24:    return { GL_DEPTH_COMPONENT,      GL_UNSIGNED_INT };
+        case TextureFormat::DEPTH24_STENCIL8:
+                                        return { GL_DEPTH24_STENCIL8,     GL_UNSIGNED_INT_24_8 };
+        default:                        return { GL_NONE,                 GL_NONE };
+    }
+}
+
+// clang loses it on this one, and generates a huge jump table when
 // inlined. So we don't  mark it as inline (only constexpr) which solves the problem,
 // strangely, when not inlined, clang simply generates an array lookup.
-constexpr /* inline */ GLenum getInternalFormat(backend::TextureFormat format) noexcept {
-    using TextureFormat = backend::TextureFormat;
+constexpr /* inline */ GLenum getInternalFormat(TextureFormat format) noexcept {
     switch (format) {
+
+        /* Formats supported by our ES2 implementations */
+
+        // 8-bits per element
+        case TextureFormat::STENCIL8:          return GL_STENCIL_INDEX8;
+
+        // 16-bits per element
+        case TextureFormat::RGB565:            return GL_RGB565;
+        case TextureFormat::RGB5_A1:           return GL_RGB5_A1;
+        case TextureFormat::RGBA4:             return GL_RGBA4;
+        case TextureFormat::DEPTH16:           return GL_DEPTH_COMPONENT16;
+
+        // 24-bits per element
+        case TextureFormat::RGB8:              return GL_RGB8;
+        case TextureFormat::DEPTH24:           return GL_DEPTH_COMPONENT24;
+
+        // 32-bits per element
+        case TextureFormat::RGBA8:             return GL_RGBA8;
+        case TextureFormat::DEPTH24_STENCIL8:  return GL_DEPTH24_STENCIL8;
+
+        /* Formats not supported by our ES2 implementations */
+
+#ifndef FILAMENT_SILENCE_NOT_SUPPORTED_BY_ES2
         // 8-bits per element
         case TextureFormat::R8:                return GL_R8;
         case TextureFormat::R8_SNORM:          return GL_R8_SNORM;
         case TextureFormat::R8UI:              return GL_R8UI;
         case TextureFormat::R8I:               return GL_R8I;
-        case TextureFormat::STENCIL8:          return GL_STENCIL_INDEX8;
 
         // 16-bits per element
         case TextureFormat::R16F:              return GL_R16F;
@@ -287,18 +452,12 @@ constexpr /* inline */ GLenum getInternalFormat(backend::TextureFormat format) n
         case TextureFormat::RG8_SNORM:         return GL_RG8_SNORM;
         case TextureFormat::RG8UI:             return GL_RG8UI;
         case TextureFormat::RG8I:              return GL_RG8I;
-        case TextureFormat::RGB565:            return GL_RGB565;
-        case TextureFormat::RGB5_A1:           return GL_RGB5_A1;
-        case TextureFormat::RGBA4:             return GL_RGBA4;
-        case TextureFormat::DEPTH16:           return GL_DEPTH_COMPONENT16;
 
         // 24-bits per element
-        case TextureFormat::RGB8:              return GL_RGB8;
         case TextureFormat::SRGB8:             return GL_SRGB8;
         case TextureFormat::RGB8_SNORM:        return GL_RGB8_SNORM;
         case TextureFormat::RGB8UI:            return GL_RGB8UI;
         case TextureFormat::RGB8I:             return GL_RGB8I;
-        case TextureFormat::DEPTH24:           return GL_DEPTH_COMPONENT24;
 
         // 32-bits per element
         case TextureFormat::R32F:              return GL_R32F;
@@ -309,14 +468,12 @@ constexpr /* inline */ GLenum getInternalFormat(backend::TextureFormat format) n
         case TextureFormat::RG16I:             return GL_RG16I;
         case TextureFormat::R11F_G11F_B10F:    return GL_R11F_G11F_B10F;
         case TextureFormat::RGB9_E5:           return GL_RGB9_E5;
-        case TextureFormat::RGBA8:             return GL_RGBA8;
         case TextureFormat::SRGB8_A8:          return GL_SRGB8_ALPHA8;
         case TextureFormat::RGBA8_SNORM:       return GL_RGBA8_SNORM;
         case TextureFormat::RGB10_A2:          return GL_RGB10_A2;
         case TextureFormat::RGBA8UI:           return GL_RGBA8UI;
         case TextureFormat::RGBA8I:            return GL_RGBA8I;
         case TextureFormat::DEPTH32F:          return GL_DEPTH_COMPONENT32F;
-        case TextureFormat::DEPTH24_STENCIL8:  return GL_DEPTH24_STENCIL8;
         case TextureFormat::DEPTH32F_STENCIL8: return GL_DEPTH32F_STENCIL8;
 
         // 48-bits per element
@@ -341,9 +498,15 @@ constexpr /* inline */ GLenum getInternalFormat(backend::TextureFormat format) n
         case TextureFormat::RGBA32F:           return GL_RGBA32F;
         case TextureFormat::RGBA32UI:          return GL_RGBA32UI;
         case TextureFormat::RGBA32I:           return GL_RGBA32I;
+#else
+        default:
+            // this is just to squash the IDE warning about not having all cases when in
+            // ES2 header mode.
+            return 0;
+#endif
 
         // compressed formats
-#if defined(GL_ES_VERSION_3_0) || defined(GL_VERSION_4_3) || defined(GL_ARB_ES3_compatibility)
+#if defined(GL_ES_VERSION_3_0) || defined(BACKEND_OPENGL_VERSION_GL) || defined(GL_ARB_ES3_compatibility)
         case TextureFormat::EAC_R11:           return GL_COMPRESSED_R11_EAC;
         case TextureFormat::EAC_R11_SIGNED:    return GL_COMPRESSED_SIGNED_R11_EAC;
         case TextureFormat::EAC_RG11:          return GL_COMPRESSED_RG11_EAC;
@@ -379,6 +542,48 @@ constexpr /* inline */ GLenum getInternalFormat(backend::TextureFormat format) n
         case TextureFormat::DXT1_RGBA:
         case TextureFormat::DXT3_RGBA:
         case TextureFormat::DXT5_RGBA:
+            // this should not happen
+            return 0;
+#endif
+
+#if defined(GL_EXT_texture_sRGB) || defined(GL_EXT_texture_compression_s3tc_srgb)
+        case TextureFormat::DXT1_SRGB:         return GL_COMPRESSED_SRGB_S3TC_DXT1_EXT;
+        case TextureFormat::DXT1_SRGBA:        return GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT1_EXT;
+        case TextureFormat::DXT3_SRGBA:        return GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT3_EXT;
+        case TextureFormat::DXT5_SRGBA:        return GL_COMPRESSED_SRGB_ALPHA_S3TC_DXT5_EXT;
+#else
+        case TextureFormat::DXT1_SRGB:
+        case TextureFormat::DXT1_SRGBA:
+        case TextureFormat::DXT3_SRGBA:
+        case TextureFormat::DXT5_SRGBA:
+            // this should not happen
+            return 0;
+#endif
+
+#if defined(GL_EXT_texture_compression_rgtc)
+        case TextureFormat::RED_RGTC1:              return GL_COMPRESSED_RED_RGTC1_EXT;
+        case TextureFormat::SIGNED_RED_RGTC1:       return GL_COMPRESSED_SIGNED_RED_RGTC1_EXT;
+        case TextureFormat::RED_GREEN_RGTC2:        return GL_COMPRESSED_RED_GREEN_RGTC2_EXT;
+        case TextureFormat::SIGNED_RED_GREEN_RGTC2: return GL_COMPRESSED_SIGNED_RED_GREEN_RGTC2_EXT;
+#else
+        case TextureFormat::RED_RGTC1:
+        case TextureFormat::SIGNED_RED_RGTC1:
+        case TextureFormat::RED_GREEN_RGTC2:
+        case TextureFormat::SIGNED_RED_GREEN_RGTC2:
+            // this should not happen
+            return 0;
+#endif
+
+#if defined(GL_EXT_texture_compression_bptc)
+        case TextureFormat::RGB_BPTC_SIGNED_FLOAT:      return GL_COMPRESSED_RGB_BPTC_SIGNED_FLOAT_EXT;
+        case TextureFormat::RGB_BPTC_UNSIGNED_FLOAT:    return GL_COMPRESSED_RGB_BPTC_UNSIGNED_FLOAT_EXT;
+        case TextureFormat::RGBA_BPTC_UNORM:            return GL_COMPRESSED_RGBA_BPTC_UNORM_EXT;
+        case TextureFormat::SRGB_ALPHA_BPTC_UNORM:      return GL_COMPRESSED_SRGB_ALPHA_BPTC_UNORM_EXT;
+#else
+        case TextureFormat::RGB_BPTC_SIGNED_FLOAT:
+        case TextureFormat::RGB_BPTC_UNSIGNED_FLOAT:
+        case TextureFormat::RGBA_BPTC_UNORM:
+        case TextureFormat::SRGB_ALPHA_BPTC_UNORM:
             // this should not happen
             return 0;
 #endif
@@ -449,7 +654,14 @@ constexpr /* inline */ GLenum getInternalFormat(backend::TextureFormat format) n
     }
 }
 
-} // namespace GLUtils
-} // namespace filament
+class unordered_string_set : public std::unordered_set<std::string_view> {
+public:
+    bool has(std::string_view str) const noexcept;
+};
 
-#endif // TNT_FILAMENT_DRIVER_GLUTILS_H
+unordered_string_set split(const char* extensions) noexcept;
+
+} // namespace GLUtils
+} // namespace filament::backend
+
+#endif // TNT_FILAMENT_BACKEND_OPENGL_GLUTILS_H

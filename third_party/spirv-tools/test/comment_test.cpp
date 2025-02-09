@@ -15,6 +15,7 @@
 #include <string>
 
 #include "gmock/gmock.h"
+#include "source/util/string_utils.h"
 #include "test/test_fixture.h"
 #include "test/unit_spirv.h"
 
@@ -23,7 +24,7 @@ namespace {
 
 using spvtest::Concatenate;
 using spvtest::MakeInstruction;
-using spvtest::MakeVector;
+using utils::MakeVector;
 using spvtest::TextToBinaryTest;
 using testing::Eq;
 
@@ -39,10 +40,10 @@ TEST_F(TextToBinaryTest, Whitespace) {
 
   EXPECT_THAT(
       CompiledInstructions(input),
-      Eq(Concatenate({MakeInstruction(SpvOpMemoryModel,
-                                      {uint32_t(SpvAddressingModelLogical),
-                                       uint32_t(SpvMemoryModelSimple)}),
-                      MakeInstruction(SpvOpExtInstImport, {1},
+      Eq(Concatenate({MakeInstruction(spv::Op::OpMemoryModel,
+                                      {uint32_t(spv::AddressingModel::Logical),
+                                       uint32_t(spv::MemoryModel::Simple)}),
+                      MakeInstruction(spv::Op::OpExtInstImport, {1},
                                       MakeVector("GLSL.std.450"))})));
 }
 

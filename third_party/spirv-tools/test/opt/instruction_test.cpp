@@ -14,6 +14,7 @@
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "gmock/gmock.h"
@@ -28,16 +29,17 @@ namespace spvtools {
 namespace opt {
 namespace {
 
-using spvtest::MakeInstruction;
 using ::testing::Eq;
+using spvtest::MakeInstruction;
 using DescriptorTypeTest = PassTest<::testing::Test>;
 using OpaqueTypeTest = PassTest<::testing::Test>;
 using GetBaseTest = PassTest<::testing::Test>;
 using ValidBasePointerTest = PassTest<::testing::Test>;
+using VulkanBufferTest = PassTest<::testing::Test>;
 
 TEST(InstructionTest, CreateTrivial) {
   Instruction empty;
-  EXPECT_EQ(SpvOpNop, empty.opcode());
+  EXPECT_EQ(spv::Op::OpNop, empty.opcode());
   EXPECT_EQ(0u, empty.type_id());
   EXPECT_EQ(0u, empty.result_id());
   EXPECT_EQ(0u, empty.NumOperands());
@@ -49,8 +51,8 @@ TEST(InstructionTest, CreateTrivial) {
 
 TEST(InstructionTest, CreateWithOpcodeAndNoOperands) {
   IRContext context(SPV_ENV_UNIVERSAL_1_2, nullptr);
-  Instruction inst(&context, SpvOpReturn);
-  EXPECT_EQ(SpvOpReturn, inst.opcode());
+  Instruction inst(&context, spv::Op::OpReturn);
+  EXPECT_EQ(spv::Op::OpReturn, inst.opcode());
   EXPECT_EQ(0u, inst.type_id());
   EXPECT_EQ(0u, inst.result_id());
   EXPECT_EQ(0u, inst.NumOperands());
@@ -60,9 +62,27 @@ TEST(InstructionTest, CreateWithOpcodeAndNoOperands) {
   EXPECT_EQ(inst.end(), inst.begin());
 }
 
+TEST(InstructionTest, OperandAsString) {
+  Operand::OperandData abcde{0x64636261, 0x65};
+  Operand operand(SPV_OPERAND_TYPE_LITERAL_STRING, std::move(abcde));
+  EXPECT_EQ("abcde", operand.AsString());
+}
+
+TEST(InstructionTest, OperandAsLiteralUint64_32bits) {
+  Operand::OperandData words{0x1234};
+  Operand operand(SPV_OPERAND_TYPE_TYPED_LITERAL_NUMBER, std::move(words));
+  EXPECT_EQ(uint64_t(0x1234), operand.AsLiteralUint64());
+}
+
+TEST(InstructionTest, OperandAsLiteralUint64_64bits) {
+  Operand::OperandData words{0x1234, 0x89ab};
+  Operand operand(SPV_OPERAND_TYPE_TYPED_LITERAL_NUMBER, std::move(words));
+  EXPECT_EQ((uint64_t(0x89ab) << 32 | 0x1234), operand.AsLiteralUint64());
+}
+
 // The words for an OpTypeInt for 32-bit signed integer resulting in Id 44.
-uint32_t kSampleInstructionWords[] = {(4 << 16) | uint32_t(SpvOpTypeInt), 44,
-                                      32, 1};
+uint32_t kSampleInstructionWords[] = {(4 << 16) | uint32_t(spv::Op::OpTypeInt),
+                                      44, 32, 1};
 // The operands that would be parsed from kSampleInstructionWords
 spv_parsed_operand_t kSampleParsedOperands[] = {
     {1, 1, SPV_OPERAND_TYPE_RESULT_ID, SPV_NUMBER_NONE, 0},
@@ -71,18 +91,19 @@ spv_parsed_operand_t kSampleParsedOperands[] = {
 };
 
 // A valid parse of kSampleParsedOperands.
-spv_parsed_instruction_t kSampleParsedInstruction = {kSampleInstructionWords,
-                                                     uint16_t(4),
-                                                     uint16_t(SpvOpTypeInt),
-                                                     SPV_EXT_INST_TYPE_NONE,
-                                                     0,   // type id
-                                                     44,  // result id
-                                                     kSampleParsedOperands,
-                                                     3};
+spv_parsed_instruction_t kSampleParsedInstruction = {
+    kSampleInstructionWords,
+    uint16_t(4),
+    uint16_t(spv::Op::OpTypeInt),
+    SPV_EXT_INST_TYPE_NONE,
+    0,   // type id
+    44,  // result id
+    kSampleParsedOperands,
+    3};
 
 // The words for an OpAccessChain instruction.
 uint32_t kSampleAccessChainInstructionWords[] = {
-    (7 << 16) | uint32_t(SpvOpAccessChain), 100, 101, 102, 103, 104, 105};
+    (7 << 16) | uint32_t(spv::Op::OpAccessChain), 100, 101, 102, 103, 104, 105};
 
 // The operands that would be parsed from kSampleAccessChainInstructionWords.
 spv_parsed_operand_t kSampleAccessChainOperands[] = {
@@ -98,7 +119,7 @@ spv_parsed_operand_t kSampleAccessChainOperands[] = {
 spv_parsed_instruction_t kSampleAccessChainInstruction = {
     kSampleAccessChainInstructionWords,
     uint16_t(7),
-    uint16_t(SpvOpAccessChain),
+    uint16_t(spv::Op::OpAccessChain),
     SPV_EXT_INST_TYPE_NONE,
     100,  // type id
     101,  // result id
@@ -107,7 +128,7 @@ spv_parsed_instruction_t kSampleAccessChainInstruction = {
 
 // The words for an OpControlBarrier instruction.
 uint32_t kSampleControlBarrierInstructionWords[] = {
-    (4 << 16) | uint32_t(SpvOpControlBarrier), 100, 101, 102};
+    (4 << 16) | uint32_t(spv::Op::OpControlBarrier), 100, 101, 102};
 
 // The operands that would be parsed from kSampleControlBarrierInstructionWords.
 spv_parsed_operand_t kSampleControlBarrierOperands[] = {
@@ -121,7 +142,7 @@ spv_parsed_operand_t kSampleControlBarrierOperands[] = {
 spv_parsed_instruction_t kSampleControlBarrierInstruction = {
     kSampleControlBarrierInstructionWords,
     uint16_t(4),
-    uint16_t(SpvOpControlBarrier),
+    uint16_t(spv::Op::OpControlBarrier),
     SPV_EXT_INST_TYPE_NONE,
     0,  // type id
     0,  // result id
@@ -131,7 +152,7 @@ spv_parsed_instruction_t kSampleControlBarrierInstruction = {
 TEST(InstructionTest, CreateWithOpcodeAndOperands) {
   IRContext context(SPV_ENV_UNIVERSAL_1_2, nullptr);
   Instruction inst(&context, kSampleParsedInstruction);
-  EXPECT_EQ(SpvOpTypeInt, inst.opcode());
+  EXPECT_EQ(spv::Op::OpTypeInt, inst.opcode());
   EXPECT_EQ(0u, inst.type_id());
   EXPECT_EQ(44u, inst.result_id());
   EXPECT_EQ(3u, inst.NumOperands());
@@ -313,6 +334,7 @@ TEST_F(DescriptorTypeTest, StorageImage) {
           %3 = OpVariable %8 UniformConstant
           %2 = OpFunction %4 None %5
           %9 = OpLabel
+         %10 = OpCopyObject %8 %3
                OpReturn
                OpFunctionEnd
 )";
@@ -327,7 +349,10 @@ TEST_F(DescriptorTypeTest, StorageImage) {
   EXPECT_FALSE(type->IsVulkanUniformBuffer());
 
   Instruction* variable = context->get_def_use_mgr()->GetDef(3);
-  EXPECT_FALSE(variable->IsReadOnlyVariable());
+  EXPECT_FALSE(variable->IsReadOnlyPointer());
+
+  Instruction* object_copy = context->get_def_use_mgr()->GetDef(10);
+  EXPECT_FALSE(object_copy->IsReadOnlyPointer());
 }
 
 TEST_F(DescriptorTypeTest, SampledImage) {
@@ -349,6 +374,7 @@ TEST_F(DescriptorTypeTest, SampledImage) {
           %3 = OpVariable %8 UniformConstant
           %2 = OpFunction %4 None %5
           %9 = OpLabel
+         %10 = OpCopyObject %8 %3
                OpReturn
                OpFunctionEnd
 )";
@@ -363,7 +389,10 @@ TEST_F(DescriptorTypeTest, SampledImage) {
   EXPECT_FALSE(type->IsVulkanUniformBuffer());
 
   Instruction* variable = context->get_def_use_mgr()->GetDef(3);
-  EXPECT_TRUE(variable->IsReadOnlyVariable());
+  EXPECT_TRUE(variable->IsReadOnlyPointer());
+
+  Instruction* object_copy = context->get_def_use_mgr()->GetDef(10);
+  EXPECT_TRUE(object_copy->IsReadOnlyPointer());
 }
 
 TEST_F(DescriptorTypeTest, StorageTexelBuffer) {
@@ -385,6 +414,7 @@ TEST_F(DescriptorTypeTest, StorageTexelBuffer) {
           %3 = OpVariable %8 UniformConstant
           %2 = OpFunction %4 None %5
           %9 = OpLabel
+         %10 = OpCopyObject %8 %3
                OpReturn
                OpFunctionEnd
 )";
@@ -399,7 +429,10 @@ TEST_F(DescriptorTypeTest, StorageTexelBuffer) {
   EXPECT_FALSE(type->IsVulkanUniformBuffer());
 
   Instruction* variable = context->get_def_use_mgr()->GetDef(3);
-  EXPECT_FALSE(variable->IsReadOnlyVariable());
+  EXPECT_FALSE(variable->IsReadOnlyPointer());
+
+  Instruction* object_copy = context->get_def_use_mgr()->GetDef(10);
+  EXPECT_FALSE(object_copy->IsReadOnlyPointer());
 }
 
 TEST_F(DescriptorTypeTest, StorageBuffer) {
@@ -424,6 +457,7 @@ TEST_F(DescriptorTypeTest, StorageBuffer) {
           %3 = OpVariable %10 Uniform
           %2 = OpFunction %4 None %5
          %11 = OpLabel
+         %12 = OpCopyObject %8 %3
                OpReturn
                OpFunctionEnd
 )";
@@ -438,7 +472,10 @@ TEST_F(DescriptorTypeTest, StorageBuffer) {
   EXPECT_FALSE(type->IsVulkanUniformBuffer());
 
   Instruction* variable = context->get_def_use_mgr()->GetDef(3);
-  EXPECT_FALSE(variable->IsReadOnlyVariable());
+  EXPECT_FALSE(variable->IsReadOnlyPointer());
+
+  Instruction* object_copy = context->get_def_use_mgr()->GetDef(12);
+  EXPECT_FALSE(object_copy->IsReadOnlyPointer());
 }
 
 TEST_F(DescriptorTypeTest, UniformBuffer) {
@@ -463,6 +500,7 @@ TEST_F(DescriptorTypeTest, UniformBuffer) {
           %3 = OpVariable %10 Uniform
           %2 = OpFunction %4 None %5
          %11 = OpLabel
+         %12 = OpCopyObject %10 %3
                OpReturn
                OpFunctionEnd
 )";
@@ -477,7 +515,10 @@ TEST_F(DescriptorTypeTest, UniformBuffer) {
   EXPECT_TRUE(type->IsVulkanUniformBuffer());
 
   Instruction* variable = context->get_def_use_mgr()->GetDef(3);
-  EXPECT_TRUE(variable->IsReadOnlyVariable());
+  EXPECT_TRUE(variable->IsReadOnlyPointer());
+
+  Instruction* object_copy = context->get_def_use_mgr()->GetDef(12);
+  EXPECT_TRUE(object_copy->IsReadOnlyPointer());
 }
 
 TEST_F(DescriptorTypeTest, NonWritableIsReadOnly) {
@@ -503,6 +544,7 @@ TEST_F(DescriptorTypeTest, NonWritableIsReadOnly) {
           %3 = OpVariable %10 Uniform
           %2 = OpFunction %4 None %5
          %11 = OpLabel
+         %12 = OpCopyObject %8 %3
                OpReturn
                OpFunctionEnd
 )";
@@ -510,7 +552,107 @@ TEST_F(DescriptorTypeTest, NonWritableIsReadOnly) {
   std::unique_ptr<IRContext> context =
       BuildModule(SPV_ENV_UNIVERSAL_1_2, nullptr, text);
   Instruction* variable = context->get_def_use_mgr()->GetDef(3);
-  EXPECT_TRUE(variable->IsReadOnlyVariable());
+  EXPECT_TRUE(variable->IsReadOnlyPointer());
+
+  // This demonstrates that the check for whether a pointer is read-only is not
+  // precise: copying a NonWritable-decorated variable can yield a pointer that
+  // the check does not regard as read-only.
+  Instruction* object_copy = context->get_def_use_mgr()->GetDef(12);
+  EXPECT_FALSE(object_copy->IsReadOnlyPointer());
+}
+
+TEST_F(DescriptorTypeTest, AccessChainIntoReadOnlyStructIsReadOnly) {
+  const std::string text = R"(
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %2 "main"
+               OpExecutionMode %2 OriginUpperLeft
+               OpSource ESSL 320
+               OpMemberDecorate %3 0 Offset 0
+               OpMemberDecorate %3 1 Offset 4
+               OpDecorate %3 Block
+          %4 = OpTypeVoid
+          %5 = OpTypeFunction %4
+          %6 = OpTypeInt 32 1
+          %7 = OpTypePointer Function %6
+          %8 = OpTypeFloat 32
+          %3 = OpTypeStruct %6 %8
+          %9 = OpTypePointer PushConstant %3
+         %10 = OpVariable %9 PushConstant
+         %11 = OpConstant %6 0
+         %12 = OpTypePointer PushConstant %6
+         %13 = OpConstant %6 1
+         %14 = OpTypePointer PushConstant %8
+          %2 = OpFunction %4 None %5
+         %15 = OpLabel
+         %16 = OpVariable %7 Function
+         %17 = OpAccessChain %12 %10 %11
+         %18 = OpAccessChain %14 %10 %13
+               OpReturn
+               OpFunctionEnd
+)";
+
+  std::unique_ptr<IRContext> context =
+      BuildModule(SPV_ENV_UNIVERSAL_1_2, nullptr, text);
+
+  Instruction* push_constant_struct_variable =
+      context->get_def_use_mgr()->GetDef(10);
+  EXPECT_TRUE(push_constant_struct_variable->IsReadOnlyPointer());
+
+  Instruction* push_constant_struct_field_0 =
+      context->get_def_use_mgr()->GetDef(17);
+  EXPECT_TRUE(push_constant_struct_field_0->IsReadOnlyPointer());
+
+  Instruction* push_constant_struct_field_1 =
+      context->get_def_use_mgr()->GetDef(18);
+  EXPECT_TRUE(push_constant_struct_field_1->IsReadOnlyPointer());
+}
+
+TEST_F(DescriptorTypeTest, ReadOnlyPointerParameter) {
+  const std::string text = R"(
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %2 "main"
+               OpExecutionMode %2 OriginUpperLeft
+               OpSource ESSL 320
+               OpMemberDecorate %3 0 Offset 0
+               OpMemberDecorate %3 1 Offset 4
+               OpDecorate %3 Block
+          %4 = OpTypeVoid
+          %5 = OpTypeFunction %4
+          %6 = OpTypeInt 32 1
+          %7 = OpTypePointer Function %6
+          %8 = OpTypeFloat 32
+          %3 = OpTypeStruct %6 %8
+          %9 = OpTypePointer PushConstant %3
+         %10 = OpVariable %9 PushConstant
+         %11 = OpConstant %6 0
+         %12 = OpTypePointer PushConstant %6
+         %13 = OpConstant %6 1
+         %14 = OpTypePointer PushConstant %8
+         %15 = OpTypeFunction %4 %9
+          %2 = OpFunction %4 None %5
+         %16 = OpLabel
+         %17 = OpVariable %7 Function
+         %18 = OpAccessChain %12 %10 %11
+         %19 = OpAccessChain %14 %10 %13
+               OpReturn
+               OpFunctionEnd
+         %20 = OpFunction %4 None %15
+         %21 = OpFunctionParameter %9
+         %22 = OpLabel
+               OpReturn
+               OpFunctionEnd
+)";
+
+  std::unique_ptr<IRContext> context =
+      BuildModule(SPV_ENV_UNIVERSAL_1_2, nullptr, text);
+
+  Instruction* push_constant_struct_parameter =
+      context->get_def_use_mgr()->GetDef(21);
+  EXPECT_TRUE(push_constant_struct_parameter->IsReadOnlyPointer());
 }
 
 TEST_F(OpaqueTypeTest, BaseOpaqueTypesShader) {
@@ -619,6 +761,35 @@ TEST_F(GetBaseTest, SampleImage) {
       BuildModule(SPV_ENV_UNIVERSAL_1_2, nullptr, text);
   Instruction* load = context->get_def_use_mgr()->GetDef(21);
   Instruction* base = context->get_def_use_mgr()->GetDef(20);
+  EXPECT_TRUE(load->GetBaseAddress() == base);
+}
+
+TEST_F(GetBaseTest, PtrAccessChain) {
+  const std::string text = R"(
+               OpCapability VariablePointers
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %1 "PSMain" %2
+               OpExecutionMode %1 OriginUpperLeft
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+        %int = OpTypeInt 32 8388353
+      %int_0 = OpConstant %int 0
+%_ptr_Function_v4float = OpTypePointer Function %v4float
+          %2 = OpVariable %_ptr_Function_v4float Input
+          %1 = OpFunction %void None %4
+         %10 = OpLabel
+         %11 = OpPtrAccessChain %_ptr_Function_v4float %2 %int_0
+         %12 = OpLoad %v4float %11
+               OpReturn
+               OpFunctionEnd
+)";
+
+  std::unique_ptr<IRContext> context =
+      BuildModule(SPV_ENV_UNIVERSAL_1_2, nullptr, text);
+  Instruction* load = context->get_def_use_mgr()->GetDef(12);
+  Instruction* base = context->get_def_use_mgr()->GetDef(2);
   EXPECT_TRUE(load->GetBaseAddress() == base);
 }
 
@@ -1099,6 +1270,299 @@ OpFunctionEnd
   Instruction* null_inst = context->get_def_use_mgr()->GetDef(9);
   EXPECT_NE(null_inst, nullptr);
   EXPECT_TRUE(null_inst->IsValidBasePointer());
+}
+
+TEST_F(VulkanBufferTest, VulkanStorageBuffer) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability RuntimeDescriptorArray
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %1 "main"
+OpExecutionMode %1 LocalSize 1 1 1
+OpDecorate %2 Block
+OpMemberDecorate %2 0 Offset 0
+OpDecorate %3 BufferBlock
+OpMemberDecorate %3 0 Offset 0
+%4 = OpTypeVoid
+%5 = OpTypeInt 32 0
+%2 = OpTypeStruct %5
+%3 = OpTypeStruct %5
+
+%6 = OpTypePointer StorageBuffer %2
+%7 = OpTypePointer Uniform %2
+%8 = OpTypePointer Uniform %3
+
+%9 = OpConstant %5 1
+%10 = OpTypeArray %2 %9
+%11 = OpTypeArray %3 %9
+%12 = OpTypePointer StorageBuffer %10
+%13 = OpTypePointer Uniform %10
+%14 = OpTypePointer Uniform %11
+
+%15 = OpTypeRuntimeArray %2
+%16 = OpTypeRuntimeArray %3
+%17 = OpTypePointer StorageBuffer %15
+%18 = OpTypePointer Uniform %15
+%19 = OpTypePointer Uniform %16
+
+%50 = OpTypeFunction %4
+%1 = OpFunction %4 None %50
+%51 = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+
+  std::unique_ptr<IRContext> context =
+      BuildModule(SPV_ENV_UNIVERSAL_1_3, nullptr, text);
+  EXPECT_NE(context, nullptr);
+
+  // Standard SSBO and UBO
+  Instruction* inst = context->get_def_use_mgr()->GetDef(6);
+  EXPECT_EQ(true, inst->IsVulkanStorageBuffer());
+  inst = context->get_def_use_mgr()->GetDef(7);
+  EXPECT_EQ(false, inst->IsVulkanStorageBuffer());
+  inst = context->get_def_use_mgr()->GetDef(8);
+  EXPECT_EQ(true, inst->IsVulkanStorageBuffer());
+
+  // Arrayed SSBO and UBO
+  inst = context->get_def_use_mgr()->GetDef(12);
+  EXPECT_EQ(true, inst->IsVulkanStorageBuffer());
+  inst = context->get_def_use_mgr()->GetDef(13);
+  EXPECT_EQ(false, inst->IsVulkanStorageBuffer());
+  inst = context->get_def_use_mgr()->GetDef(14);
+  EXPECT_EQ(true, inst->IsVulkanStorageBuffer());
+
+  // Runtime arrayed SSBO and UBO
+  inst = context->get_def_use_mgr()->GetDef(17);
+  EXPECT_EQ(true, inst->IsVulkanStorageBuffer());
+  inst = context->get_def_use_mgr()->GetDef(18);
+  EXPECT_EQ(false, inst->IsVulkanStorageBuffer());
+  inst = context->get_def_use_mgr()->GetDef(19);
+  EXPECT_EQ(true, inst->IsVulkanStorageBuffer());
+}
+
+TEST_F(VulkanBufferTest, VulkanUniformBuffer) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability RuntimeDescriptorArray
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %1 "main"
+OpExecutionMode %1 LocalSize 1 1 1
+OpDecorate %2 Block
+OpMemberDecorate %2 0 Offset 0
+OpDecorate %3 BufferBlock
+OpMemberDecorate %3 0 Offset 0
+%4 = OpTypeVoid
+%5 = OpTypeInt 32 0
+%2 = OpTypeStruct %5
+%3 = OpTypeStruct %5
+
+%6 = OpTypePointer StorageBuffer %2
+%7 = OpTypePointer Uniform %2
+%8 = OpTypePointer Uniform %3
+
+%9 = OpConstant %5 1
+%10 = OpTypeArray %2 %9
+%11 = OpTypeArray %3 %9
+%12 = OpTypePointer StorageBuffer %10
+%13 = OpTypePointer Uniform %10
+%14 = OpTypePointer Uniform %11
+
+%15 = OpTypeRuntimeArray %2
+%16 = OpTypeRuntimeArray %3
+%17 = OpTypePointer StorageBuffer %15
+%18 = OpTypePointer Uniform %15
+%19 = OpTypePointer Uniform %16
+
+%50 = OpTypeFunction %4
+%1 = OpFunction %4 None %50
+%51 = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+
+  std::unique_ptr<IRContext> context =
+      BuildModule(SPV_ENV_UNIVERSAL_1_3, nullptr, text);
+  EXPECT_NE(context, nullptr);
+
+  // Standard SSBO and UBO
+  Instruction* inst = context->get_def_use_mgr()->GetDef(6);
+  EXPECT_EQ(false, inst->IsVulkanUniformBuffer());
+  inst = context->get_def_use_mgr()->GetDef(7);
+  EXPECT_EQ(true, inst->IsVulkanUniformBuffer());
+  inst = context->get_def_use_mgr()->GetDef(8);
+  EXPECT_EQ(false, inst->IsVulkanUniformBuffer());
+
+  // Arrayed SSBO and UBO
+  inst = context->get_def_use_mgr()->GetDef(12);
+  EXPECT_EQ(false, inst->IsVulkanUniformBuffer());
+  inst = context->get_def_use_mgr()->GetDef(13);
+  EXPECT_EQ(true, inst->IsVulkanUniformBuffer());
+  inst = context->get_def_use_mgr()->GetDef(14);
+  EXPECT_EQ(false, inst->IsVulkanUniformBuffer());
+
+  // Runtime arrayed SSBO and UBO
+  inst = context->get_def_use_mgr()->GetDef(17);
+  EXPECT_EQ(false, inst->IsVulkanUniformBuffer());
+  inst = context->get_def_use_mgr()->GetDef(18);
+  EXPECT_EQ(true, inst->IsVulkanUniformBuffer());
+  inst = context->get_def_use_mgr()->GetDef(19);
+  EXPECT_EQ(false, inst->IsVulkanUniformBuffer());
+}
+
+TEST_F(VulkanBufferTest, ImageQueries) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability ImageBuffer
+OpCapability RuntimeDescriptorArray
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %1 "main"
+OpExecutionMode %1 LocalSize 1 1 1
+%2 = OpTypeVoid
+%3 = OpTypeFloat 32
+
+%4 = OpTypeImage %3 Buffer 0 0 0 1 Rgba32f
+%5 = OpTypeImage %3 Buffer 0 0 0 2 Rgba32f
+%6 = OpTypeImage %3 2D 0 0 0 1 Rgba32f
+%7 = OpTypeImage %3 2D 0 0 0 2 Rgba32f
+
+%8 = OpTypePointer UniformConstant %4
+%9 = OpTypePointer UniformConstant %5
+%10 = OpTypePointer UniformConstant %6
+%11 = OpTypePointer UniformConstant %7
+
+%12 = OpTypeInt 32 0
+%13 = OpConstant %12 1
+%14 = OpTypeArray %4 %13
+%15 = OpTypeArray %5 %13
+%16 = OpTypeArray %6 %13
+%17 = OpTypeArray %7 %13
+%18 = OpTypePointer UniformConstant %14
+%19 = OpTypePointer UniformConstant %15
+%20 = OpTypePointer UniformConstant %16
+%21 = OpTypePointer UniformConstant %17
+
+%22 = OpTypeRuntimeArray %4
+%23 = OpTypeRuntimeArray %5
+%24 = OpTypeRuntimeArray %6
+%25 = OpTypeRuntimeArray %7
+%26 = OpTypePointer UniformConstant %22
+%27 = OpTypePointer UniformConstant %23
+%28 = OpTypePointer UniformConstant %24
+%29 = OpTypePointer UniformConstant %25
+
+%50 = OpTypeFunction %4
+%1 = OpFunction %4 None %50
+%51 = OpLabel
+OpReturn
+OpFunctionEnd
+)";
+
+  std::unique_ptr<IRContext> context =
+      BuildModule(SPV_ENV_UNIVERSAL_1_3, nullptr, text);
+  EXPECT_NE(context, nullptr);
+
+  // Bare pointers
+  Instruction* inst = context->get_def_use_mgr()->GetDef(8);
+  EXPECT_EQ(false, inst->IsVulkanStorageImage());
+  EXPECT_EQ(false, inst->IsVulkanSampledImage());
+  EXPECT_EQ(false, inst->IsVulkanStorageTexelBuffer());
+
+  inst = context->get_def_use_mgr()->GetDef(9);
+  EXPECT_EQ(false, inst->IsVulkanStorageImage());
+  EXPECT_EQ(false, inst->IsVulkanSampledImage());
+  EXPECT_EQ(true, inst->IsVulkanStorageTexelBuffer());
+
+  inst = context->get_def_use_mgr()->GetDef(10);
+  EXPECT_EQ(false, inst->IsVulkanStorageImage());
+  EXPECT_EQ(true, inst->IsVulkanSampledImage());
+  EXPECT_EQ(false, inst->IsVulkanStorageTexelBuffer());
+
+  inst = context->get_def_use_mgr()->GetDef(11);
+  EXPECT_EQ(true, inst->IsVulkanStorageImage());
+  EXPECT_EQ(false, inst->IsVulkanSampledImage());
+  EXPECT_EQ(false, inst->IsVulkanStorageTexelBuffer());
+
+  // Array pointers
+  inst = context->get_def_use_mgr()->GetDef(18);
+  EXPECT_EQ(false, inst->IsVulkanStorageImage());
+  EXPECT_EQ(false, inst->IsVulkanSampledImage());
+  EXPECT_EQ(false, inst->IsVulkanStorageTexelBuffer());
+
+  inst = context->get_def_use_mgr()->GetDef(19);
+  EXPECT_EQ(false, inst->IsVulkanStorageImage());
+  EXPECT_EQ(false, inst->IsVulkanSampledImage());
+  EXPECT_EQ(true, inst->IsVulkanStorageTexelBuffer());
+
+  inst = context->get_def_use_mgr()->GetDef(20);
+  EXPECT_EQ(false, inst->IsVulkanStorageImage());
+  EXPECT_EQ(true, inst->IsVulkanSampledImage());
+  EXPECT_EQ(false, inst->IsVulkanStorageTexelBuffer());
+
+  inst = context->get_def_use_mgr()->GetDef(21);
+  EXPECT_EQ(true, inst->IsVulkanStorageImage());
+  EXPECT_EQ(false, inst->IsVulkanSampledImage());
+  EXPECT_EQ(false, inst->IsVulkanStorageTexelBuffer());
+
+  // Runtime array pointers
+  inst = context->get_def_use_mgr()->GetDef(26);
+  EXPECT_EQ(false, inst->IsVulkanStorageImage());
+  EXPECT_EQ(false, inst->IsVulkanSampledImage());
+  EXPECT_EQ(false, inst->IsVulkanStorageTexelBuffer());
+
+  inst = context->get_def_use_mgr()->GetDef(27);
+  EXPECT_EQ(false, inst->IsVulkanStorageImage());
+  EXPECT_EQ(false, inst->IsVulkanSampledImage());
+  EXPECT_EQ(true, inst->IsVulkanStorageTexelBuffer());
+
+  inst = context->get_def_use_mgr()->GetDef(28);
+  EXPECT_EQ(false, inst->IsVulkanStorageImage());
+  EXPECT_EQ(true, inst->IsVulkanSampledImage());
+  EXPECT_EQ(false, inst->IsVulkanStorageTexelBuffer());
+
+  inst = context->get_def_use_mgr()->GetDef(29);
+  EXPECT_EQ(true, inst->IsVulkanStorageImage());
+  EXPECT_EQ(false, inst->IsVulkanSampledImage());
+  EXPECT_EQ(false, inst->IsVulkanStorageTexelBuffer());
+}
+
+TEST_F(DescriptorTypeTest, GetShader100DebugOpcode) {
+  const std::string text = R"(
+              OpCapability Shader
+         %1 = OpExtInstImport "NonSemantic.Shader.DebugInfo.100"
+         %2 = OpString "ps.hlsl"
+         %3 = OpString "#line 1 \"ps.hlsl\""
+      %void = OpTypeVoid
+         %5 = OpExtInst %void %1 DebugExpression
+         %6 = OpExtInst %void %1 DebugSource %2 %3
+)";
+
+  SetAssembleOptions(SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+  std::unique_ptr<IRContext> context =
+      BuildModule(SPV_ENV_UNIVERSAL_1_2, nullptr, text);
+  Instruction* debug_expression = context->get_def_use_mgr()->GetDef(5);
+  EXPECT_EQ(debug_expression->GetShader100DebugOpcode(),
+            NonSemanticShaderDebugInfo100DebugExpression);
+  Instruction* debug_source = context->get_def_use_mgr()->GetDef(6);
+  EXPECT_EQ(debug_source->GetShader100DebugOpcode(),
+            NonSemanticShaderDebugInfo100DebugSource);
+
+  // Test that an opcode larger than the max will return Max.  This instruction
+  // cannot be in the assembly above because the assembler expects the string
+  // for the opcode, so we cannot use an arbitrary number.  However, a binary
+  // file could have an arbitrary number.
+  std::unique_ptr<Instruction> past_max(debug_expression->Clone(context.get()));
+  const uint32_t kExtInstOpcodeInIndex = 1;
+  uint32_t large_opcode = NonSemanticShaderDebugInfo100InstructionsMax + 2;
+  past_max->SetInOperand(kExtInstOpcodeInIndex, {large_opcode});
+  EXPECT_EQ(past_max->GetShader100DebugOpcode(),
+            NonSemanticShaderDebugInfo100InstructionsMax);
+
+  // Test that an opcode without a value in the enum, but less than Max returns
+  // the same value.
+  uint32_t opcode = NonSemanticShaderDebugInfo100InstructionsMax - 2;
+  past_max->SetInOperand(kExtInstOpcodeInIndex, {opcode});
+  EXPECT_EQ(past_max->GetShader100DebugOpcode(), opcode);
 }
 
 }  // namespace

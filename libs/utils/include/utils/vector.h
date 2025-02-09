@@ -14,10 +14,11 @@
  * limitations under the License.
  */
 
-#include <vector>
+#ifndef TNT_UTILS_VECTOR_H
+#define TNT_UTILS_VECTOR_H
 
-#ifndef UTILS_VECTOR_H
-#define UTILS_VECTOR_H
+#include <algorithm>
+#include <vector>
 
 namespace utils {
 
@@ -37,7 +38,7 @@ static inline void insert_sorted(std::vector<T>& v, T item) {
  * inserting the item again.
  *
  * @return True if the item was inserted at is sorted position, false
- *         if the item already exsits in the vector.
+ *         if the item already exists in the vector.
  */
 template <typename T>
 static inline bool insert_sorted_unique(std::vector<T>& v, T item) {
@@ -57,4 +58,4 @@ static inline bool insert_sorted_unique(std::vector<T>& v, T item) {
 
 } // end utils namespace
 
-#endif //UTILS_VECTOR_H
+#endif // TNT_UTILS_VECTOR_H

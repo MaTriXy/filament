@@ -15,18 +15,24 @@
  */
 
 #include <utils/sstream.h>
+#include <utils/ostream.h>
 
-namespace utils {
-namespace io {
+#include "ostream_.h"
 
-utils::io::ostream& sstream::flush() noexcept {
+namespace utils::io {
+
+ostream& sstream::flush() noexcept {
     // no-op.
     return *this;
 }
 
 const char* sstream::c_str() const noexcept {
-    return mData.get();
+    char const* buffer = getBuffer().get();
+    return buffer ? buffer : "";
 }
 
-} // namespace io
-} // namespace utils
+size_t sstream::length() const noexcept {
+    return getBuffer().length();
+}
+
+} // namespace utils::io

@@ -19,6 +19,7 @@
 
 #include <utils/compiler.h>
 #include <utils/Entity.h>
+#include <utils/EntityInstance.h>
 #include <utils/EntityManager.h>
 #include <utils/StructureOfArrays.h>
 
@@ -44,7 +45,7 @@ class EntityManager;
  *
  */
 template <typename ... Elements>
-class SingleInstanceComponentManager {
+class UTILS_PUBLIC SingleInstanceComponentManager {
 private:
 
     // this is just to avoid using std::default_random_engine, since we're in a public header.
@@ -59,8 +60,11 @@ private:
 protected:
     static constexpr size_t ENTITY_INDEX = sizeof ... (Elements);
 
+
 public:
     using SoA = StructureOfArrays<Elements ..., Entity>;
+
+    using Structure = typename SoA::Structure;
 
     using Instance = EntityInstanceBase::Type;
 
@@ -68,11 +72,11 @@ public:
         // We always start with a dummy entry because index=0 is reserved. The component
         // at index = 0, is guaranteed to be default-initialized.
         // Sub-classes can use this to their advantage.
-        mData.push_back();
+        mData.push_back(Structure{});
     }
 
-    SingleInstanceComponentManager(SingleInstanceComponentManager&& rhs) noexcept {/* = default */}
-    SingleInstanceComponentManager& operator=(SingleInstanceComponentManager&& rhs) noexcept {/* = default */}
+    SingleInstanceComponentManager(SingleInstanceComponentManager&&) noexcept {/* = default */}
+    SingleInstanceComponentManager& operator=(SingleInstanceComponentManager&&) noexcept {/* = default */}
     ~SingleInstanceComponentManager() noexcept = default;
 
     // not copyable
@@ -94,7 +98,7 @@ public:
         return pos != map.end() ? pos->second : 0;
     }
 
-    // returns the number of components (i.e. size of each arrays)
+    // Returns the number of components (i.e. size of each array)
     size_t getComponentCount() const noexcept {
         // The array as an extra dummy component at index 0, so the visible count is 1 less.
         return mData.size() - 1;
@@ -104,11 +108,8 @@ public:
         return getComponentCount() == 0;
     }
 
-    // returns a pointer to the Entity array. This is basically the list
-    // of entities this component manager handles.
-    // The pointer becomes invalid when adding or removing a component.
     Entity const* getEntities() const noexcept {
-        return begin<ENTITY_INDEX>();
+        return data<ENTITY_INDEX>() + 1;
     }
 
     Entity getEntity(Instance i) const noexcept {
@@ -124,14 +125,6 @@ public:
     // This invalidates all pointers components.
     inline Instance removeComponent(Entity e);
 
-    // trigger one round of garbage collection. this is intended to be called on a regular
-    // basis. This gc gives up after it cannot randomly free 'ratio' component in a row.
-    void gc(const EntityManager& em, size_t ratio = 4) noexcept {
-        gc(em, ratio, [this](Entity e) {
-                    removeComponent(e);
-                });
-    }
-
     // return the first instance
     Instance begin() const noexcept { return 1u; }
 
@@ -140,46 +133,46 @@ public:
 
     // return a pointer to the first element of the ElementIndex'th array
     template<size_t ElementIndex>
-    constexpr typename SoA::template TypeAt<ElementIndex>* begin() noexcept {
+    typename SoA::template TypeAt<ElementIndex>* begin() noexcept {
         return mData.template data<ElementIndex>() + 1;
     }
 
     template<size_t ElementIndex>
-    constexpr typename SoA::template TypeAt<ElementIndex> const* begin() const noexcept {
+    typename SoA::template TypeAt<ElementIndex> const* begin() const noexcept {
         return mData.template data<ElementIndex>() + 1;
     }
 
     // return a pointer to the past-the-end element of the ElementIndex'th array
     template<size_t ElementIndex>
-    constexpr typename SoA::template TypeAt<ElementIndex>* end() noexcept {
+    typename SoA::template TypeAt<ElementIndex>* end() noexcept {
         return begin<ElementIndex>() + getComponentCount();
     }
 
     template<size_t ElementIndex>
-    constexpr typename SoA::template TypeAt<ElementIndex> const* end() const noexcept {
+    typename SoA::template TypeAt<ElementIndex> const* end() const noexcept {
         return begin<ElementIndex>() + getComponentCount();
     }
 
     // return a Slice<>
     template<size_t ElementIndex>
-    constexpr Slice<typename SoA::template TypeAt<ElementIndex>> slice() noexcept {
+    Slice<typename SoA::template TypeAt<ElementIndex>> slice() noexcept {
         return { begin<ElementIndex>(), end<ElementIndex>() };
     }
 
     template<size_t ElementIndex>
-    constexpr Slice<const typename SoA::template TypeAt<ElementIndex>> slice() const noexcept {
+    Slice<const typename SoA::template TypeAt<ElementIndex>> slice() const noexcept {
         return { begin<ElementIndex>(), end<ElementIndex>() };
     }
 
     // return a reference to the index'th element of the ElementIndex'th array
     template<size_t ElementIndex>
-    constexpr typename SoA::template TypeAt<ElementIndex>& elementAt(Instance index) noexcept {
+    typename SoA::template TypeAt<ElementIndex>& elementAt(Instance index) noexcept {
         assert(index);
         return data<ElementIndex>()[index];
     }
 
     template<size_t ElementIndex>
-    constexpr typename SoA::template TypeAt<ElementIndex> const& elementAt(Instance index) const noexcept {
+    typename SoA::template TypeAt<ElementIndex> const& elementAt(Instance index) const noexcept {
         assert(index);
         return data<ElementIndex>()[index];
     }
@@ -187,14 +180,14 @@ public:
     // returns a pointer to the RAW ARRAY of components including the first dummy component
     // Use with caution.
     template<size_t ElementIndex>
-    constexpr typename SoA::template TypeAt<ElementIndex> const* raw_array() const noexcept {
+    typename SoA::template TypeAt<ElementIndex> const* raw_array() const noexcept {
         return data<ElementIndex>();
     }
 
     // We need our own version of Field because mData is private
     template<size_t E>
     struct Field : public SoA::template Field<E> {
-        constexpr Field(SingleInstanceComponentManager& soa, EntityInstanceBase::Type i) noexcept
+        Field(SingleInstanceComponentManager& soa, EntityInstanceBase::Type i) noexcept
                 : SoA::template Field<E>{ soa.mData, i } {
         }
         using SoA::template Field<E>::operator =;
@@ -202,12 +195,12 @@ public:
 
 protected:
     template<size_t ElementIndex>
-    constexpr typename SoA::template TypeAt<ElementIndex>* data() noexcept {
+    typename SoA::template TypeAt<ElementIndex>* data() noexcept {
         return mData.template data<ElementIndex>();
     }
 
     template<size_t ElementIndex>
-    constexpr typename SoA::template TypeAt<ElementIndex> const* data() const noexcept {
+    typename SoA::template TypeAt<ElementIndex> const* data() const noexcept {
         return mData.template data<ElementIndex>();
     }
 
@@ -231,23 +224,32 @@ protected:
     }
 
     template<typename REMOVE>
+    void gc(const EntityManager& em,
+            REMOVE&& removeComponent) noexcept {
+        gc(em, 4, std::forward<REMOVE>(removeComponent));
+    }
+
+    template<typename REMOVE>
     void gc(const EntityManager& em, size_t ratio,
-            REMOVE removeComponent) noexcept {
-        Entity const* entities = getEntities();
+            REMOVE&& removeComponent) noexcept {
+        Entity const* const pEntities = begin<ENTITY_INDEX>();
         size_t count = getComponentCount();
         size_t aliveInARow = 0;
         default_random_engine& rng = mRng;
-        #pragma nounroll
+        UTILS_NOUNROLL
         while (count && aliveInARow < ratio) {
+            assert_invariant(count == getComponentCount());
             // note: using the modulo favorizes lower number
-            size_t i = rng() % count;
-            if (UTILS_LIKELY(em.isAlive(entities[i]))) {
+            size_t const i = rng() % count;
+            Entity const entity = pEntities[i];
+            assert_invariant(entity);
+            if (UTILS_LIKELY(em.isAlive(entity))) {
                 ++aliveInARow;
                 continue;
             }
+            removeComponent(entity);
             aliveInARow = 0;
             count--;
-            removeComponent(entities[i]);
         }
     }
 
@@ -256,7 +258,7 @@ protected:
 
 private:
     // maps an entity to an instance index
-    tsl::robin_map<Entity, Instance> mInstanceMap;
+    tsl::robin_map<Entity, Instance, Entity::Hasher> mInstanceMap;
     default_random_engine mRng;
 };
 
@@ -268,7 +270,7 @@ SingleInstanceComponentManager<Elements ...>::addComponent(Entity e) {
     if (!e.isNull()) {
         if (!hasComponent(e)) {
             // this is like a push_back(e);
-            mData.push_back().template back<ENTITY_INDEX>() = e;
+            mData.push_back(Structure{}).template back<ENTITY_INDEX>() = e;
             // index 0 is used when the component doesn't exist
             ci = Instance(mData.size() - 1);
             mInstanceMap[e] = ci;

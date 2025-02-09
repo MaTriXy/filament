@@ -14,31 +14,38 @@
  * limitations under the License.
  */
 
-#ifndef TNT_FILAMENT_DRIVER_VULKANBUFFER_H
-#define TNT_FILAMENT_DRIVER_VULKANBUFFER_H
+#ifndef TNT_FILAMENT_BACKEND_VULKANBUFFER_H
+#define TNT_FILAMENT_BACKEND_VULKANBUFFER_H
 
 #include "VulkanContext.h"
 #include "VulkanStagePool.h"
+#include "VulkanMemory.h"
 
-namespace filament {
-namespace backend {
+namespace filament::backend {
 
 // Encapsulates a Vulkan buffer, its attached DeviceMemory and a staging area.
 class VulkanBuffer {
 public:
-    VulkanBuffer(VulkanContext& context, VulkanStagePool& stagePool, VkBufferUsageFlags usage,
+    VulkanBuffer(VmaAllocator allocator, VulkanStagePool& stagePool, VkBufferUsageFlags usage,
             uint32_t numBytes);
     ~VulkanBuffer();
-    void loadFromCpu(const void* cpuData, uint32_t byteOffset, uint32_t numBytes);
-    VkBuffer getGpuBuffer() const { return mGpuBuffer; }
+    void loadFromCpu(VkCommandBuffer cmdbuf, const void* cpuData, uint32_t byteOffset,
+            uint32_t numBytes);
+    VkBuffer getGpuBuffer() const {
+        return mGpuBuffer;
+    }
+
 private:
-    VulkanContext& mContext;
+    VmaAllocator mAllocator;
     VulkanStagePool& mStagePool;
+
     VmaAllocation mGpuMemory = VK_NULL_HANDLE;
     VkBuffer mGpuBuffer = VK_NULL_HANDLE;
+    VkBufferUsageFlags mUsage = {};
+	uint32_t mUpdatedOffset = 0;
+    uint32_t mUpdatedBytes = 0;
 };
 
-} // namespace filament
-} // namespace backend
+} // namespace filament::backend
 
-#endif // TNT_FILAMENT_DRIVER_VULKANBUFFER_H
+#endif // TNT_FILAMENT_BACKEND_VULKANBUFFER_H

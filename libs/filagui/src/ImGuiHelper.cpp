@@ -21,50 +21,82 @@
 
 #include <imgui.h>
 
-#include <filamat/MaterialBuilder.h>
-#include <filament/VertexBuffer.h>
+#include <filament/Camera.h>
+#include <filament/Fence.h>
 #include <filament/IndexBuffer.h>
 #include <filament/Material.h>
 #include <filament/MaterialInstance.h>
 #include <filament/RenderableManager.h>
 #include <filament/Scene.h>
 #include <filament/Texture.h>
+#include <filament/TextureSampler.h>
 #include <filament/TransformManager.h>
+#include <filament/VertexBuffer.h>
+
 #include <utils/EntityManager.h>
 
 using namespace filament::math;
 using namespace filament;
 using namespace utils;
 
+using MinFilter = TextureSampler::MinFilter;
+using MagFilter = TextureSampler::MagFilter;
+
 namespace filagui {
 
-static const uint8_t UI_BLIT_PACKAGE[] = {
-    #include "generated/material/uiBlit.inc"
-};
+#include "generated/resources/filagui_resources.h"
 
-ImGuiHelper::ImGuiHelper(Engine* engine, filament::View* view, const Path& fontPath) :
-        mEngine(engine), mView(view) {
-    ImGui::CreateContext();
+ImGuiHelper::ImGuiHelper(Engine* engine, filament::View* view, const Path& fontPath,
+        ImGuiContext *imGuiContext)
+        : mEngine(engine), mView(view), mScene(engine->createScene()),
+        mImGuiContext(imGuiContext ? imGuiContext : ImGui::CreateContext()) {
     ImGuiIO& io = ImGui::GetIO();
+    mSettingsPath.setPath(
+            Path::getUserSettingsDirectory() +
+            Path(std::string(".") + Path::getCurrentExecutable().getNameWithoutExtension()) +
+            Path("imgui_settings.ini")
+    );
+    mSettingsPath.getParent().mkdirRecursive();
+    io.IniFilename = mSettingsPath.c_str();
 
     // Create a simple alpha-blended 2D blitting material.
-    mMaterial = Material::Builder()
-            .package((void*)UI_BLIT_PACKAGE, sizeof(UI_BLIT_PACKAGE))
+    mMaterial2d = Material::Builder()
+            .package(FILAGUI_RESOURCES_UIBLIT_DATA, FILAGUI_RESOURCES_UIBLIT_SIZE)
             .build(*engine);
+#ifdef __ANDROID__
+    mMaterialExternal = Material::Builder()
+            .package(FILAGUI_RESOURCES_UIBLITEXTERNAL_DATA, FILAGUI_RESOURCES_UIBLITEXTERNAL_SIZE)
+            .build(*engine);
+#endif
 
     // If the given font path is invalid, ImGui will silently fall back to proggy, which is a
     // tiny "pixel art" texture that is compiled into the library.
-    if (!fontPath.isEmpty()) {
+    if (fontPath.isFile()) {
         io.Fonts->AddFontFromFileTTF(fontPath.c_str(), 16.0f);
-        createAtlasTexture(engine);
+    }
+    createAtlasTexture(engine);
+
+    // For proggy, switch to NEAREST for pixel-perfect text.
+    if (!fontPath.isFile() && !imGuiContext) {
+        mSampler = TextureSampler(MinFilter::NEAREST, MagFilter::NEAREST);
+        mMaterial2d->setDefaultParameter("albedo", mTexture, mSampler);
     }
 
-    // Create a scene solely for our one and only Renderable.
-    Scene* scene = engine->createScene();
-    view->setScene(scene);
-    EntityManager& em = utils::EntityManager::get();
+    utils::EntityManager& em = utils::EntityManager::get();
+    mCameraEntity = em.create();
+    mCamera = mEngine->createCamera(mCameraEntity);
+
+    view->setCamera(mCamera);
+
+    view->setPostProcessingEnabled(false);
+    view->setBlendMode(View::BlendMode::TRANSLUCENT);
+    view->setShadowingEnabled(false);
+
+    // Attach a scene for our one and only Renderable.
+    view->setScene(mScene);
+
     mRenderable = em.create();
-    scene->addEntity(mRenderable);
+    mScene->addEntity(mRenderable);
 
     ImGui::StyleColorsDark();
 }
@@ -75,30 +107,39 @@ void ImGuiHelper::createAtlasTexture(Engine* engine) {
     // Create the grayscale texture that ImGui uses for its glyph atlas.
     static unsigned char* pixels;
     int width, height;
-    io.Fonts->GetTexDataAsAlpha8(&pixels, &width, &height);
-    size_t size = (size_t) (width * height);
+    io.Fonts->GetTexDataAsRGBA32(&pixels, &width, &height);
+    size_t size = (size_t) (width * height * 4);
     Texture::PixelBufferDescriptor pb(
             pixels, size,
-            Texture::Format::R, Texture::Type::UBYTE);
+            Texture::Format::RGBA, Texture::Type::UBYTE);
     mTexture = Texture::Builder()
             .width((uint32_t) width)
             .height((uint32_t) height)
             .levels((uint8_t) 1)
-            .format(Texture::InternalFormat::R8)
+            .format(Texture::InternalFormat::RGBA8)
             .sampler(Texture::Sampler::SAMPLER_2D)
             .build(*engine);
     mTexture->setImage(*engine, 0, std::move(pb));
 
-    TextureSampler sampler(TextureSampler::MinFilter::LINEAR, TextureSampler::MagFilter::LINEAR);
-    mMaterial->setDefaultParameter("albedo", mTexture, sampler);
+    mSampler = TextureSampler(MinFilter::LINEAR, MagFilter::LINEAR);
+    mMaterial2d->setDefaultParameter("albedo", mTexture, mSampler);
 }
 
 ImGuiHelper::~ImGuiHelper() {
+    mEngine->destroy(mScene);
     mEngine->destroy(mRenderable);
-    for (auto& mi : mMaterialInstances) {
+    mEngine->destroyCameraComponent(mCameraEntity);
+
+    for (auto& mi : mMaterial2dInstances) {
         mEngine->destroy(mi);
     }
-    mEngine->destroy(mMaterial);
+    mEngine->destroy(mMaterial2d);
+#ifdef __ANDROID__
+    for (auto& mi : mMaterialExternalInstances) {
+        mEngine->destroy(mi);
+    }
+    mEngine->destroy(mMaterialExternal);
+#endif
     mEngine->destroy(mTexture);
     for (auto& vb : mVertexBuffers) {
         mEngine->destroy(vb);
@@ -106,17 +147,32 @@ ImGuiHelper::~ImGuiHelper() {
     for (auto& ib : mIndexBuffers) {
         mEngine->destroy(ib);
     }
-    ImGui::DestroyContext();
+
+    EntityManager& em = utils::EntityManager::get();
+    em.destroy(mRenderable);
+    em.destroy(mCameraEntity);
+
+    ImGui::DestroyContext(mImGuiContext);
+    mImGuiContext = nullptr;
 }
 
-void ImGuiHelper::setDisplaySize(int width, int height, float scaleX, float scaleY) {
+void ImGuiHelper::setDisplaySize(int width, int height, float scaleX, float scaleY,
+        bool flipVertical) {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2(width, height);
     io.DisplayFramebufferScale.x = scaleX;
     io.DisplayFramebufferScale.y = scaleY;
-}
+    mFlipVertical = flipVertical;
+    if (flipVertical) {
+        mCamera->setProjection(Camera::Projection::ORTHO, 0.0, double(width),
+                0.0, double(height), 0.0, 1.0);
+    } else {
+        mCamera->setProjection(Camera::Projection::ORTHO, 0.0, double(width),
+                double(height), 0.0, 0.0, 1.0);
+    }}
 
 void ImGuiHelper::render(float timeStepInSeconds, Callback imguiCommands) {
+    ImGui::SetCurrentContext(mImGuiContext);
     ImGuiIO& io = ImGui::GetIO();
     io.DeltaTime = timeStepInSeconds;
     // First, let ImGui process events and increment its internal frame count.
@@ -128,79 +184,43 @@ void ImGuiHelper::render(float timeStepInSeconds, Callback imguiCommands) {
     // Let ImGui build up its draw data.
     ImGui::Render();
     // Finally, translate the draw data into Filament objects.
-    renderDrawData(ImGui::GetDrawData());
+    processImGuiCommands(ImGui::GetDrawData(), ImGui::GetIO());
 }
 
-// To help with mapping unique scissor rectangles to material instances, we create a 64-bit
-// key from a 4-tuple that defines an AABB in screen space.
-static uint64_t makeScissorKey(int fbheight, const ImVec4& clipRect) {
-    uint16_t left = (uint16_t) clipRect.x;
-    uint16_t bottom = (uint16_t) (fbheight - clipRect.w);
-    uint16_t width = (uint16_t) (clipRect.z - clipRect.x);
-    uint16_t height = (uint16_t) (clipRect.w - clipRect.y);
-    return
-            ((uint64_t)left << 0ull) |
-            ((uint64_t)bottom << 16ull) |
-            ((uint64_t)width << 32ull) |
-            ((uint64_t)height << 48ull);
-}
+void ImGuiHelper::processImGuiCommands(ImDrawData* commands, const ImGuiIO& io) {
+    ImGui::SetCurrentContext(mImGuiContext);
 
-void ImGuiHelper::renderDrawData(ImDrawData* imguiData) {
     mHasSynced = false;
     auto& rcm = mEngine->getRenderableManager();
 
     // Avoid rendering when minimized and scale coordinates for retina displays.
-    ImGuiIO& io = ImGui::GetIO();
     int fbwidth = (int)(io.DisplaySize.x * io.DisplayFramebufferScale.x);
     int fbheight = (int)(io.DisplaySize.y * io.DisplayFramebufferScale.y);
     if (fbwidth == 0 || fbheight == 0)
         return;
-    imguiData->ScaleClipRects(io.DisplayFramebufferScale);
+    commands->ScaleClipRects(io.DisplayFramebufferScale);
 
     // Ensure that we have enough vertex buffers and index buffers.
-    createBuffers(imguiData->CmdListsCount);
+    createBuffers(commands->CmdListsCount);
 
     // Count how many primitives we'll need, then create a Renderable builder.
-    // Also count how many unique scissor rectangles are required.
     size_t nPrims = 0;
     std::unordered_map<uint64_t, filament::MaterialInstance*> scissorRects;
-    for (int cmdListIndex = 0; cmdListIndex < imguiData->CmdListsCount; cmdListIndex++) {
-        const ImDrawList* cmds = imguiData->CmdLists[cmdListIndex];
+    for (int cmdListIndex = 0; cmdListIndex < commands->CmdListsCount; cmdListIndex++) {
+        const ImDrawList* cmds = commands->CmdLists[cmdListIndex];
         nPrims += cmds->CmdBuffer.size();
-        for (const auto& pcmd : cmds->CmdBuffer) {
-            scissorRects[makeScissorKey(fbheight, pcmd.ClipRect)] = nullptr;
-        }
     }
     auto rbuilder = RenderableManager::Builder(nPrims);
     rbuilder.boundingBox({{ 0, 0, 0 }, { 10000, 10000, 10000 }}).culling(false);
-
-    // Ensure that we have a material instance for each scissor rectangle.
-    size_t previousSize = mMaterialInstances.size();
-    if (scissorRects.size() > mMaterialInstances.size()) {
-        mMaterialInstances.resize(scissorRects.size());
-        for (size_t i = previousSize; i < mMaterialInstances.size(); i++) {
-            mMaterialInstances[i] = mMaterial->createInstance();
-        }
-    }
-
-    // Push each unique scissor rectangle to a MaterialInstance.
-    size_t matIndex = 0;
-    for (auto& pair : scissorRects) {
-        pair.second = mMaterialInstances[matIndex++];
-        uint32_t left = (pair.first >> 0ull) & 0xffffull;
-        uint32_t bottom = (pair.first >> 16ull) & 0xffffull;
-        uint32_t width = (pair.first >> 32ull) & 0xffffull;
-        uint32_t height = (pair.first >> 48ull) & 0xffffull;
-        pair.second->setScissor(left, bottom, width, height);
-    }
 
     // Recreate the Renderable component and point it to the vertex buffers.
     rcm.destroy(mRenderable);
     int bufferIndex = 0;
     int primIndex = 0;
-    for (int cmdListIndex = 0; cmdListIndex < imguiData->CmdListsCount; cmdListIndex++) {
-        const ImDrawList* cmds = imguiData->CmdLists[cmdListIndex];
-        size_t indexOffset = 0;
+    int material2dIndex = 0;
+    int materialExternalIndex = 0;
+    for (int cmdListIndex = 0; cmdListIndex < commands->CmdListsCount; cmdListIndex++) {
+        const ImDrawList* cmds = commands->CmdLists[cmdListIndex];
         populateVertexData(bufferIndex,
                 cmds->VtxBuffer.Size * sizeof(ImDrawVert), cmds->VtxBuffer.Data,
                 cmds->IdxBuffer.Size * sizeof(ImDrawIdx), cmds->IdxBuffer.Data);
@@ -208,22 +228,45 @@ void ImGuiHelper::renderDrawData(ImDrawData* imguiData) {
             if (pcmd.UserCallback) {
                 pcmd.UserCallback(cmds, &pcmd);
             } else {
-                uint64_t skey = makeScissorKey(fbheight, pcmd.ClipRect);
-                auto miter = scissorRects.find(skey);
-                assert(miter != scissorRects.end());
+                auto texture = (Texture const*)pcmd.TextureId;
+                MaterialInstance* materialInstance;
+#ifdef __ANDROID__
+                if (texture && texture->getTarget() == Texture::Sampler::SAMPLER_EXTERNAL) {
+                    if (materialExternalIndex == mMaterialExternalInstances.size()) {
+                        mMaterialExternalInstances.push_back(mMaterialExternal->createInstance());
+                    }
+                    materialInstance = mMaterialExternalInstances[materialExternalIndex++];
+                } else
+#endif
+                {
+                    if (material2dIndex == mMaterial2dInstances.size()) {
+                        mMaterial2dInstances.push_back(mMaterial2d->createInstance());
+                    }
+                    materialInstance = mMaterial2dInstances[material2dIndex++];
+                }
+                materialInstance->setScissor(
+                        pcmd.ClipRect.x,
+                        mFlipVertical ? pcmd.ClipRect.y :  (fbheight - pcmd.ClipRect.w),
+                        (uint16_t) (pcmd.ClipRect.z - pcmd.ClipRect.x),
+                        (uint16_t) (pcmd.ClipRect.w - pcmd.ClipRect.y));
+                if (texture) {
+                    TextureSampler sampler(MinFilter::LINEAR, MagFilter::LINEAR);
+                    materialInstance->setParameter("albedo", texture, sampler);
+                } else {
+                    materialInstance->setParameter("albedo", mTexture, mSampler);
+                }
                 rbuilder
                         .geometry(primIndex, RenderableManager::PrimitiveType::TRIANGLES,
                                 mVertexBuffers[bufferIndex], mIndexBuffers[bufferIndex],
-                                indexOffset, pcmd.ElemCount)
+                                pcmd.IdxOffset, pcmd.ElemCount)
                         .blendOrder(primIndex, primIndex)
-                        .material(primIndex, miter->second);
+                        .material(primIndex, materialInstance);
                 primIndex++;
             }
-            indexOffset += pcmd.ElemCount;
         }
         bufferIndex++;
     }
-    if (imguiData->CmdListsCount > 0) {
+    if (commands->CmdListsCount > 0) {
         rbuilder.build(*mEngine, mRenderable);
     }
 }

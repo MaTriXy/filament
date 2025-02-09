@@ -28,19 +28,26 @@ using ::testing::Not;
 
 using ValidateBarriers = spvtest::ValidateBase<bool>;
 
-std::string GenerateShaderCode(
-    const std::string& body,
-    const std::string& capabilities_and_extensions = "",
-    const std::string& execution_model = "GLCompute") {
+std::string GenerateShaderCodeImpl(
+    const std::string& body, const std::string& capabilities_and_extensions,
+    const std::string& definitions, const std::string& execution_model,
+    const std::string& memory_model) {
   std::ostringstream ss;
   ss << R"(
 OpCapability Shader
-OpCapability Int64
 )";
 
   ss << capabilities_and_extensions;
-  ss << "OpMemoryModel Logical GLSL450\n";
+  ss << memory_model << std::endl;
   ss << "OpEntryPoint " << execution_model << " %main \"main\"\n";
+  if (execution_model == "Fragment") {
+    ss << "OpExecutionMode %main OriginUpperLeft\n";
+  } else if (execution_model == "Geometry") {
+    ss << "OpExecutionMode %main InputPoints\n";
+    ss << "OpExecutionMode %main OutputPoints\n";
+  } else if (execution_model == "GLCompute") {
+    ss << "OpExecutionMode %main LocalSize 1 1 1\n";
+  }
 
   ss << R"(
 %void = OpTypeVoid
@@ -48,21 +55,22 @@ OpCapability Int64
 %bool = OpTypeBool
 %f32 = OpTypeFloat 32
 %u32 = OpTypeInt 32 0
-%u64 = OpTypeInt 64 0
 
 %f32_0 = OpConstant %f32 0
 %f32_1 = OpConstant %f32 1
 %u32_0 = OpConstant %u32 0
 %u32_1 = OpConstant %u32 1
 %u32_4 = OpConstant %u32 4
-%u64_0 = OpConstant %u64 0
-%u64_1 = OpConstant %u64 1
-
+)";
+  ss << definitions;
+  ss << R"(
 %cross_device = OpConstant %u32 0
 %device = OpConstant %u32 1
 %workgroup = OpConstant %u32 2
 %subgroup = OpConstant %u32 3
 %invocation = OpConstant %u32 4
+%queuefamily = OpConstant %u32 5
+%shadercall = OpConstant %u32 6
 
 %none = OpConstant %u32 0
 %acquire = OpConstant %u32 2
@@ -71,9 +79,16 @@ OpCapability Int64
 %acquire_and_release = OpConstant %u32 6
 %sequentially_consistent = OpConstant %u32 16
 %acquire_release_uniform_workgroup = OpConstant %u32 328
+%acquire_uniform_workgroup = OpConstant %u32 322
+%release_uniform_workgroup = OpConstant %u32 324
 %acquire_and_release_uniform = OpConstant %u32 70
 %acquire_release_subgroup = OpConstant %u32 136
+%acquire_release_workgroup = OpConstant %u32 264
 %uniform = OpConstant %u32 64
+%uniform_workgroup = OpConstant %u32 320
+%workgroup_memory = OpConstant %u32 256
+%image_memory = OpConstant %u32 2048
+%uniform_image_memory = OpConstant %u32 2112
 
 %main = OpFunction %void None %func
 %main_entry = OpLabel
@@ -86,6 +101,33 @@ OpReturn
 OpFunctionEnd)";
 
   return ss.str();
+}
+
+std::string GenerateShaderCode(
+    const std::string& body,
+    const std::string& capabilities_and_extensions = "",
+    const std::string& execution_model = "GLCompute") {
+  const std::string int64_capability = R"(
+OpCapability Int64
+)";
+  const std::string int64_declarations = R"(
+%u64 = OpTypeInt 64 0
+%u64_0 = OpConstant %u64 0
+%u64_1 = OpConstant %u64 1
+)";
+  const std::string memory_model = "OpMemoryModel Logical GLSL450";
+  return GenerateShaderCodeImpl(
+      body, int64_capability + capabilities_and_extensions, int64_declarations,
+      execution_model, memory_model);
+}
+
+std::string GenerateVulkanVertexShaderCode(
+    const std::string& body,
+    const std::string& capabilities_and_extensions = "",
+    const std::string& execution_model = "Vertex") {
+  const std::string memory_model = "OpMemoryModel Logical GLSL450";
+  return GenerateShaderCodeImpl(body, capabilities_and_extensions, "",
+                                execution_model, memory_model);
 }
 
 std::string GenerateKernelCode(
@@ -132,9 +174,7 @@ OpMemoryModel Physical32 OpenCL
 %acquire_release = OpConstant %u32 8
 %acquire_and_release = OpConstant %u32 6
 %sequentially_consistent = OpConstant %u32 16
-%acquire_release_uniform_workgroup = OpConstant %u32 328
-%acquire_and_release_uniform = OpConstant %u32 70
-%uniform = OpConstant %u32 64
+%acquire_release_workgroup = OpConstant %u32 264
 
 %named_barrier = OpTypeNamedBarrier
 
@@ -172,7 +212,7 @@ OpControlBarrier %workgroup %workgroup %acquire
 OpControlBarrier %workgroup %device %release
 OpControlBarrier %cross_device %cross_device %acquire_release
 OpControlBarrier %cross_device %cross_device %sequentially_consistent
-OpControlBarrier %cross_device %cross_device %acquire_release_uniform_workgroup
+OpControlBarrier %cross_device %cross_device %acquire_release_workgroup
 )";
 
   CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
@@ -214,8 +254,9 @@ OpControlBarrier %device %device %none
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_2));
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr("OpControlBarrier requires one of the following Execution "
-                "Models: TessellationControl, GLCompute or Kernel"));
+      HasSubstr("OpControlBarrier requires one of the following "
+                "Execution Models: TessellationControl, GLCompute, Kernel, "
+                "MeshNV or TaskNV"));
 }
 
 TEST_F(ValidateBarriers, OpControlBarrierExecutionModelFragmentSpirv13) {
@@ -235,9 +276,8 @@ OpControlBarrier %f32_1 %device %none
 
   CompileSuccessfully(GenerateShaderCode(body));
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("ControlBarrier: expected Execution Scope to be a 32-bit int"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("ControlBarrier: expected scope to be a 32-bit int"));
 }
 
 TEST_F(ValidateBarriers, OpControlBarrierU64ExecutionScope) {
@@ -247,9 +287,8 @@ OpControlBarrier %u64_1 %device %none
 
   CompileSuccessfully(GenerateShaderCode(body));
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("ControlBarrier: expected Execution Scope to be a 32-bit int"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("ControlBarrier: expected scope to be a 32-bit int"));
 }
 
 TEST_F(ValidateBarriers, OpControlBarrierFloatMemoryScope) {
@@ -259,9 +298,8 @@ OpControlBarrier %device %f32_1 %none
 
   CompileSuccessfully(GenerateShaderCode(body));
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("ControlBarrier: expected Memory Scope to be a 32-bit int"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("ControlBarrier: expected scope to be a 32-bit int"));
 }
 
 TEST_F(ValidateBarriers, OpControlBarrierU64MemoryScope) {
@@ -271,9 +309,8 @@ OpControlBarrier %device %u64_1 %none
 
   CompileSuccessfully(GenerateShaderCode(body));
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("ControlBarrier: expected Memory Scope to be a 32-bit int"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("ControlBarrier: expected scope to be a 32-bit int"));
 }
 
 TEST_F(ValidateBarriers, OpControlBarrierFloatMemorySemantics) {
@@ -310,6 +347,8 @@ OpControlBarrier %device %workgroup %none
   CompileSuccessfully(GenerateShaderCode(body), SPV_ENV_VULKAN_1_0);
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
   EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-None-04636"));
+  EXPECT_THAT(getDiagnosticString(),
               HasSubstr("ControlBarrier: in Vulkan environment Execution Scope "
                         "is limited to Workgroup and Subgroup"));
 }
@@ -321,10 +360,27 @@ OpControlBarrier %subgroup %subgroup %none
 
   CompileSuccessfully(GenerateShaderCode(body), SPV_ENV_VULKAN_1_0);
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-SubgroupVoteKHR-06997"));
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr("ControlBarrier: in Vulkan 1.0 environment Memory Scope is "
-                "limited to Device, Workgroup and Invocation"));
+      HasSubstr(
+          "ControlBarrier: in Vulkan 1.0 environment Memory Scope is can not "
+          "be Subgroup without SubgroupBallotKHR or SubgroupVoteKHR declared"));
+}
+
+TEST_F(ValidateBarriers, OpControlBarrierVulkanMemoryScopeSubgroupVoteKHR) {
+  const std::string capabilities = R"(
+OpCapability SubgroupVoteKHR
+OpExtension "SPV_KHR_subgroup_vote"
+)";
+  const std::string body = R"(
+OpControlBarrier %subgroup %subgroup %none
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body, capabilities),
+                      SPV_ENV_VULKAN_1_0);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_0));
 }
 
 TEST_F(ValidateBarriers, OpControlBarrierVulkan1p1MemoryScopeSubgroup) {
@@ -344,8 +400,86 @@ OpControlBarrier %subgroup %cross_device %none
   CompileSuccessfully(GenerateShaderCode(body), SPV_ENV_VULKAN_1_1);
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("ControlBarrier: in Vulkan environment, Memory Scope "
-                        "cannot be CrossDevice"));
+              AnyVUID("VUID-StandaloneSpirv-None-04638"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("ControlBarrier: in Vulkan environment Memory Scope is "
+                        "limited to Device, QueueFamily, Workgroup, "
+                        "ShaderCallKHR, Subgroup, or Invocation"));
+}
+
+TEST_F(ValidateBarriers,
+       OpControlBarrierVulkan1p1WorkgroupNonComputeMemoryFailure) {
+  const std::string body = R"(
+OpControlBarrier %subgroup %workgroup %acquire
+)";
+
+  CompileSuccessfully(GenerateVulkanVertexShaderCode(body), SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-None-07321"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("Workgroup Memory Scope is limited to MeshNV, "
+                "TaskNV, MeshEXT, TaskEXT, TessellationControl, and GLCompute "
+                "execution model"));
+}
+
+TEST_F(ValidateBarriers,
+       OpControlBarrierVulkan1p1WorkgroupNonComputeExecutionFailure) {
+  const std::string body = R"(
+OpControlBarrier %workgroup %subgroup %acquire
+)";
+
+  CompileSuccessfully(GenerateVulkanVertexShaderCode(body), SPV_ENV_VULKAN_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-None-04637"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("in Vulkan environment, Workgroup execution scope is "
+                        "only for TaskNV, MeshNV, TaskEXT, MeshEXT, "
+                        "TessellationControl, and GLCompute execution models"));
+}
+
+TEST_F(ValidateBarriers, OpControlBarrierVulkan1p1WorkgroupComputeSuccess) {
+  const std::string body = R"(
+OpControlBarrier %workgroup %workgroup %acquire
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body), SPV_ENV_VULKAN_1_1);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+TEST_F(ValidateBarriers, OpControlBarrierVulkan1p1WorkgroupNonComputeSuccess) {
+  const std::string body = R"(
+OpControlBarrier %subgroup %subgroup %acquire
+)";
+
+  CompileSuccessfully(GenerateVulkanVertexShaderCode(body), SPV_ENV_VULKAN_1_1);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+TEST_F(ValidateBarriers, OpControlBarrierVulkanInvocationSuccess) {
+  const std::string body = R"(
+OpControlBarrier %workgroup %invocation %none
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body), SPV_ENV_VULKAN_1_0);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+}
+
+TEST_F(ValidateBarriers, OpControlBarrierVulkanInvocationFailure) {
+  const std::string body = R"(
+OpControlBarrier %workgroup %invocation %acquire
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body), SPV_ENV_VULKAN_1_0);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-None-04641"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("ControlBarrier: Vulkan specification requires Memory "
+                "Semantics to be None if used with Invocation Memory Scope"));
 }
 
 TEST_F(ValidateBarriers, OpControlBarrierAcquireAndRelease) {
@@ -396,9 +530,13 @@ OpControlBarrier %workgroup %workgroup %acquire_release
                       SPV_ENV_VULKAN_1_1);
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("OpControlBarrier execution scope must be Subgroup for "
-                        "Fragment, Vertex, Geometry and TessellationEvaluation "
-                        "execution models"));
+              AnyVUID("VUID-StandaloneSpirv-OpControlBarrier-04682"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "OpControlBarrier execution scope must be Subgroup for Fragment, "
+          "Vertex, Geometry, TessellationEvaluation, RayGeneration, "
+          "Intersection, AnyHit, ClosestHit, and Miss execution models"));
 }
 
 TEST_F(ValidateBarriers, OpControlBarrierSubgroupExecutionFragment1p0) {
@@ -409,10 +547,11 @@ OpControlBarrier %subgroup %workgroup %acquire_release
   CompileSuccessfully(GenerateShaderCode(body, "", "Fragment"),
                       SPV_ENV_VULKAN_1_0);
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_0));
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("OpControlBarrier requires one of the following Execution "
-                "Models: TessellationControl, GLCompute or Kernel"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpControlBarrier requires one of the following "
+                        "Execution "
+                        "Models: TessellationControl, GLCompute, Kernel, "
+                        "MeshNV or TaskNV"));
 }
 
 TEST_F(ValidateBarriers, OpControlBarrierSubgroupExecutionVertex1p1) {
@@ -434,9 +573,13 @@ OpControlBarrier %workgroup %workgroup %acquire_release
                       SPV_ENV_VULKAN_1_1);
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("OpControlBarrier execution scope must be Subgroup for "
-                        "Fragment, Vertex, Geometry and TessellationEvaluation "
-                        "execution models"));
+              AnyVUID("VUID-StandaloneSpirv-OpControlBarrier-04682"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "OpControlBarrier execution scope must be Subgroup for Fragment, "
+          "Vertex, Geometry, TessellationEvaluation, RayGeneration, "
+          "Intersection, AnyHit, ClosestHit, and Miss execution models"));
 }
 
 TEST_F(ValidateBarriers, OpControlBarrierSubgroupExecutionVertex1p0) {
@@ -449,8 +592,9 @@ OpControlBarrier %subgroup %workgroup %acquire_release
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_0));
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr("OpControlBarrier requires one of the following Execution "
-                "Models: TessellationControl, GLCompute or Kernel"));
+      HasSubstr("OpControlBarrier requires one of the following "
+                "Execution Models: TessellationControl, GLCompute, Kernel, "
+                "MeshNV or TaskNV"));
 }
 
 TEST_F(ValidateBarriers, OpControlBarrierSubgroupExecutionGeometry1p1) {
@@ -474,9 +618,13 @@ OpControlBarrier %workgroup %workgroup %acquire_release
       SPV_ENV_VULKAN_1_1);
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("OpControlBarrier execution scope must be Subgroup for "
-                        "Fragment, Vertex, Geometry and TessellationEvaluation "
-                        "execution models"));
+              AnyVUID("VUID-StandaloneSpirv-OpControlBarrier-04682"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "OpControlBarrier execution scope must be Subgroup for Fragment, "
+          "Vertex, Geometry, TessellationEvaluation, RayGeneration, "
+          "Intersection, AnyHit, ClosestHit, and Miss execution models"));
 }
 
 TEST_F(ValidateBarriers, OpControlBarrierSubgroupExecutionGeometry1p0) {
@@ -488,10 +636,11 @@ OpControlBarrier %subgroup %workgroup %acquire_release
       GenerateShaderCode(body, "OpCapability Geometry\n", "Geometry"),
       SPV_ENV_VULKAN_1_0);
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_0));
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("OpControlBarrier requires one of the following Execution "
-                "Models: TessellationControl, GLCompute or Kernel"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpControlBarrier requires one of the following "
+                        "Execution "
+                        "Models: TessellationControl, GLCompute, Kernel, "
+                        "MeshNV or TaskNV"));
 }
 
 TEST_F(ValidateBarriers,
@@ -517,9 +666,13 @@ OpControlBarrier %workgroup %workgroup %acquire_release
                       SPV_ENV_VULKAN_1_1);
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("OpControlBarrier execution scope must be Subgroup for "
-                        "Fragment, Vertex, Geometry and TessellationEvaluation "
-                        "execution models"));
+              AnyVUID("VUID-StandaloneSpirv-OpControlBarrier-04682"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "OpControlBarrier execution scope must be Subgroup for Fragment, "
+          "Vertex, Geometry, TessellationEvaluation, RayGeneration, "
+          "Intersection, AnyHit, ClosestHit, and Miss execution models"));
 }
 
 TEST_F(ValidateBarriers,
@@ -532,10 +685,11 @@ OpControlBarrier %subgroup %workgroup %acquire_release
                                          "TessellationEvaluation"),
                       SPV_ENV_VULKAN_1_0);
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_0));
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("OpControlBarrier requires one of the following Execution "
-                "Models: TessellationControl, GLCompute or Kernel"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpControlBarrier requires one of the following "
+                        "Execution "
+                        "Models: TessellationControl, GLCompute, Kernel, "
+                        "MeshNV or TaskNV"));
 }
 
 TEST_F(ValidateBarriers, OpMemoryBarrierSuccess) {
@@ -550,8 +704,8 @@ OpMemoryBarrier %device %uniform
 
 TEST_F(ValidateBarriers, OpMemoryBarrierKernelSuccess) {
   const std::string body = R"(
-OpMemoryBarrier %cross_device %acquire_release_uniform_workgroup
-OpMemoryBarrier %device %uniform
+OpMemoryBarrier %cross_device %acquire_release_workgroup
+OpMemoryBarrier %device %none
 )";
 
   CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
@@ -574,9 +728,8 @@ OpMemoryBarrier %f32_1 %acquire_release_uniform_workgroup
 
   CompileSuccessfully(GenerateShaderCode(body));
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("MemoryBarrier: expected Memory Scope to be a 32-bit int"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("MemoryBarrier: expected scope to be a 32-bit int"));
 }
 
 TEST_F(ValidateBarriers, OpMemoryBarrierU64MemoryScope) {
@@ -586,9 +739,8 @@ OpMemoryBarrier %u64_1 %acquire_release_uniform_workgroup
 
   CompileSuccessfully(GenerateShaderCode(body));
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("MemoryBarrier: expected Memory Scope to be a 32-bit int"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("MemoryBarrier: expected scope to be a 32-bit int"));
 }
 
 TEST_F(ValidateBarriers, OpMemoryBarrierFloatMemorySemantics) {
@@ -622,10 +774,13 @@ OpMemoryBarrier %subgroup %acquire_release_uniform_workgroup
 
   CompileSuccessfully(GenerateShaderCode(body), SPV_ENV_VULKAN_1_0);
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-SubgroupVoteKHR-06997"));
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr("MemoryBarrier: in Vulkan 1.0 environment Memory Scope is "
-                "limited to Device, Workgroup and Invocation"));
+      HasSubstr(
+          "MemoryBarrier: in Vulkan 1.0 environment Memory Scope is can not be "
+          "Subgroup without SubgroupBallotKHR or SubgroupVoteKHR declared"));
 }
 
 TEST_F(ValidateBarriers, OpMemoryBarrierVulkan1p1MemoryScopeSubgroup) {
@@ -657,6 +812,8 @@ OpMemoryBarrier %device %none
 
   CompileSuccessfully(GenerateShaderCode(body), SPV_ENV_VULKAN_1_0);
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-OpMemoryBarrier-04732"));
   EXPECT_THAT(
       getDiagnosticString(),
       HasSubstr("MemoryBarrier: Vulkan specification requires Memory Semantics "
@@ -672,6 +829,8 @@ OpMemoryBarrier %device %acquire
   CompileSuccessfully(GenerateShaderCode(body), SPV_ENV_VULKAN_1_0);
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
   EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-OpMemoryBarrier-04733"));
+  EXPECT_THAT(getDiagnosticString(),
               HasSubstr("MemoryBarrier: expected Memory Semantics to include a "
                         "Vulkan-supported storage class"));
 }
@@ -683,6 +842,8 @@ OpMemoryBarrier %device %acquire_release_subgroup
 
   CompileSuccessfully(GenerateShaderCode(body), SPV_ENV_VULKAN_1_0);
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_0));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-OpMemoryBarrier-04733"));
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("MemoryBarrier: expected Memory Semantics to include a "
                         "Vulkan-supported storage class"));
@@ -739,7 +900,7 @@ TEST_F(ValidateBarriers, OpNamedBarrierInitializeU64SubgroupCount) {
 TEST_F(ValidateBarriers, OpMemoryNamedBarrierSuccess) {
   const std::string body = R"(
 %barrier = OpNamedBarrierInitialize %named_barrier %u32_4
-OpMemoryNamedBarrier %barrier %workgroup %acquire_release_uniform_workgroup
+OpMemoryNamedBarrier %barrier %workgroup %acquire_release_workgroup
 )";
 
   CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
@@ -748,7 +909,7 @@ OpMemoryNamedBarrier %barrier %workgroup %acquire_release_uniform_workgroup
 
 TEST_F(ValidateBarriers, OpMemoryNamedBarrierNotNamedBarrier) {
   const std::string body = R"(
-OpMemoryNamedBarrier %u32_1 %workgroup %acquire_release_uniform_workgroup
+OpMemoryNamedBarrier %u32_1 %workgroup %acquire_release_workgroup
 )";
 
   CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
@@ -762,7 +923,7 @@ OpMemoryNamedBarrier %u32_1 %workgroup %acquire_release_uniform_workgroup
 TEST_F(ValidateBarriers, OpMemoryNamedBarrierFloatMemoryScope) {
   const std::string body = R"(
 %barrier = OpNamedBarrierInitialize %named_barrier %u32_4
-OpMemoryNamedBarrier %barrier %f32_1 %acquire_release_uniform_workgroup
+OpMemoryNamedBarrier %barrier %f32_1 %acquire_release_workgroup
 )";
 
   CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
@@ -770,8 +931,7 @@ OpMemoryNamedBarrier %barrier %f32_1 %acquire_release_uniform_workgroup
             ValidateInstructions(SPV_ENV_UNIVERSAL_1_1));
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr(
-          "MemoryNamedBarrier: expected Memory Scope to be a 32-bit int"));
+      HasSubstr("MemoryNamedBarrier: expected scope to be a 32-bit int"));
 }
 
 TEST_F(ValidateBarriers, OpMemoryNamedBarrierFloatMemorySemantics) {
@@ -792,7 +952,7 @@ OpMemoryNamedBarrier %barrier %workgroup %f32_0
 TEST_F(ValidateBarriers, OpMemoryNamedBarrierAcquireAndRelease) {
   const std::string body = R"(
 %barrier = OpNamedBarrierInitialize %named_barrier %u32_4
-OpMemoryNamedBarrier %barrier %workgroup %acquire_and_release_uniform
+OpMemoryNamedBarrier %barrier %workgroup %acquire_and_release
 )";
 
   CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
@@ -809,11 +969,597 @@ TEST_F(ValidateBarriers, TypeAsMemoryScope) {
 OpMemoryBarrier %u32 %u32_0
 )";
 
-  CompileSuccessfully(GenerateKernelCode(body));
+  CompileSuccessfully(GenerateKernelCode(body), SPV_ENV_UNIVERSAL_1_1);
+  EXPECT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_1));
+  EXPECT_THAT(getDiagnosticString(), HasSubstr("Operand '5[%uint]' cannot be a "
+                                               "type"));
+}
+
+TEST_F(ValidateBarriers,
+       OpControlBarrierVulkanMemoryModelBanSequentiallyConsistent) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint Fragment %1 "func"
+OpExecutionMode %1 OriginUpperLeft
+%2 = OpTypeVoid
+%3 = OpTypeInt 32 0
+%4 = OpConstant %3 16
+%5 = OpTypeFunction %2
+%6 = OpConstant %3 5
+%1 = OpFunction %2 None %5
+%7 = OpLabel
+OpControlBarrier %6 %6 %4
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("SequentiallyConsistent memory semantics cannot be "
+                        "used with the VulkanKHR memory model."));
+}
+
+TEST_F(ValidateBarriers,
+       OpMemoryBarrierVulkanMemoryModelBanSequentiallyConsistent) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint Fragment %1 "func"
+OpExecutionMode %1 OriginUpperLeft
+%2 = OpTypeVoid
+%3 = OpTypeInt 32 0
+%4 = OpConstant %3 16
+%5 = OpTypeFunction %2
+%6 = OpConstant %3 5
+%1 = OpFunction %2 None %5
+%7 = OpLabel
+OpMemoryBarrier %6 %4
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("SequentiallyConsistent memory semantics cannot be "
+                        "used with the VulkanKHR memory model."));
+}
+
+TEST_F(ValidateBarriers, OutputMemoryKHRRequireVulkanMemoryModelKHR) {
+  const std::string text = R"(
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %1 "func"
+OpExecutionMode %1 OriginUpperLeft
+%2 = OpTypeVoid
+%3 = OpTypeInt 32 0
+%semantics = OpConstant %3 4104
+%5 = OpTypeFunction %2
+%device = OpConstant %3 1
+%1 = OpFunction %2 None %5
+%7 = OpLabel
+OpControlBarrier %device %device %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text);
   EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("ControlBarrier: Memory Semantics OutputMemoryKHR "
+                        "requires capability VulkanMemoryModelKHR"));
+}
+
+TEST_F(ValidateBarriers, MakeAvailableKHRRequireVulkanMemoryModelKHR) {
+  const std::string text = R"(
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %1 "func"
+OpExecutionMode %1 OriginUpperLeft
+%2 = OpTypeVoid
+%3 = OpTypeInt 32 0
+%semantics = OpConstant %3 8264
+%5 = OpTypeFunction %2
+%device = OpConstant %3 1
+%1 = OpFunction %2 None %5
+%7 = OpLabel
+OpControlBarrier %device %device %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("ControlBarrier: Memory Semantics MakeAvailableKHR "
+                        "requires capability VulkanMemoryModelKHR"));
+}
+
+TEST_F(ValidateBarriers, MakeVisibleKHRRequireVulkanMemoryModelKHR) {
+  const std::string text = R"(
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %1 "func"
+OpExecutionMode %1 OriginUpperLeft
+%2 = OpTypeVoid
+%3 = OpTypeInt 32 0
+%semantics = OpConstant %3 16456
+%5 = OpTypeFunction %2
+%device = OpConstant %3 1
+%1 = OpFunction %2 None %5
+%7 = OpLabel
+OpControlBarrier %device %device %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("ControlBarrier: Memory Semantics MakeVisibleKHR "
+                        "requires capability VulkanMemoryModelKHR"));
+}
+
+TEST_F(ValidateBarriers, MakeAvailableKHRRequiresReleaseSemantics) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%workgroup = OpConstant %int 2
+%semantics = OpConstant %int 8448
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%1 = OpLabel
+OpControlBarrier %workgroup %workgroup %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr("MemoryBarrier: expected Memory Scope to be a 32-bit int"));
+      HasSubstr("ControlBarrier: MakeAvailableKHR Memory Semantics also "
+                "requires either Release or AcquireRelease Memory Semantics"));
+}
+
+TEST_F(ValidateBarriers, MakeVisibleKHRRequiresAcquireSemantics) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%workgroup = OpConstant %int 2
+%semantics = OpConstant %int 16640
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%1 = OpLabel
+OpControlBarrier %workgroup %workgroup %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("ControlBarrier: MakeVisibleKHR Memory Semantics also requires "
+                "either Acquire or AcquireRelease Memory Semantics"));
+}
+
+TEST_F(ValidateBarriers, MakeAvailableKHRRequiresStorageSemantics) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%workgroup = OpConstant %int 2
+%semantics = OpConstant %int 8196
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%1 = OpLabel
+OpMemoryBarrier %workgroup %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("MemoryBarrier: expected Memory Semantics to include a "
+                        "storage class"));
+}
+
+TEST_F(ValidateBarriers, MakeVisibleKHRRequiresStorageSemantics) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%workgroup = OpConstant %int 2
+%semantics = OpConstant %int 16386
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%1 = OpLabel
+OpMemoryBarrier %workgroup %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("MemoryBarrier: expected Memory Semantics to include a "
+                        "storage class"));
+}
+
+TEST_F(ValidateBarriers, SemanticsSpecConstantShader) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%ptr_int_workgroup = OpTypePointer Workgroup %int
+%var = OpVariable %ptr_int_workgroup Workgroup
+%voidfn = OpTypeFunction %void
+%spec_const = OpSpecConstant %int 0
+%workgroup = OpConstant %int 2
+%func = OpFunction %void None %voidfn
+%entry = OpLabel
+OpMemoryBarrier %workgroup %spec_const
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Memory Semantics ids must be OpConstant when Shader "
+                        "capability is present"));
+}
+
+TEST_F(ValidateBarriers, SemanticsSpecConstantKernel) {
+  const std::string spirv = R"(
+OpCapability Kernel
+OpCapability Linkage
+OpMemoryModel Logical OpenCL
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%ptr_int_workgroup = OpTypePointer Workgroup %int
+%var = OpVariable %ptr_int_workgroup Workgroup
+%voidfn = OpTypeFunction %void
+%spec_const = OpSpecConstant %int 0
+%workgroup = OpConstant %int 2
+%func = OpFunction %void None %voidfn
+%entry = OpLabel
+OpMemoryBarrier %workgroup %spec_const
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateBarriers, ScopeSpecConstantShader) {
+  const std::string spirv = R"(
+OpCapability Shader
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%ptr_int_workgroup = OpTypePointer Workgroup %int
+%var = OpVariable %ptr_int_workgroup Workgroup
+%voidfn = OpTypeFunction %void
+%spec_const = OpSpecConstant %int 0
+%relaxed = OpConstant %int 0
+%func = OpFunction %void None %voidfn
+%entry = OpLabel
+OpMemoryBarrier %spec_const %relaxed
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Scope ids must be OpConstant when Shader "
+                        "capability is present"));
+}
+
+TEST_F(ValidateBarriers, ScopeSpecConstantKernel) {
+  const std::string spirv = R"(
+OpCapability Kernel
+OpCapability Linkage
+OpMemoryModel Logical OpenCL
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%ptr_int_workgroup = OpTypePointer Workgroup %int
+%var = OpVariable %ptr_int_workgroup Workgroup
+%voidfn = OpTypeFunction %void
+%spec_const = OpSpecConstant %int 0
+%relaxed = OpConstant %int 0
+%func = OpFunction %void None %voidfn
+%entry = OpLabel
+OpMemoryBarrier %spec_const %relaxed
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(spirv);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateBarriers, VulkanMemoryModelDeviceScopeBad) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%device = OpConstant %int 1
+%semantics = OpConstant %int 0
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%1 = OpLabel
+OpMemoryBarrier %device %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("Use of device scope with VulkanKHR memory model requires the "
+                "VulkanMemoryModelDeviceScopeKHR capability"));
+}
+
+TEST_F(ValidateBarriers, VulkanMemoryModelDeviceScopeGood) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpCapability VulkanMemoryModelDeviceScopeKHR
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+OpEntryPoint Fragment %func "func"
+OpExecutionMode %func OriginUpperLeft
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%device = OpConstant %int 1
+%semantics = OpConstant %int 0
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%1 = OpLabel
+OpMemoryBarrier %device %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text, SPV_ENV_UNIVERSAL_1_3);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+}
+
+TEST_F(ValidateBarriers, VolatileMemoryBarrier) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpCapability VulkanMemoryModelDeviceScopeKHR
+OpCapability Linkage
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%device = OpConstant %int 1
+%semantics = OpConstant %int 32768
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%1 = OpLabel
+OpMemoryBarrier %device %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Memory Semantics Volatile can only be used with "
+                        "atomic instructions"));
+}
+
+TEST_F(ValidateBarriers, VolatileControlBarrier) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpCapability VulkanMemoryModelDeviceScopeKHR
+OpCapability Linkage
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpMemoryModel Logical VulkanKHR
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%device = OpConstant %int 1
+%semantics = OpConstant %int 32768
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%1 = OpLabel
+OpControlBarrier %device %device %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Memory Semantics Volatile can only be used with "
+                        "atomic instructions"));
+}
+
+TEST_F(ValidateBarriers, CooperativeMatrixSpecConstantVolatile) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpCapability VulkanMemoryModelDeviceScopeKHR
+OpCapability CooperativeMatrixNV
+OpCapability Linkage
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_NV_cooperative_matrix"
+OpMemoryModel Logical VulkanKHR
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%device = OpConstant %int 1
+%semantics = OpSpecConstant %int 32768
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%1 = OpLabel
+OpControlBarrier %device %device %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text);
+  EXPECT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateBarriers, CooperativeMatrixNonConstantSemantics) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability VulkanMemoryModelKHR
+OpCapability VulkanMemoryModelDeviceScopeKHR
+OpCapability CooperativeMatrixNV
+OpCapability Linkage
+OpExtension "SPV_KHR_vulkan_memory_model"
+OpExtension "SPV_NV_cooperative_matrix"
+OpMemoryModel Logical VulkanKHR
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%device = OpConstant %int 1
+%semantics = OpUndef %int
+%functy = OpTypeFunction %void
+%func = OpFunction %void None %functy
+%1 = OpLabel
+OpControlBarrier %device %device %semantics
+OpReturn
+OpFunctionEnd
+)";
+
+  CompileSuccessfully(text);
+  EXPECT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Memory Semantics must be a constant instruction when "
+                        "CooperativeMatrixNV capability is present"));
+}
+
+TEST_F(ValidateBarriers, OpMemoryBarrierShaderCallRayGenSuccess) {
+  const std::string body =
+      "OpMemoryBarrier %shadercall %release_uniform_workgroup";
+
+  CompileSuccessfully(GenerateShaderCodeImpl(body,
+                                             // capabilities_and_extensions
+                                             R"(
+                                               OpCapability VulkanMemoryModelKHR
+                                               OpCapability RayTracingKHR
+                                               OpExtension "SPV_KHR_vulkan_memory_model"
+                                               OpExtension "SPV_KHR_ray_tracing"
+                                             )",
+                                             // definitions
+                                             "",
+                                             // execution_model
+                                             "RayGenerationKHR",
+                                             // memory_model
+                                             "OpMemoryModel Logical VulkanKHR"),
+                      SPV_ENV_VULKAN_1_1);
+
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+TEST_F(ValidateBarriers, OpMemoryBarrierShaderCallComputeFailure) {
+  const std::string body =
+      "OpMemoryBarrier %shadercall %release_uniform_workgroup";
+
+  CompileSuccessfully(GenerateShaderCodeImpl(body,
+                                             // capabilities_and_extensions
+                                             R"(
+                                               OpCapability VulkanMemoryModelKHR
+                                               OpExtension "SPV_KHR_vulkan_memory_model"
+                                             )",
+                                             // definitions
+                                             "",
+                                             // execution_model
+                                             "GLCompute",
+                                             // memory_model
+                                             "OpMemoryModel Logical VulkanKHR"),
+                      SPV_ENV_VULKAN_1_1);
+
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-None-04640"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "ShaderCallKHR Memory Scope requires a ray tracing execution model"));
+}
+
+TEST_F(ValidateBarriers, OpControlBarrierShaderCallRayGenFailure) {
+  const std::string body = "OpControlBarrier %shadercall %shadercall %none";
+
+  CompileSuccessfully(GenerateShaderCodeImpl(body,
+                                             // capabilities_and_extensions
+                                             R"(
+                                               OpCapability VulkanMemoryModelKHR
+                                               OpCapability RayTracingKHR
+                                               OpExtension "SPV_KHR_vulkan_memory_model"
+                                               OpExtension "SPV_KHR_ray_tracing"
+                                             )",
+                                             // definitions
+                                             "",
+                                             // execution_model
+                                             "RayGenerationKHR",
+                                             // memory_model
+                                             "OpMemoryModel Logical VulkanKHR"),
+                      SPV_ENV_VULKAN_1_1);
+
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-None-04636"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("in Vulkan environment Execution Scope is limited to "
+                        "Workgroup and Subgroup"));
 }
 
 }  // namespace

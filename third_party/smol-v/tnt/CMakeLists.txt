@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.19)
 project(smol-v)
 
 set(TARGET smol-v)
@@ -13,10 +13,14 @@ set(SRCS
 add_library(${TARGET} STATIC ${SRCS})
 
 target_compile_options(${TARGET} PRIVATE
-        -Wno-tautological-unsigned-enum-zero-compare
         $<$<PLATFORM_ID:Linux>:-fPIC>
 )
 
+if (NOT MSVC)
+    target_compile_options(${TARGET} PRIVATE -Wno-tautological-unsigned-enum-zero-compare)
+endif()
+
 target_include_directories(${TARGET} PUBLIC ${PUBLIC_HDR_DIR})
+set_target_properties(${TARGET} PROPERTIES FOLDER ThirdParty)
 
 install(TARGETS ${TARGET} ARCHIVE DESTINATION lib/${DIST_DIR})

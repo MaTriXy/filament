@@ -69,9 +69,33 @@ class EnumSet {
     return *this;
   }
 
+  friend bool operator==(const EnumSet& a, const EnumSet& b) {
+    if (a.mask_ != b.mask_) {
+      return false;
+    }
+
+    if (a.overflow_ == nullptr && b.overflow_ == nullptr) {
+      return true;
+    }
+
+    if (a.overflow_ == nullptr || b.overflow_ == nullptr) {
+      return false;
+    }
+
+    return *a.overflow_ == *b.overflow_;
+  }
+
+  friend bool operator!=(const EnumSet& a, const EnumSet& b) {
+    return !(a == b);
+  }
+
   // Adds the given enum value to the set.  This has no effect if the
   // enum value is already in the set.
   void Add(EnumType c) { AddWord(ToWord(c)); }
+
+  // Removes the given enum value from the set.  This has no effect if the
+  // enum value is not in the set.
+  void Remove(EnumType c) { RemoveWord(ToWord(c)); }
 
   // Returns true if this enum value is in the set.
   bool Contains(EnumType c) const { return ContainsWord(ToWord(c)); }
@@ -121,6 +145,17 @@ class EnumSet {
     }
   }
 
+  // Removes the given enum value (as a 32-bit word) from the set.  This has no
+  // effect if the enum value is not in the set.
+  void RemoveWord(uint32_t word) {
+    if (auto new_bits = AsMask(word)) {
+      mask_ &= ~new_bits;
+    } else {
+      auto itr = Overflow().find(word);
+      if (itr != Overflow().end()) Overflow().erase(itr);
+    }
+  }
+
   // Returns true if the enum represented as a 32-bit word is in the set.
   bool ContainsWord(uint32_t word) const {
     // We shouldn't call Overflow() since this is a const method.
@@ -165,8 +200,8 @@ class EnumSet {
   std::unique_ptr<OverflowSetType> overflow_ = {};
 };
 
-// A set of SpvCapability, optimized for small capability values.
-using CapabilitySet = EnumSet<SpvCapability>;
+// A set of spv::Capability, optimized for small capability values.
+using CapabilitySet = EnumSet<spv::Capability>;
 
 }  // namespace spvtools
 

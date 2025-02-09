@@ -14,46 +14,64 @@
  * limitations under the License.
  */
 
-#include "details/FrameSkipper.h"
-#include "details/Engine.h"
+#include "FrameSkipper.h"
+
+#include <backend/DriverEnums.h>
+
+#include <utils/compiler.h>
+#include <utils/debug.h>
+
+#include <algorithm>
+
+#include <stddef.h>
 
 namespace filament {
-namespace details {
 
-FrameSkipper::FrameSkipper(FEngine& engine, size_t latency) noexcept
-        : mEngine(engine), mLast((uint32_t)std::max(latency, size_t(1)) - 1) {
-    assert(latency <= MAX_FRAME_LATENCY);
+using namespace utils;
+using namespace backend;
+
+FrameSkipper::FrameSkipper(size_t const latency) noexcept
+        : mLast(std::clamp(latency, size_t(1), MAX_FRAME_LATENCY) - 1) {
 }
 
-FrameSkipper::~FrameSkipper() noexcept {
-    for (FFence* fence : mDelayedFences) {
+FrameSkipper::~FrameSkipper() noexcept = default;
+
+void FrameSkipper::terminate(DriverApi& driver) noexcept {
+    for (auto fence : mDelayedFences) {
         if (fence) {
-            mEngine.destroy(fence);
+            driver.destroyFence(fence);
         }
     }
 }
 
-bool FrameSkipper::beginFrame() noexcept {
+bool FrameSkipper::beginFrame(DriverApi& driver) noexcept {
     auto& fences = mDelayedFences;
-    FFence* const fence = fences.front();
-    if (fence) {
-        auto status = fence->wait(Fence::Mode::DONT_FLUSH, 0);
-        if (status == Fence::FenceStatus::TIMEOUT_EXPIRED) {
-            // fence not ready, skip frame
+    if (fences.front()) {
+        // Do we have a latency old fence?
+        auto status = driver.getFenceStatus(fences.front());
+        if (UTILS_UNLIKELY(status == FenceStatus::TIMEOUT_EXPIRED)) {
+            // The fence hasn't signaled yet, skip this frame
             return false;
         }
-        mEngine.destroy(fence);
+        assert_invariant(status == FenceStatus::CONDITION_SATISFIED);
     }
-    // shift all fences down by 1
-    std::move(fences.begin() + 1, fences.end(), fences.begin());
-    fences.back() = nullptr;
     return true;
 }
 
-void FrameSkipper::endFrame() noexcept {
-    mDelayedFences[mLast] = mEngine.createFence(Fence::Type::HARD);
+void FrameSkipper::endFrame(DriverApi& driver) noexcept {
+    auto& fences = mDelayedFences;
+    size_t const last = mLast;
+
+    // pop the oldest fence and advance the other ones
+    if (fences.front()) {
+        driver.destroyFence(fences.front());
+    }
+    std::move(fences.begin() + 1, fences.end(), fences.begin());
+
+    // add a new fence to the end
+    assert_invariant(!fences[last]);
+
+    fences[last] = driver.createFence();
 }
 
-
-} // namespace details
 } // namespace filament

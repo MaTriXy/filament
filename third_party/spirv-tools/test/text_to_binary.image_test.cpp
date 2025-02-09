@@ -45,12 +45,12 @@ TEST_P(ImageOperandsTest, Sample) {
   const std::string input =
       "%2 = OpImageFetch %1 %3 %4" + GetParam().image_operands + "\n";
   EXPECT_THAT(CompiledInstructions(input),
-              Eq(MakeInstruction(SpvOpImageFetch, {1, 2, 3, 4},
+              Eq(MakeInstruction(spv::Op::OpImageFetch, {1, 2, 3, 4},
                                  GetParam().expected_mask_and_operands)));
 }
 
-#define MASK(NAME) SpvImageOperands##NAME##Mask
-INSTANTIATE_TEST_CASE_P(
+#define MASK(NAME) uint32_t(spv::ImageOperandsMask::NAME)
+INSTANTIATE_TEST_SUITE_P(
     TextToBinaryImageOperandsAny, ImageOperandsTest,
     ::testing::ValuesIn(std::vector<ImageOperandsCase>{
         // TODO(dneto): Rev32 adds many more values, and rearranges their
@@ -66,10 +66,10 @@ INSTANTIATE_TEST_CASE_P(
         {" ConstOffsets %5", {MASK(ConstOffsets), 5}},
         {" Sample %5", {MASK(Sample), 5}},
         {" MinLod %5", {MASK(MinLod), 5}},
-    }), );
+    }));
 #undef MASK
-#define MASK(NAME) static_cast<uint32_t>(SpvImageOperands##NAME##Mask)
-INSTANTIATE_TEST_CASE_P(
+#define MASK(NAME) static_cast<uint32_t>(spv::ImageOperandsMask::NAME)
+INSTANTIATE_TEST_SUITE_P(
     TextToBinaryImageOperandsCombination, ImageOperandsTest,
     ::testing::ValuesIn(std::vector<ImageOperandsCase>{
         // TODO(dneto): Rev32 adds many more values, and rearranges their
@@ -95,7 +95,7 @@ INSTANTIATE_TEST_CASE_P(
          " %5 %6 %7 %8 %9 %10 %11 %12",
          {MASK(Bias) | MASK(Lod) | MASK(Grad) | MASK(ConstOffset) |
               MASK(Offset) | MASK(ConstOffsets) | MASK(Sample),
-          5, 6, 7, 8, 9, 10, 11, 12}}}), );
+          5, 6, 7, 8, 9, 10, 11, 12}}}));
 #undef MASK
 
 TEST_F(ImageOperandsTest, WrongOperand) {
@@ -110,7 +110,7 @@ using OpImageTest = TextToBinaryTest;
 TEST_F(OpImageTest, Valid) {
   const std::string input = "%2 = OpImage %1 %3\n";
   EXPECT_THAT(CompiledInstructions(input),
-              Eq(MakeInstruction(SpvOpImage, {1, 2, 3})));
+              Eq(MakeInstruction(spv::Op::OpImage, {1, 2, 3})));
 
   // Test the disassembler.
   EXPECT_THAT(EncodeAndDecodeSuccessfully(input), input);
@@ -123,7 +123,8 @@ TEST_F(OpImageTest, InvalidTypeOperand) {
 
 TEST_F(OpImageTest, MissingSampledImageOperand) {
   EXPECT_THAT(CompileFailure("%2 = OpImage %1"),
-              Eq("Expected operand, found end of stream."));
+              Eq("Expected operand for OpImage instruction, but found the end "
+                 "of the stream."));
 }
 
 TEST_F(OpImageTest, InvalidSampledImageOperand) {
@@ -152,7 +153,7 @@ using OpImageSparseReadTest = TextToBinaryTest;
 TEST_F(OpImageSparseReadTest, OnlyRequiredOperands) {
   const std::string input = "%2 = OpImageSparseRead %1 %3 %4\n";
   EXPECT_THAT(CompiledInstructions(input),
-              Eq(MakeInstruction(SpvOpImageSparseRead, {1, 2, 3, 4})));
+              Eq(MakeInstruction(spv::Op::OpImageSparseRead, {1, 2, 3, 4})));
   // Test the disassembler.
   EXPECT_THAT(EncodeAndDecodeSuccessfully(input), input);
 }
@@ -166,31 +167,31 @@ TEST_P(ImageSparseReadImageOperandsTest, Sample) {
   const std::string input =
       "%2 = OpImageSparseRead %1 %3 %4" + GetParam().image_operands + "\n";
   EXPECT_THAT(CompiledInstructions(input),
-              Eq(MakeInstruction(SpvOpImageSparseRead, {1, 2, 3, 4},
+              Eq(MakeInstruction(spv::Op::OpImageSparseRead, {1, 2, 3, 4},
                                  GetParam().expected_mask_and_operands)));
   // Test the disassembler.
   EXPECT_THAT(EncodeAndDecodeSuccessfully(input), input);
 }
 
-#define MASK(NAME) SpvImageOperands##NAME##Mask
-INSTANTIATE_TEST_CASE_P(ImageSparseReadImageOperandsAny,
-                        ImageSparseReadImageOperandsTest,
-                        ::testing::ValuesIn(std::vector<ImageOperandsCase>{
-                            // Image operands are optional.
-                            {"", {}},
-                            // Test each kind, alone.
-                            {" Bias %5", {MASK(Bias), 5}},
-                            {" Lod %5", {MASK(Lod), 5}},
-                            {" Grad %5 %6", {MASK(Grad), 5, 6}},
-                            {" ConstOffset %5", {MASK(ConstOffset), 5}},
-                            {" Offset %5", {MASK(Offset), 5}},
-                            {" ConstOffsets %5", {MASK(ConstOffsets), 5}},
-                            {" Sample %5", {MASK(Sample), 5}},
-                            {" MinLod %5", {MASK(MinLod), 5}},
-                        }), );
+#define MASK(NAME) uint32_t(spv::ImageOperandsMask::NAME)
+INSTANTIATE_TEST_SUITE_P(ImageSparseReadImageOperandsAny,
+                         ImageSparseReadImageOperandsTest,
+                         ::testing::ValuesIn(std::vector<ImageOperandsCase>{
+                             // Image operands are optional.
+                             {"", {}},
+                             // Test each kind, alone.
+                             {" Bias %5", {MASK(Bias), 5}},
+                             {" Lod %5", {MASK(Lod), 5}},
+                             {" Grad %5 %6", {MASK(Grad), 5, 6}},
+                             {" ConstOffset %5", {MASK(ConstOffset), 5}},
+                             {" Offset %5", {MASK(Offset), 5}},
+                             {" ConstOffsets %5", {MASK(ConstOffsets), 5}},
+                             {" Sample %5", {MASK(Sample), 5}},
+                             {" MinLod %5", {MASK(MinLod), 5}},
+                         }));
 #undef MASK
-#define MASK(NAME) static_cast<uint32_t>(SpvImageOperands##NAME##Mask)
-INSTANTIATE_TEST_CASE_P(
+#define MASK(NAME) static_cast<uint32_t>(spv::ImageOperandsMask::NAME)
+INSTANTIATE_TEST_SUITE_P(
     ImageSparseReadImageOperandsCombination, ImageSparseReadImageOperandsTest,
     ::testing::ValuesIn(std::vector<ImageOperandsCase>{
         // values.
@@ -212,7 +213,7 @@ INSTANTIATE_TEST_CASE_P(
           5, 6, 7, 8, 9, 10, 11, 12}},
         // Don't try the masks reversed, since this is a round trip test,
         // and the disassembler will sort them.
-    }), );
+    }));
 #undef MASK
 
 TEST_F(OpImageSparseReadTest, InvalidTypeOperand) {
@@ -222,7 +223,8 @@ TEST_F(OpImageSparseReadTest, InvalidTypeOperand) {
 
 TEST_F(OpImageSparseReadTest, MissingImageOperand) {
   EXPECT_THAT(CompileFailure("%2 = OpImageSparseRead %1"),
-              Eq("Expected operand, found end of stream."));
+              Eq("Expected operand for OpImageSparseRead instruction, but "
+                 "found the end of the stream."));
 }
 
 TEST_F(OpImageSparseReadTest, InvalidImageOperand) {
@@ -232,7 +234,8 @@ TEST_F(OpImageSparseReadTest, InvalidImageOperand) {
 
 TEST_F(OpImageSparseReadTest, MissingCoordinateOperand) {
   EXPECT_THAT(CompileFailure("%2 = OpImageSparseRead %1 %2"),
-              Eq("Expected operand, found end of stream."));
+              Eq("Expected operand for OpImageSparseRead instruction, but "
+                 "found the end of the stream."));
 }
 
 TEST_F(OpImageSparseReadTest, InvalidCoordinateOperand) {

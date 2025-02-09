@@ -22,9 +22,11 @@
 
 #include <image/LinearImage.h>
 
+#include <utils/compiler.h>
+
 namespace image {
 
-class ImageEncoder {
+class UTILS_PUBLIC ImageEncoder {
 public:
     enum class Format {
         PNG,        // 8-bit sRGB, 1 or 3 channels
@@ -40,6 +42,7 @@ public:
                     // Default: 16 bit
         DDS_LINEAR, // 8-bit, 16-bit or 32-bit linear RGB, 1, 2 or 3 channels
                     // Default: 16 bit
+        RGB_10_11_11_REV,   // RGBA PNG file, but containing 11_11_10 data
     };
 
     // Consumes linear floating-point data, returns false if unable to encode.

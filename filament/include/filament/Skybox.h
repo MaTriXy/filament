@@ -23,13 +23,13 @@
 
 #include <utils/compiler.h>
 
+#include <math/mathfwd.h>
+
 #include <stdint.h>
 
 namespace filament {
 
-namespace details {
 class FSkybox;
-} // namespace details
 
 class Engine;
 class Texture;
@@ -92,7 +92,7 @@ public:
          *
          * @see Texture
          */
-        Builder& environment(Texture* cubemap) noexcept;
+        Builder& environment(Texture* UTILS_NONNULL cubemap) noexcept;
 
         /**
          * Indicates whether the sun should be rendered. The sun can only be
@@ -106,21 +106,79 @@ public:
         Builder& showSun(bool show) noexcept;
 
         /**
+         * Skybox intensity when no IndirectLight is set on the Scene.
+         *
+         * This call is ignored when an IndirectLight is set on the Scene, and the intensity
+         * of the IndirectLight is used instead.
+         *
+         * @param envIntensity  Scale factor applied to the skybox texel values such that
+         *                      the result is in lux, or lumen/m^2 (default = 30000)
+         *
+         * @return This Builder, for chaining calls.
+         *
+         * @see IndirectLight::Builder::intensity
+         */
+        Builder& intensity(float envIntensity) noexcept;
+
+        /**
+         * Sets the skybox to a constant color. Default is opaque black.
+         *
+         * Ignored if an environment is set.
+         *
+         * @param color the constant color
+         *
+         * @return This Builder, for chaining calls.
+         */
+        Builder& color(math::float4 color) noexcept;
+
+        /**
          * Creates the Skybox object and returns a pointer to it.
          *
          * @param engine Reference to the filament::Engine to associate this Skybox with.
          *
-         * @return pointer to the newly created object, or nullptr if the light couldn't be created.
+         * @return pointer to the newly created object.
          */
-        Skybox* build(Engine& engine);
+        Skybox* UTILS_NONNULL build(Engine& engine);
 
     private:
-        friend class details::FSkybox;
+        friend class FSkybox;
     };
 
+    void setColor(math::float4 color) noexcept;
+
+    /**
+     * Sets bits in a visibility mask. By default, this is 0x1.
+     *
+     * This provides a simple mechanism for hiding or showing this Skybox in a Scene.
+     *
+     * @see View::setVisibleLayers().
+     *
+     * For example, to set bit 1 and reset bits 0 and 2 while leaving all other bits unaffected,
+     * call: `setLayerMask(7, 2)`.
+     *
+     * @param select the set of bits to affect
+     * @param values the replacement values for the affected bits
+     */
     void setLayerMask(uint8_t select, uint8_t values) noexcept;
 
+    /**
+     * @return the visibility mask bits
+     */
     uint8_t getLayerMask() const noexcept;
+
+    /**
+     * Returns the skybox's intensity in lux, or lumen/m^2.
+     */
+    float getIntensity() const noexcept;
+
+    /**
+     * @return the associated texture
+     */
+    Texture const* UTILS_NONNULL getTexture() const noexcept;
+
+protected:
+    // prevent heap allocation
+    ~Skybox() = default;
 };
 
 } // namespace filament

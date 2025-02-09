@@ -14,15 +14,16 @@
  * limitations under the License.
  */
 
-#ifndef UTILS_CALLSTACK_H_
-#define UTILS_CALLSTACK_H_
+#ifndef UTILS_CALLSTACK_H
+#define UTILS_CALLSTACK_H
 
 #include <stddef.h>
 #include <stdint.h>
 #include <typeinfo>
 
 #include <utils/CString.h>
-#include <utils/Log.h>
+#include <utils/compiler.h>
+#include <utils/ostream.h>
 
 namespace utils {
 
@@ -60,17 +61,17 @@ public:
 
     /**
      * Return the program-counter of each stack frame captured
-     * @param index of the frame between 0 and getFramceCount()-1
+     * @param index of the frame between 0 and getFrameCount()-1
      * @return the program-counter of the stack-frame recorded at index \p index
      * @throw std::out_of_range if the index is out of range
      */
     intptr_t operator [](size_t index) const;
 
    /** Demangles a C++ type name */
-    static utils::CString demangleTypeName(const char* mangled);
+    static CString demangleTypeName(const char* mangled);
 
-    template <typename T>
-    static utils::CString typeName() {
+    template<typename T>
+    static CString typeName() {
 #if UTILS_HAS_RTTI
         return demangleTypeName(typeid(T).name());
 #else
@@ -83,7 +84,7 @@ public:
      * This will print, when possible, the demangled names of functions corresponding to the
      * program-counter recorded.
      */
-    friend utils::io::ostream& operator <<(utils::io::ostream& stream, const CallStack& callstack);
+    friend io::ostream& operator <<(io::ostream& stream, const CallStack& callstack);
 
     bool operator <(const CallStack& rhs) const;
 
@@ -110,6 +111,8 @@ public:
 private:
     void update_gcc(size_t ignore) noexcept;
 
+    static CString demangle(const char* mangled);
+
     static constexpr size_t NUM_FRAMES = 20;
 
     struct StackFrameInfo {
@@ -122,4 +125,4 @@ private:
 
 } // namespace utils
 
-#endif // UTILS_CALLSTACK_H_
+#endif // UTILS_CALLSTACK_H

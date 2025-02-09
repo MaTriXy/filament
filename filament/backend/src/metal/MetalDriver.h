@@ -17,53 +17,87 @@
 #ifndef TNT_FILAMENT_DRIVER_METALDRIVER_H
 #define TNT_FILAMENT_DRIVER_METALDRIVER_H
 
+#include <backend/DriverEnums.h>
 #include "private/backend/Driver.h"
 #include "DriverBase.h"
 
+#include "private/backend/HandleAllocator.h"
+
+#include <backend/SamplerDescriptor.h>
+
 #include <utils/compiler.h>
 #include <utils/Log.h>
+#include <utils/debug.h>
 
-#include <tsl/robin_map.h>
-
+#include <functional>
 #include <mutex>
+#include <vector>
+#include <deque>
 
 namespace filament {
 namespace backend {
 
-class MetalPlatform;
+class PlatformMetal;
 
-namespace metal {
-
-class MetalUniformBuffer;
+class MetalBuffer;
+class MetalProgram;
+class MetalTexture;
+struct MetalUniformBuffer;
 struct MetalContext;
-struct MetalProgram;
-struct UniformBufferState;
+struct BufferState;
+
+#ifndef FILAMENT_METAL_HANDLE_ARENA_SIZE_IN_MB
+#define FILAMENT_METAL_HANDLE_ARENA_SIZE_IN_MB 8
+#endif
 
 class MetalDriver final : public DriverBase {
-    explicit MetalDriver(backend::MetalPlatform* platform) noexcept;
+    explicit MetalDriver(PlatformMetal* platform, const Platform::DriverConfig& driverConfig) noexcept;
     ~MetalDriver() noexcept override;
+    Dispatcher getDispatcher() const noexcept final;
 
 public:
-    static Driver* create(backend::MetalPlatform* platform);
+    static Driver* create(PlatformMetal* platform, const Platform::DriverConfig& driverConfig);
 
 private:
 
-    backend::MetalPlatform& mPlatform;
+    friend class MetalSwapChain;
+    friend struct MetalDescriptorSet;
 
+    PlatformMetal& mPlatform;
     MetalContext* mContext;
 
-#ifndef NDEBUG
-    void debugCommand(const char* methodName) override;
-#endif
-
     ShaderModel getShaderModel() const noexcept final;
+    ShaderLanguage getShaderLanguage() const noexcept final;
+
+    // Overrides the default implementation by wrapping the call to fn in an @autoreleasepool block.
+    void execute(std::function<void(void)> const& fn) noexcept final;
+
+    /*
+     * Tasks run regularly on the driver thread.
+     * Not thread-safe; tasks are run from the driver thead and must be enqueued from the driver
+     * thread.
+     */
+    void runAtNextTick(const std::function<void()>& fn) noexcept;
+    void executeTickOps() noexcept;
+    std::vector<std::function<void()>> mTickOps;
+
+    // Tasks regularly executed on the driver thread after a command buffer has completed
+    struct DeferredTask {
+        DeferredTask(uint64_t commandBufferId, utils::Invocable<void()>&& fn) noexcept
+            : commandBufferId(commandBufferId), fn(std::move(fn)) {}
+        uint64_t commandBufferId;     // after this command buffer completes
+        utils::Invocable<void()> fn;  // execute this task
+    };
+    void executeAfterCurrentCommandBufferCompletes(utils::Invocable<void()>&& fn) noexcept;
+    void executeDeferredOps() noexcept;
+    std::deque<DeferredTask> mDeferredTasks;
 
     /*
      * Driver interface
      */
 
     template<typename T>
-    friend class backend::ConcreteDispatcher;
+    friend class ConcreteDispatcher;
 
 #define DECL_DRIVER_API(methodName, paramsDecl, params) \
     UTILS_ALWAYS_INLINE inline void methodName(paramsDecl);
@@ -81,75 +115,48 @@ private:
      * Memory management
      */
 
-    // Copied from VulkanDriver.h
+    HandleAllocatorMTL mHandleAllocator;
 
-    // For now we're not bothering to store handles in pools, just simple on-demand allocation.
-    // We have a little map from integer handles to "blobs" which get replaced with the Hw objects.
-    using Blob = void*;
-    using HandleMap = tsl::robin_map<HandleBase::HandleId, Blob>;
-    std::mutex mHandleMapMutex;
-    HandleMap mHandleMap;
-    HandleBase::HandleId mNextId = 1;
-
-    template<typename Dp, typename B>
-    Handle<B> alloc_handle() {
-        std::lock_guard<std::mutex> lock(mHandleMapMutex);
-        mHandleMap[mNextId] = malloc(sizeof(Dp));
-        return Handle<B>(mNextId++);
+    template<typename D>
+    Handle<D> alloc_handle() {
+        return mHandleAllocator.allocate<D>();
     }
 
-    template<typename Dp, typename B>
-    Dp* handle_cast(HandleMap& handleMap, Handle<B>& handle) noexcept {
-        std::lock_guard<std::mutex> lock(mHandleMapMutex);
-        assert(handle);
-        auto iter = handleMap.find(handle.getId());
-        assert(iter != handleMap.end());
-        Blob& blob = iter.value();
-        return reinterpret_cast<Dp*>(blob);
+    template<typename D, typename B, typename ... ARGS>
+    Handle<B> alloc_and_construct_handle(ARGS&& ... args) {
+        return mHandleAllocator.allocateAndConstruct<D>(std::forward<ARGS>(args)...);
     }
 
-    template<typename Dp, typename B>
-    const Dp* handle_const_cast(HandleMap& handleMap, const Handle<B>& handle) noexcept {
-        std::lock_guard<std::mutex> lock(mHandleMapMutex);
-        assert(handle);
-        auto iter = handleMap.find(handle.getId());
-        assert(iter != handleMap.end());
-        Blob& blob = iter.value();
-        return reinterpret_cast<const Dp*>(blob);
+    template<typename D, typename B>
+    D* handle_cast(Handle<B> handle) noexcept {
+        return mHandleAllocator.handle_cast<D*>(handle);
     }
 
-    template<typename Dp, typename B, typename ... ARGS>
-    Dp* construct_handle(HandleMap& handleMap, Handle<B>& handle, ARGS&& ... args) noexcept {
-        std::lock_guard<std::mutex> lock(mHandleMapMutex);
-        auto iter = handleMap.find(handle.getId());
-        assert(iter != handleMap.end());
-        Blob& blob = iter.value();
-        Dp* addr = reinterpret_cast<Dp*>(blob);
-        new(addr) Dp(std::forward<ARGS>(args)...);
-        return addr;
+    template<typename D, typename B>
+    const D* handle_const_cast(const Handle<B>& handle) noexcept {
+        return mHandleAllocator.handle_cast<D*>(handle);
     }
 
-    template<typename Dp, typename B>
-    void destruct_handle(HandleMap& handleMap, Handle<B>& handle) noexcept {
-        std::lock_guard<std::mutex> lock(mHandleMapMutex);
-        assert(handle);
-        // Call the destructor, remove the blob, don't bother reclaiming the integer id.
-        auto iter = handleMap.find(handle.getId());
-        assert(iter != handleMap.end());
-        Blob& blob = iter.value();
-        reinterpret_cast<Dp*>(blob)->~Dp();
-        free(blob);
-        handleMap.erase(handle.getId());
+    template<typename D, typename B, typename ... ARGS>
+    D* construct_handle(Handle<B>& handle, ARGS&& ... args) noexcept {
+        return mHandleAllocator.construct<D>(handle, std::forward<ARGS>(args)...);
     }
 
-    void enumerateSamplerGroups(const MetalProgram* program,
-            const std::function<void(const SamplerGroup::Sampler*, size_t)>& f);
-    void enumerateBoundUniformBuffers(const std::function<void(const UniformBufferState&,
-            MetalUniformBuffer*, uint32_t)>& f);
+    template<typename D, typename B>
+    void destruct_handle(Handle<B>& handle) noexcept {
+        auto* p = mHandleAllocator.handle_cast<D*>(handle);
+        mHandleAllocator.deallocate(handle, p);
+    }
 
+    inline void setRenderPrimitiveBuffer(Handle<HwRenderPrimitive> rph, PrimitiveType pt,
+            Handle<HwVertexBuffer> vbh, Handle<HwIndexBuffer> ibh);
+
+    void enumerateBoundBuffers(BufferObjectBinding bindingType,
+            const std::function<void(const BufferState&, MetalBuffer*, uint32_t)>& f);
+
+    backend::StereoscopicType const mStereoscopicType;
 };
 
-} // namespace metal
 } // namespace backend
 } // namespace filament
 

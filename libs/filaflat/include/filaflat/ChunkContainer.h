@@ -22,9 +22,14 @@
 
 #include <filament/MaterialChunkType.h>
 
+#include <utils/FixedCapacityVector.h>
+
 #include <tsl/robin_map.h>
 
 namespace filaflat {
+
+using ShaderContent = utils::FixedCapacityVector<uint8_t>;
+using BlobDictionary = utils::FixedCapacityVector<ShaderContent>;
 
 class Unflattener;
 
@@ -35,7 +40,7 @@ public:
 
     ChunkContainer(void const* data, size_t size) : mData(data), mSize(size) {}
 
-    ~ChunkContainer() = default;
+    ~ChunkContainer() noexcept;
 
     // Must be called before trying to access any of the chunk. Fails and return false ONLY if
     // an incomplete chunk is found or if a chunk with bogus size is found.
@@ -61,17 +66,21 @@ public:
         return { it->first, it->second };
     }
 
-    const uint8_t* getChunkStart(Type type) const noexcept {
-        return mChunks.at(type).start;
+    std::pair<uint8_t const*, uint8_t const*> getChunkRange(Type type) const noexcept {
+        ChunkDesc chunkDesc;
+        bool const success = hasChunk(type, &chunkDesc);
+        if (success) {
+            return { chunkDesc.start, chunkDesc.start + chunkDesc.size };
+        }
+        return { nullptr, nullptr };
     }
 
-    const uint8_t* getChunkEnd(Type type) const noexcept {
-        return mChunks.at(type).start + mChunks.at(type).size;
-    }
+    bool hasChunk(Type type) const noexcept;
+    bool hasChunk(Type type, ChunkDesc* pChunkDesc) const noexcept;
 
-    bool hasChunk(Type type) const noexcept {
-        return mChunks.find(type) != mChunks.end();
-    }
+    void const* getData() const { return mData; }
+
+    size_t getSize() const { return mSize; }
 
 private:
     bool parseChunk(Unflattener& unflattener);

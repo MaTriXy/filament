@@ -21,7 +21,7 @@
 
 #include <filament/Box.h>
 #include <filament/Frustum.h>
-#include "details/Culler.h"
+#include "Culler.h"
 
 #include <utils/Allocator.h>
 
@@ -29,12 +29,11 @@
 #include <random>
 
 using namespace filament;
-using namespace filament::details;
 using namespace filament::math;
 using namespace utils;
 
 
-class FilamentFixture : public benchmark::Fixture {
+class FilamentCullingFixture : public benchmark::Fixture {
 protected:
     static constexpr size_t BATCH_SIZE = 512;
 
@@ -46,7 +45,7 @@ protected:
 
 
 public:
-    FilamentFixture() {
+    FilamentCullingFixture() {
 
         std::default_random_engine gen; // NOLINT
         std::uniform_real_distribution<float> rand(-100.0f, 100.0f);
@@ -76,12 +75,12 @@ public:
         visibles = (Culler::result_type*)utils::aligned_alloc(batch * sizeof(*visibles), 32);
     }
 
-    ~FilamentFixture() override {
+    ~FilamentCullingFixture() override {
         utils::aligned_free(visibles);
     }
 };
 
-BENCHMARK_F(FilamentFixture, boxCulling)(benchmark::State& state) {
+BENCHMARK_F(FilamentCullingFixture, boxCulling)(benchmark::State& state) {
     {
         PerformanceCounters pc(state);
         for (auto _ : state) {
@@ -93,7 +92,7 @@ BENCHMARK_F(FilamentFixture, boxCulling)(benchmark::State& state) {
     }
 }
 
-BENCHMARK_F(FilamentFixture, sphereCulling)(benchmark::State& state) {
+BENCHMARK_F(FilamentCullingFixture, sphereCulling)(benchmark::State& state) {
     {
         PerformanceCounters pc(state);
         for (auto _ : state) {

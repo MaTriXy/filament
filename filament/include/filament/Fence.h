@@ -25,14 +25,12 @@
 
 #include <utils/compiler.h>
 
+#include <stdint.h>
+
 namespace filament {
 
 /**
- * Fence is used to synchronize rendering operations together, with the CPU or with compute.
- *
- * \note
- * Currently Fence only provide client-side synchronization.
- *
+ * Fence is used to synchronize the application main thread with filament's rendering thread.
  */
 class UTILS_PUBLIC Fence : public FilamentAPI {
 public:
@@ -41,25 +39,6 @@ public:
 
     //! Error codes for Fence::wait()
     using FenceStatus = backend::FenceStatus;
-
-    //! Type of the Fence being created
-    enum class Type : uint8_t {
-        /**
-         * Synchronization with the command stream.
-         *
-         * Calling wait() on a SOFT fence will only wait for all commands prior to the Fence to
-         * be issued, but not for the commands themselves to complete on the GPU.
-         */
-        SOFT,
-
-        /**
-         * Synchronization with the GPU
-         *
-         * Calling wait() on a HARD fence will wait for all commands prior to the Fence to
-         * have completed on the GPU.
-         */
-        HARD
-    };
 
     /** Mode controls the behavior of the command stream when calling wait()
      *
@@ -97,7 +76,11 @@ public:
      * @return  FenceStatus::CONDITION_SATISFIED on success,
      *          FenceStatus::ERROR otherwise.
      */
-    static FenceStatus waitAndDestroy(Fence* fence, Mode mode = Mode::FLUSH);
+    static FenceStatus waitAndDestroy(Fence* UTILS_NONNULL fence, Mode mode = Mode::FLUSH);
+
+protected:
+    // prevent heap allocation
+    ~Fence() = default;
 };
 
 } // namespace filament

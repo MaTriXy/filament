@@ -16,12 +16,15 @@
 
 #include <utils/Allocator.h>
 
-#include <stdlib.h>
-#include <assert.h>
+#include <utils/compiler.h>
+#include <utils/debug.h>
+#include <utils/Log.h>
 
 #include <algorithm>
 
-#include <utils/Log.h>
+#include <stdlib.h>
+#include <assert.h>
+#include <string.h>
 
 namespace utils {
 
@@ -30,7 +33,7 @@ namespace utils {
 // ------------------------------------------------------------------------------------------------
 
 LinearAllocator::LinearAllocator(void* begin, void* end) noexcept
-    : mBegin(begin), mEnd(end), mCurrent(begin) {
+    : mBegin(begin), mSize(uintptr_t(end) - uintptr_t(begin)) {
 }
 
 LinearAllocator::LinearAllocator(LinearAllocator&& rhs) noexcept {
@@ -47,8 +50,31 @@ LinearAllocator& LinearAllocator::operator=(LinearAllocator&& rhs) noexcept {
 
 void LinearAllocator::swap(LinearAllocator& rhs) noexcept {
     std::swap(mBegin, rhs.mBegin);
-    std::swap(mEnd, rhs.mEnd);
-    std::swap(mCurrent, rhs.mCurrent);
+    std::swap(mSize, rhs.mSize);
+    std::swap(mCur, rhs.mCur);
+}
+
+
+// ------------------------------------------------------------------------------------------------
+// LinearAllocatorWithFallback
+// ------------------------------------------------------------------------------------------------
+
+void* LinearAllocatorWithFallback::alloc(size_t size, size_t alignment) {
+    void* p = LinearAllocator::alloc(size, alignment);
+    if (UTILS_UNLIKELY(!p)) {
+        p = HeapAllocator::alloc(size, alignment);
+        mHeapAllocations.push_back(p);
+    }
+    assert_invariant(p);
+    return p;
+}
+
+void LinearAllocatorWithFallback::reset() noexcept {
+    LinearAllocator::reset();
+    for (auto* p : mHeapAllocations) {
+        HeapAllocator::free(p);
+    }
+    mHeapAllocations.clear();
 }
 
 // ------------------------------------------------------------------------------------------------
@@ -60,8 +86,8 @@ FreeList::Node* FreeList::init(void* begin, void* end,
 {
     void* const p = pointermath::align(begin, alignment, extra);
     void* const n = pointermath::align(pointermath::add(p, elementSize), alignment, extra);
-    assert(p >= begin && p < end);
-    assert(n >= begin && n < end && n > p);
+    assert_invariant(p >= begin && p < end);
+    assert_invariant(n >= begin && n < end && n > p);
 
     const size_t d = uintptr_t(n) - uintptr_t(p);
     const size_t num = (uintptr_t(end) - uintptr_t(p)) / d;
@@ -76,8 +102,8 @@ FreeList::Node* FreeList::init(void* begin, void* end,
         cur->next = next;
         cur = next;
     }
-    assert(cur < end);
-    assert(pointermath::add(cur, d) <= end);
+    assert_invariant(cur < end);
+    assert_invariant(pointermath::add(cur, d) <= end);
     cur->next = nullptr;
     return head;
 }
@@ -94,15 +120,15 @@ FreeList::FreeList(void* begin, void* end,
 AtomicFreeList::AtomicFreeList(void* begin, void* end,
         size_t elementSize, size_t alignment, size_t extra) noexcept
 {
-#ifdef ANDROID
+#ifdef __ANDROID__
     // on some platform (e.g. web) this returns false. we really only care about mobile though.
-    assert(mHead.is_lock_free());
+    assert_invariant(mHead.is_lock_free());
 #endif
 
     void* const p = pointermath::align(begin, alignment, extra);
     void* const n = pointermath::align(pointermath::add(p, elementSize), alignment, extra);
-    assert(p >= begin && p < end);
-    assert(n >= begin && n < end && n > p);
+    assert_invariant(p >= begin && p < end);
+    assert_invariant(n >= begin && n < end && n > p);
 
     const size_t d = uintptr_t(n) - uintptr_t(p);
     const size_t num = (uintptr_t(end) - uintptr_t(p)) / d;
@@ -118,20 +144,83 @@ AtomicFreeList::AtomicFreeList(void* begin, void* end,
         cur->next = next;
         cur = next;
     }
-    assert(cur < end);
-    assert(pointermath::add(cur, d) <= end);
+    assert_invariant(cur < end);
+    assert_invariant(pointermath::add(cur, d) <= end);
     cur->next = nullptr;
 
     mHead.store({ int32_t(head - mStorage), 0 });
 }
 
+// ------------------------------------------------------------------------------------------------
+
+void TrackingPolicy::HighWatermark::onAlloc(
+        void* p, size_t size, size_t alignment, size_t extra) noexcept {
+    mCurrent += uint32_t(size);
+    mHighWaterMark = mCurrent > mHighWaterMark ? mCurrent : mHighWaterMark;
+}
+
 TrackingPolicy::HighWatermark::~HighWatermark() noexcept {
-    size_t wm = mHighWaterMark;
-    size_t wmpct = wm / (mSize / 100);
-    if (wmpct > 80) {
-        slog.d << mName << " arena: High watermark "
-            << wm / 1024 << " KiB (" << wmpct << "%)" << io::endl;
+    const size_t wm = mHighWaterMark;
+    if (mSize > 0) {
+        size_t wmpct = wm / (mSize / 100);
+        if (wmpct > 80) {
+            slog.d << mName << " arena: High watermark "
+                   << wm / 1024 << " KiB (" << wmpct << "%)" << io::endl;
+        }
+    } else {
+        slog.d << mName << " arena: High watermark " << wm / 1024 << " KiB" << io::endl;
     }
+}
+
+void TrackingPolicy::HighWatermark::onFree(void* p, size_t size) noexcept {
+    // FIXME: this code is incorrect with LinearAllocators because free() is a no-op for them
+    assert_invariant(mCurrent >= size);
+    mCurrent -= uint32_t(size);
+}
+void TrackingPolicy::HighWatermark::onReset() noexcept {
+    // we should never be here if mBase is nullptr because compilation would have failed when
+    // Arena::onReset() tries to call the underlying allocator's onReset()
+    assert_invariant(mBase);
+    mCurrent = 0;
+}
+
+void TrackingPolicy::HighWatermark::onRewind(void const* addr) noexcept {
+    // we should never be here if mBase is nullptr because compilation would have failed when
+    // Arena::onRewind() tries to call the underlying allocator's onReset()
+    assert_invariant(mBase);
+    // for LinearAllocatorWithFallback we could get pointers outside the range
+    if (addr >= mBase && addr < pointermath::add(mBase, mSize)) {
+        mCurrent = uint32_t(uintptr_t(addr) - uintptr_t(mBase));
+    }
+}
+
+// ------------------------------------------------------------------------------------------------
+
+void TrackingPolicy::Debug::onAlloc(void* p, size_t size, size_t alignment, size_t extra) noexcept {
+    if (p) {
+        memset(p, 0xeb, size);
+    }
+}
+
+void TrackingPolicy::Debug::onFree(void* p, size_t size) noexcept {
+    if (p) {
+        memset(p, 0xef, size);
+    }
+}
+
+void TrackingPolicy::Debug::onReset() noexcept {
+    // we should never be here if mBase is nullptr because compilation would have failed when
+    // Arena::onReset() tries to call the underlying allocator's onReset()
+    assert_invariant(mBase);
+    memset(mBase, 0xec, mSize);
+}
+
+void TrackingPolicy::Debug::onRewind(void* addr) noexcept {
+    // we should never be here if mBase is nullptr because compilation would have failed when
+    // Arena::onRewind() tries to call the underlying allocator's onReset()
+    assert(mBase);
+    assert(addr >= mBase);
+    memset(addr, 0x55, uintptr_t(mBase) + mSize - uintptr_t(addr));
 }
 
 } // namespace utils

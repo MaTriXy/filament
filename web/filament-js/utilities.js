@@ -30,13 +30,18 @@
 Filament.Buffer = function(typedarray) {
     console.assert(typedarray.buffer instanceof ArrayBuffer);
     console.assert(typedarray.byteLength > 0);
-    if (Filament.HEAPU32.buffer == typedarray.buffer) {
-        typedarray = new Uint8Array(typedarray);
-    }
-    const ta = typedarray;
-    const bd = new Filament.driver$BufferDescriptor(ta);
+
+    // The only reason we need to create a copy here is that emscripten might "grow" its entire heap
+    // (i.e. destroy and recreate) during the allocation of the BufferDescriptor, which would cause
+    // detachment if the source array happens to be view into the old emscripten heap.
+    const ta = typedarray.slice();
+
+    const bd = new Filament.driver$BufferDescriptor(ta.byteLength);
     const uint8array = new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength);
+
+    // getBytes() returns a view into the emscripten heap, this just does a memcpy into it.
     bd.getBytes().set(uint8array);
+
     return bd;
 };
 
@@ -49,11 +54,8 @@ Filament.Buffer = function(typedarray) {
 Filament.PixelBuffer = function(typedarray, format, datatype) {
     console.assert(typedarray.buffer instanceof ArrayBuffer);
     console.assert(typedarray.byteLength > 0);
-    if (Filament.HEAPU32.buffer == typedarray.buffer) {
-        typedarray = new Uint8Array(typedarray);
-    }
-    const ta = typedarray;
-    const bd = new Filament.driver$PixelBufferDescriptor(ta, format, datatype);
+    const ta = typedarray.slice();
+    const bd = new Filament.driver$PixelBufferDescriptor(ta.byteLength, format, datatype);
     const uint8array = new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength);
     bd.getBytes().set(uint8array);
     return bd;
@@ -69,11 +71,8 @@ Filament.CompressedPixelBuffer = function(typedarray, cdatatype, faceSize) {
     console.assert(typedarray.buffer instanceof ArrayBuffer);
     console.assert(typedarray.byteLength > 0);
     faceSize = faceSize || typedarray.byteLength;
-    if (Filament.HEAPU32.buffer == typedarray.buffer) {
-        typedarray = new Uint8Array(typedarray);
-    }
-    const ta = typedarray;
-    const bd = new Filament.driver$PixelBufferDescriptor(ta, cdatatype, faceSize, true);
+    const ta = typedarray.slice();
+    const bd = new Filament.driver$PixelBufferDescriptor(ta.byteLength, cdatatype, faceSize, true);
     const uint8array = new Uint8Array(ta.buffer, ta.byteOffset, ta.byteLength);
     bd.getBytes().set(uint8array);
     return bd;
@@ -82,7 +81,7 @@ Filament.CompressedPixelBuffer = function(typedarray, cdatatype, faceSize) {
 Filament._loadFilamesh = function(engine, buffer, definstance, matinstances) {
     matinstances = matinstances || {};
     const registry = new Filament.MeshReader$MaterialRegistry();
-    for (var key in matinstances) {
+    for (let key in matinstances) {
         registry.set(key, matinstances[key]);
     }
     if (definstance) {
@@ -90,7 +89,7 @@ Filament._loadFilamesh = function(engine, buffer, definstance, matinstances) {
     }
     const mesh = Filament.MeshReader.loadMeshFromBuffer(engine, buffer, registry);
     const keys = registry.keys();
-    for (var i = 0; i < keys.size(); i++) {
+    for (let i = 0; i < keys.size(); i++) {
         const key = keys.get(i);
         const minstance = registry.get(key);
         matinstances[key] = minstance;
@@ -132,34 +131,25 @@ Filament.IcoSphere = function(nsubdivs) {
         3,  10, 7, 10,  6,  7, 6,  11, 7, 6, 0,  11 ,  6,  1,  0 ,
         10,   1, 6, 11,  0,  9, 2,  11, 9, 5, 2,   9 , 11,  2,  7 ,
     ]);
-    if (nsubdivs) {
-        while (nsubdivs-- > 0) {
-            this.subdivide();
-        }
+
+    nsubdivs = nsubdivs || 0;
+    while (nsubdivs-- > 0) {
+        this.subdivide();
     }
+
     const nverts = this.vertices.length / 3;
 
-    // Allocate room for normals in the heap, and copy position data into it (yay for unit spheres)
-    const normals = Filament._malloc(this.vertices.length * this.vertices.BYTES_PER_ELEMENT);
-    Module.HEAPU8.set(new Uint8Array(this.vertices.buffer), normals);
+    // This is a unit sphere, so normals = positions.
+    const normals = this.vertices;
 
-    // Perform computations, then free up the normals.
+    // Perform computations.
     const sob = new Filament.SurfaceOrientation$Builder();
     sob.vertexCount(nverts);
     sob.normals(normals, 0)
     const orientation = sob.build();
 
-    Filament._free(normals);
-
-    // Allocate room for quaternions then populate it.
-    const quatsBufferSize = 8 * nverts;
-    const quatsBuffer = Filament._malloc(quatsBufferSize);
-    orientation.getQuats(quatsBuffer, nverts, Filament.VertexBuffer$AttributeType.SHORT4);
-
-    // Create a JavaScript typed array and copy the quat data into it.
-    const tangentsMemory = Module.HEAPU8.subarray(quatsBuffer, quatsBuffer + quatsBufferSize).slice().buffer;
-    Filament._free(quatsBuffer);
-    this.tangents = new Int16Array(tangentsMemory);
+    // Copy the results out of the helper.
+    this.tangents = orientation.getQuats(nverts);
 
     // Free up the surface orientation helper now that we're done with it.
     orientation.delete();
@@ -175,8 +165,8 @@ Filament.IcoSphere.prototype.subdivide = function() {
     const dsttris = new Uint16Array(ndsttris * 3);
     const dstverts = new Float32Array(ndstverts * 3);
     dstverts.set(srcverts);
-    var srcind = 0, dstind = 0, i3 = nsrcverts * 3, i4 = i3 + 3, i5 = i4 + 3;
-    for (var tri = 0; tri < nsrctris; tri++, i3 += 9, i4 += 9, i5 += 9) {
+    let srcind = 0, dstind = 0, i3 = nsrcverts * 3, i4 = i3 + 3, i5 = i4 + 3;
+    for (let tri = 0; tri < nsrctris; tri++, i3 += 9, i4 += 9, i5 += 9) {
         const i0 = srctris[srcind++] * 3;
         const i1 = srctris[srcind++] * 3;
         const i2 = srctris[srcind++] * 3;
@@ -250,98 +240,65 @@ Filament.loadMathExtensions = function() {
 // Texture helpers
 // ---------------
 
-Filament._createTextureFromKtx = function(ktxdata, engine, options) {
+Filament._createTextureFromKtx1 = function(ktxdata, engine, options) {
     options = options || {};
-    const ktx = options['ktx'] || new Filament.KtxBundle(ktxdata);
-    const rgbm = !!options['rgbm'];
+    const ktx = options['ktx'] || new Filament.Ktx1Bundle(ktxdata);
     const srgb = !!options['srgb'];
-    return Filament.KtxUtility$createTexture(engine, ktx, srgb, rgbm);
+    return Filament.ktx1reader$createTexture(engine, ktx, srgb);
 };
 
-Filament._createIblFromKtx = function(ktxdata, engine, options) {
-    options = options || {'rgbm': true};
-    const iblktx = options['ktx'] = new Filament.KtxBundle(ktxdata);
-    const ibltex = Filament._createTextureFromKtx(ktxdata, engine, options);
+Filament._createIblFromKtx1 = function(ktxdata, engine, options) {
+    options = options || {};
+    const iblktx = options['ktx'] = new Filament.Ktx1Bundle(ktxdata);
+
+    const format = iblktx.info().glInternalFormat;
+    //if (format != this.ctx.R11F_G11F_B10F && format != this.ctx.RGB16F && format != this.ctx.RGB32F) {
+    if (format != 35898 && format != 33327 && format != 34837) {
+        console.warn('IBL texture format is 0x' + format.toString(16) +
+            ' which is not an expected floating-point format. Please use cmgen to generate IBL.');
+    }
+
+    const ibltex = Filament._createTextureFromKtx1(ktxdata, engine, options);
     const shstring = iblktx.getMetadata("sh");
-    const shfloats = shstring.split(/\s/, 9 * 3).map(parseFloat);
-    return Filament.IndirectLight.Builder()
+    const ibl = Filament.IndirectLight.Builder()
         .reflections(ibltex)
-        .irradianceSh(3, shfloats)
         .build(engine);
+    ibl.shfloats = shstring.split(/\s/, 9 * 3).map(parseFloat);
+    return ibl;
 };
 
-Filament._createTextureFromPng = function(pngdata, engine, options) {
+Filament._createTextureFromImageFile = function(fileContents, engine, options) {
     const Sampler = Filament.Texture$Sampler;
     const TextureFormat = Filament.Texture$InternalFormat;
     const PixelDataFormat = Filament.PixelDataFormat;
 
     options = options || {};
     const srgb = !!options['srgb'];
-    const rgbm = !!options['rgbm'];
     const noalpha = !!options['noalpha'];
     const nomips = !!options['nomips'];
 
-    const decodedpng = Filament.decodePng(pngdata, noalpha ? 3 : 4);
+    const decodedImage = Filament.decodeImage(fileContents, noalpha ? 3 : 4);
 
-    var texformat, pbformat, pbtype;
+    let texformat, pbformat, pbtype;
     if (noalpha) {
         texformat = srgb ? TextureFormat.SRGB8 : TextureFormat.RGB8;
         pbformat = PixelDataFormat.RGB;
         pbtype = Filament.PixelDataType.UBYTE;
     } else {
         texformat = srgb ? TextureFormat.SRGB8_A8 : TextureFormat.RGBA8;
-        pbformat = rgbm ? PixelDataFormat.RGBM : PixelDataFormat.RGBA;
+        pbformat = PixelDataFormat.RGBA;
         pbtype = Filament.PixelDataType.UBYTE;
     }
 
     const tex = Filament.Texture.Builder()
-        .width(decodedpng.width)
-        .height(decodedpng.height)
+        .width(decodedImage.width)
+        .height(decodedImage.height)
         .levels(nomips ? 1 : 0xff)
         .sampler(Sampler.SAMPLER_2D)
         .format(texformat)
-        .rgbm(rgbm)
         .build(engine);
 
-    const pixelbuffer = Filament.PixelBuffer(decodedpng.data.getBytes(), pbformat, pbtype);
-    tex.setImage(engine, 0, pixelbuffer);
-    if (!nomips) {
-        tex.generateMipmaps(engine);
-    }
-    return tex;
-};
-
-Filament._createTextureFromJpeg = function(image, engine, options) {
-
-    options = options || {};
-    const srgb = !!options['srgb'];
-    const nomips = !!options['nomips'];
-
-    var context2d = document.createElement('canvas').getContext('2d');
-    context2d.canvas.width = image.width;
-    context2d.canvas.height = image.height;
-    context2d.width = image.width;
-    context2d.height = image.height;
-    context2d.globalCompositeOperation = 'copy';
-    context2d.drawImage(image, 0, 0);
-
-    var imgdata = context2d.getImageData(0, 0, image.width, image.height).data.buffer;
-    var decodedjpeg = new Uint8Array(imgdata);
-
-    const TF = Filament.Texture$InternalFormat;
-    const texformat = srgb ? TF.SRGB8_A8 : TF.RGBA8;
-    const pbformat = Filament.PixelDataFormat.RGBA;
-    const pbtype = Filament.PixelDataType.UBYTE;
-
-    const tex = Filament.Texture.Builder()
-        .width(image.width)
-        .height(image.height)
-        .levels(nomips ? 1 : 0xff)
-        .sampler(Filament.Texture$Sampler.SAMPLER_2D)
-        .format(texformat)
-        .build(engine);
-
-    const pixelbuffer = Filament.PixelBuffer(decodedjpeg, pbformat, pbtype);
+    const pixelbuffer = Filament.PixelBuffer(decodedImage.data.getBytes(), pbformat, pbtype);
     tex.setImage(engine, 0, pixelbuffer);
     if (!nomips) {
         tex.generateMipmaps(engine);
@@ -356,17 +313,20 @@ Filament.getSupportedFormats = function() {
         return Filament.supportedFormats;
     }
     const options = { majorVersion: 2, minorVersion: 0 };
-    var ctx = document.createElement('canvas').getContext('webgl2', options);
+    let ctx = document.createElement('canvas').getContext('webgl2', options);
     const result = {
         s3tc: false,
+        s3tc_srgb: false,
         astc: false,
         etc: false,
     }
-    var exts = ctx.getSupportedExtensions(), nexts = exts.length, i;
+    let exts = ctx.getSupportedExtensions(), nexts = exts.length, i;
     for (i = 0; i < nexts; i++) {
-        var ext = exts[i];
+        let ext = exts[i];
         if (ext == "WEBGL_compressed_texture_s3tc") {
             result.s3tc = true;
+        } else if (ext == "WEBGL_compressed_texture_s3tc_srgb") {
+            result.s3tc_srgb = true;
         } else if (ext == "WEBGL_compressed_texture_astc") {
             result.astc = true;
         } else if (ext == "WEBGL_compressed_texture_etc") {
@@ -384,8 +344,8 @@ Filament.getSupportedFormats = function() {
 /// ::retval:: empty string if there is no intersection of supported and desired formats.
 Filament.getSupportedFormatSuffix = function(desiredFormats) {
     desiredFormats = desiredFormats.split(' ');
-    var exts = Filament.getSupportedFormats();
-    for (var key in exts) {
+    let exts = Filament.getSupportedFormats();
+    for (let key in exts) {
         if (exts[key] && desiredFormats.includes(key)) {
             return '_' + key;
         }

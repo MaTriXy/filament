@@ -24,41 +24,48 @@
 #include <math/vec3.h>
 #include <math/vec4.h>
 
-#include "CallbackUtils.h"
-#include "NioUtils.h"
+#include "common/CallbackUtils.h"
+#include "common/NioUtils.h"
 
 using namespace filament;
 using namespace filament::math;
 using namespace backend;
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_google_android_filament_VertexBuffer_nCreateBuilder(JNIEnv *env, jclass type) {
+Java_com_google_android_filament_VertexBuffer_nCreateBuilder(JNIEnv*, jclass) {
     return (jlong) new VertexBuffer::Builder();
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_google_android_filament_VertexBuffer_nDestroyBuilder(JNIEnv *env, jclass type,
+Java_com_google_android_filament_VertexBuffer_nDestroyBuilder(JNIEnv*, jclass,
         jlong nativeBuilder) {
     VertexBuffer::Builder* builder = (VertexBuffer::Builder *) nativeBuilder;
     delete builder;
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_google_android_filament_VertexBuffer_nBuilderVertexCount(JNIEnv *env, jclass type,
+Java_com_google_android_filament_VertexBuffer_nBuilderVertexCount(JNIEnv*, jclass,
         jlong nativeBuilder, jint vertexCount) {
     VertexBuffer::Builder* builder = (VertexBuffer::Builder *) nativeBuilder;
     builder->vertexCount((uint32_t) vertexCount);
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_google_android_filament_VertexBuffer_nBuilderBufferCount(JNIEnv *env, jclass type,
+Java_com_google_android_filament_VertexBuffer_nBuilderEnableBufferObjects(JNIEnv*, jclass,
+        jlong nativeBuilder, jboolean enabled) {
+    VertexBuffer::Builder* builder = (VertexBuffer::Builder *) nativeBuilder;
+    builder->enableBufferObjects(enabled);
+}
+
+extern "C" JNIEXPORT void JNICALL
+Java_com_google_android_filament_VertexBuffer_nBuilderBufferCount(JNIEnv*, jclass,
         jlong nativeBuilder, jint bufferCount) {
     VertexBuffer::Builder* builder = (VertexBuffer::Builder *) nativeBuilder;
     builder->bufferCount((uint8_t) bufferCount);
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_google_android_filament_VertexBuffer_nBuilderAttribute(JNIEnv *env, jclass type,
+Java_com_google_android_filament_VertexBuffer_nBuilderAttribute(JNIEnv*, jclass,
         jlong nativeBuilder, jint attribute, jint bufferIndex, jint attributeType, jint byteOffset,
         jint byteStride) {
     VertexBuffer::Builder* builder = (VertexBuffer::Builder *) nativeBuilder;
@@ -68,14 +75,14 @@ Java_com_google_android_filament_VertexBuffer_nBuilderAttribute(JNIEnv *env, jcl
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_google_android_filament_VertexBuffer_nBuilderNormalized(JNIEnv *env, jclass type,
+Java_com_google_android_filament_VertexBuffer_nBuilderNormalized(JNIEnv*, jclass,
         jlong nativeBuilder, jint attribute, jboolean normalized) {
     VertexBuffer::Builder* builder = (VertexBuffer::Builder *) nativeBuilder;
     builder->normalized((VertexAttribute) attribute, normalized);
 }
 
 extern "C" JNIEXPORT jlong JNICALL
-Java_com_google_android_filament_VertexBuffer_nBuilderBuild(JNIEnv *env, jclass type,
+Java_com_google_android_filament_VertexBuffer_nBuilderBuild(JNIEnv*, jclass,
         jlong nativeBuilder, jlong nativeEngine) {
     VertexBuffer::Builder* builder = (VertexBuffer::Builder *) nativeBuilder;
     Engine *engine = (Engine *) nativeEngine;
@@ -83,14 +90,14 @@ Java_com_google_android_filament_VertexBuffer_nBuilderBuild(JNIEnv *env, jclass 
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_google_android_filament_VertexBuffer_nGetVertexCount(JNIEnv *env, jclass type,
+Java_com_google_android_filament_VertexBuffer_nGetVertexCount(JNIEnv*, jclass,
         jlong nativeVertexBuffer) {
     VertexBuffer *vertexBuffer = (VertexBuffer *) nativeVertexBuffer;
     return (jint) vertexBuffer->getVertexCount();
 }
 
 extern "C" JNIEXPORT jint JNICALL
-Java_com_google_android_filament_VertexBuffer_nSetBufferAt(JNIEnv *env, jclass type,
+Java_com_google_android_filament_VertexBuffer_nSetBufferAt(JNIEnv *env, jclass,
         jlong nativeVertexBuffer, jlong nativeEngine, jint bufferIndex,
         jobject buffer, jint remaining,
         jint destOffsetInBytes, jint count, jobject handler, jobject runnable) {
@@ -107,7 +114,8 @@ Java_com_google_android_filament_VertexBuffer_nSetBufferAt(JNIEnv *env, jclass t
 
     auto* callback = JniBufferCallback::make(engine, env, handler, runnable, std::move(nioBuffer));
 
-    BufferDescriptor desc(data, sizeInBytes, &JniBufferCallback::invoke, callback);
+    BufferDescriptor desc(data, sizeInBytes,
+            callback->getHandler(), &JniBufferCallback::postToJavaAndDestroy, callback);
 
     vertexBuffer->setBufferAt(*engine, (uint8_t) bufferIndex, std::move(desc),
             (uint32_t) destOffsetInBytes);
@@ -116,41 +124,10 @@ Java_com_google_android_filament_VertexBuffer_nSetBufferAt(JNIEnv *env, jclass t
 }
 
 extern "C" JNIEXPORT void JNICALL
-Java_com_google_android_filament_VertexBuffer_nPopulateTangentQuaternions(JNIEnv *env,
-        jclass type, jint quatType, jint quatCount, jobject outBuffer, jint outRemaining,
-        jint outStride, jobject normals, jint normalsRemaining, jint normalsStride,
-        jobject tangents, jint tangentsRemaining, jint tangentsStride) {
-
-    AutoBuffer outNioBuffer(env, outBuffer, outRemaining, true);
-    void* outData = outNioBuffer.getData();
-
-    AutoBuffer normalsNioBuffer(env, normals, normalsRemaining);
-    auto normalsData = (const float3*) normalsNioBuffer.getData();
-
-    if (tangents) {
-        AutoBuffer tangentsNioBuffer(env, tangents, tangentsRemaining);
-        auto tangentsData = (const float4*) tangentsNioBuffer.getData();
-        VertexBuffer::populateTangentQuaternions({
-            .quatType = (VertexBuffer::QuatType) quatType,
-            .quatCount = (size_t) quatCount,
-            .outBuffer = outData,
-            .outStride = (size_t) outStride,
-            .normals = normalsData,
-            .normalsStride = (size_t) normalsStride,
-            .tangents = tangentsData,
-            .tangentsStride = (size_t) tangentsStride
-        });
-        return;
-    }
-
-    VertexBuffer::populateTangentQuaternions({
-        .quatType = (VertexBuffer::QuatType) quatType,
-        .quatCount = (size_t) quatCount,
-        .outBuffer = outData,
-        .outStride = (size_t) outStride,
-        .normals = normalsData,
-        .normalsStride = (size_t) normalsStride,
-        .tangents = nullptr,
-        .tangentsStride = 0
-    });
+Java_com_google_android_filament_VertexBuffer_nSetBufferObjectAt(JNIEnv*, jclass,
+        jlong nativeVertexBuffer, jlong nativeEngine, jint bufferIndex, jlong nativeBufferObject) {
+    VertexBuffer *vertexBuffer = (VertexBuffer *) nativeVertexBuffer;
+    Engine *engine = (Engine *) nativeEngine;
+    BufferObject *bufferObject = (BufferObject *) nativeBufferObject;
+    vertexBuffer->setBufferObjectAt(*engine, (uint8_t) bufferIndex, bufferObject);
 }

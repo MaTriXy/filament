@@ -21,54 +21,115 @@
 #include <filament/Material.h>
 
 #include <gltfio/FilamentAsset.h>
+#include <gltfio/FilamentInstance.h>
 #include <gltfio/MaterialProvider.h>
 
+#include <utils/compiler.h>
+
 namespace utils {
+    class EntityManager;
     class NameComponentManager;
 }
 
-namespace gltfio {
+/**
+ * Loader and pipeline for glTF 2.0 assets.
+ */
+namespace filament::gltfio {
 
-struct AssetConfiguration {
-    class filament::Engine* engine;
-    MaterialProvider* materials;
-    utils::NameComponentManager* names = nullptr;
+class NodeManager;
+
+// Use this struct to enable mikktspace-based tangent-space computation.
+/**
+ * \struct AssetConfigurationExtended AssetLoader.h gltfio/AssetLoader.h
+ * \brief extends struct AssetConfiguration
+ * Useful if client needs mikktspace tangent space computation.
+ * NOTE: Android, iOS, Web are not supported. And only disk-local glTF resources are supported.
+ */
+struct AssetConfigurationExtended {
+    //! Optional The same parameter as provided to \struct ResourceConfiguration ResourceLoader.h
+    //! gltfio/ResourceLoader.h
+    char const* gltfPath;
+
+    //! Client can use this method to check if the extended implementation is supported on their
+    //! platform or not.
+    static bool isSupported();
 };
 
 /**
- * AssetLoader consumes a blob of glTF 2.0 content (either JSON or GLB) and produces an "asset",
- * which is a bundle of Filament entities, material instances, textures, vertex buffers, and index
- * buffers.
+ * \struct AssetConfiguration AssetLoader.h gltfio/AssetLoader.h
+ * \brief Construction parameters for AssetLoader.
+ */
+struct AssetConfiguration {
+    //! The engine that the loader should pass to builder objects (e.g.
+    //! filament::VertexBuffer::Builder).
+    class filament::Engine* engine;
+
+    //! Controls whether the loader uses filamat to generate materials on the fly, or loads a small
+    //! set of precompiled ubershader materials. Deleting the MaterialProvider is the client's
+    //! responsibility. See createJitShaderProvider() and createUbershaderProvider().
+    MaterialProvider* materials;
+
+    //! Optional manager for associating string names with entities in the transform hierarchy.
+    utils::NameComponentManager* names = nullptr;
+
+    //! Overrides the factory used for creating entities in the transform hierarchy. If this is not
+    //! specified, AssetLoader will use the singleton EntityManager associated with the current
+    //! process.
+    utils::EntityManager* entities = nullptr;
+
+    //! Optional default node name for anonymous nodes
+    char* defaultNodeName = nullptr;
+
+    //! Optional to enable mikktspace tangents. Lifetime of struct only needs to be maintained for
+    //  the duration of the constructor of AssetLoader.
+    AssetConfigurationExtended* ext = nullptr;
+};
+
+/**
+ * \class AssetLoader AssetLoader.h gltfio/AssetLoader.h
+ * \brief Consumes glTF content and produces FilamentAsset objects.
+ *
+ * AssetLoader consumes a blob of glTF 2.0 content (either JSON or GLB) and produces a FilamentAsset
+ * object, which is a bundle of Filament textures, vertex buffers, index buffers, etc. An asset is
+ * composed of 1 or more FilamentInstance objects which contain entities and components.
+ *
+ * Clients must use AssetLoader to create and destroy FilamentAsset objects. This is similar to
+ * how filament::Engine is used to create and destroy core objects like VertexBuffer.
  *
  * AssetLoader does not fetch external buffer data or create textures on its own. Clients can use
- * the provided ResourceLoader class for this, which obtains the URI list from the asset. This is
- * demonstrated in the code snippet below.
+ * ResourceLoader for this, which obtains the URI list from the asset. This is demonstrated in the
+ * code snippet below.
  *
- * AssetLoader also owns a cache of Material objects that may be re-used across multiple loads.
+ * AssetLoader also owns a cache of filament::Material objects that may be re-used across multiple
+ * loads.
  *
  * Example usage:
  *
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  * auto engine = Engine::create();
- * auto materials = createMaterialGenerator(engine);
+ * auto materials = createJitShaderProvider(engine);
+ * auto decoder = createStbProvider(engine);
  * auto loader = AssetLoader::create({engine, materials});
  *
  * // Parse the glTF content and create Filament entities.
  * std::vector<uint8_t> content(...);
- * FilamentAsset* asset = loader->createAssetFromJson(content.data(), content.size());
+ * FilamentAsset* asset = loader->createAsset(content.data(), content.size());
  * content.clear();
  *
  * // Load buffers and textures from disk.
- * ResourceLoader({engine, ".", true}).loadResources(asset);
- *
- * // Obtain the simple animation interface.
- * Animator* animator = asset->getAnimator();
+ * ResourceLoader resourceLoader({engine, ".", true});
+ * resourceLoader.addTextureProvider("image/png", decoder);
+ * resourceLoader.addTextureProvider("image/jpeg", decoder);
+ * resourceLoader.loadResources(asset);
  *
  * // Free the glTF hierarchy as it is no longer needed.
  * asset->releaseSourceData();
  *
  * // Add renderables to the scene.
  * scene->addEntities(asset->getEntities(), asset->getEntityCount());
+ *
+ * // Extract the animator interface from the FilamentInstance.
+ * auto animator = asset->getInstance()->getAnimator();
  *
  * // Execute the render loop and play the first animation.
  * do {
@@ -80,14 +141,16 @@ struct AssetConfiguration {
  *      }
  * } while (!quit);
  *
+ * scene->removeEntities(asset->getEntities(), asset->getEntityCount());
  * loader->destroyAsset(asset);
  * materials->destroyMaterials();
  * delete materials;
+ * delete decoder;
  * AssetLoader::destroy(&loader);
  * Engine::destroy(&engine);
  * ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
  */
-class AssetLoader {
+class UTILS_PUBLIC AssetLoader {
 public:
 
     /**
@@ -109,37 +172,87 @@ public:
     static void destroy(AssetLoader** loader);
 
     /**
-     * Takes a pointer to the contents of a JSON-based glTF 2.0 file and returns a bundle
-     * of Filament objects. Returns null on failure.
+     * Takes a pointer to the contents of a GLB or a JSON-based glTF 2.0 file and returns an asset
+     * with one instance, or null on failure.
      */
-    FilamentAsset* createAssetFromJson(const uint8_t* bytes, uint32_t nbytes);
+    FilamentAsset* createAsset(const uint8_t* bytes, uint32_t nbytes);
 
     /**
-     * Takes a pointer to the contents of a GLB glTF 2.0 file and returns a bundle
-     * of Filament objects. Returns null on failure.
-     */
-    FilamentAsset* createAssetFromBinary(const uint8_t* bytes, uint32_t nbytes);
-
-    /**
-     * Takes a pointer to an opaque pipeline object and returns a bundle of Filament objects.
+     * Consumes the contents of a glTF 2.0 file and produces a primary asset with one or more
+     * instances. The primary asset has ownership over the instances.
      *
-     * This exists solely for interop with AssetPipeline, which is optional according to the build
-     * configuration.
+     * The returned instances share their textures, materials, and vertex buffers with the primary
+     * asset. However each instance has its own unique set of entities, transform components,
+     * material instances, and renderable components. Instances are freed when the primary asset is
+     * freed.
+     *
+     * Light components are not instanced, they belong only to the primary asset.
+     *
+     * Clients must use ResourceLoader to load resources on the primary asset.
+     *
+     * The entity accessor and renderable stack API in the primary asset can be used to control the
+     * union of all instances. The individual FilamentInstance objects can be used to access each
+     * instance's partition of entities.  Similarly, the Animator in the primary asset controls all
+     * instances. To animate instances individually, use FilamentInstance::getAnimator().
+     *
+     * @param bytes the contents of a glTF 2.0 file (JSON or GLB)
+     * @param numBytes the number of bytes in "bytes"
+     * @param instances destination pointer, to be populated by the requested number of instances
+     * @param numInstances requested number of instances
+     * @return the primary asset that has ownership over all instances
      */
-    FilamentAsset* createAssetFromHandle(const void* cgltf);
+    FilamentAsset* createInstancedAsset(const uint8_t* bytes, uint32_t numBytes,
+            FilamentInstance** instances, size_t numInstances);
+
+    /**
+     * Adds a new instance to the asset.
+     *
+     * Use this with caution. It is more efficient to pre-allocate a max number of instances, and
+     * gradually add them to the scene as needed. Instances can also be "recycled" by removing and
+     * re-adding them to the scene.
+     *
+     * NOTE: destroyInstance() does not exist because gltfio favors flat arrays for storage of
+     * entity lists and instance lists, which would be slow to shift. We also wish to discourage
+     * create/destroy churn, as noted above.
+     *
+     * This cannot be called after FilamentAsset::releaseSourceData().
+     * See also AssetLoader::createInstancedAsset().
+     */
+    FilamentInstance* createInstance(FilamentAsset* asset);
 
     /**
      * Allows clients to enable diagnostic shading on newly-loaded assets.
      */
     void enableDiagnostics(bool enable = true);
 
-    /** Destroys the given asset and all of its associated Filament objects. */
+    /**
+     * Destroys the given asset, all of its associated Filament objects, and all associated
+     * FilamentInstance objects.
+     *
+     * This destroys entities, components, material instances, vertex buffers, index buffers,
+     * and textures. This does not necessarily immediately free all source data, since
+     * texture decoding or GPU uploading might be underway.
+     */
     void destroyAsset(const FilamentAsset* asset);
 
-    /** Gets cached materials, used internally to create material instances for assets. */
-    size_t getMaterialsCount() const noexcept;
+    /**
+     * Gets a weak reference to an array of cached materials, used internally to create material
+     * instances for assets.
+     */
     const filament::Material* const* getMaterials() const noexcept;
 
+    /**
+     * Gets the number of cached materials.
+     */
+    size_t getMaterialsCount() const noexcept;
+
+    utils::NameComponentManager* getNames() const noexcept;
+
+    NodeManager& getNodeManager() noexcept;
+
+    MaterialProvider& getMaterialProvider() noexcept;
+
+    /*! \cond PRIVATE */
 protected:
     AssetLoader() noexcept = default;
     ~AssetLoader() = default;
@@ -149,8 +262,9 @@ public:
     AssetLoader(AssetLoader&&) = delete;
     AssetLoader& operator=(AssetLoader const&) = delete;
     AssetLoader& operator=(AssetLoader&&) = delete;
+    /*! \endcond */
 };
 
-} // namespace gltfio
+} // namespace filament::gltfio
 
 #endif // GLTFIO_ASSETLOADER_H

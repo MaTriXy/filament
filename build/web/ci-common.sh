@@ -1,27 +1,23 @@
 #!/bin/bash
+if [ `uname` == "Linux" ];then
+    source `dirname $0`/../linux/ci-common.sh
+elif [ `uname` == "Darwin" ];then
+    curl -OL https://github.com/ninja-build/ninja/releases/download/v1.10.2/ninja-mac.zip
+    unzip -q ninja-mac.zip
+else
+    echo "Unsupported OS"
+    exit 1
+fi
 
-curl -OL https://github.com/ninja-build/ninja/releases/download/v1.8.2/ninja-mac.zip
-unzip -q ninja-mac.zip
 chmod +x ninja
 export PATH="$PWD:$PATH"
 
-# The Kokoro machines have Python 3.6.3 installed. Let's verify that here, and install the
-# distributions required for web/docs.
-python --version
-python3 --version
-pip3 install mistletoe pygments jsbeautifier future_fstrings
-
-sudo pip install certifi
-sudo /Applications/Python\ 2.7/Install\ Certificates.command
-
-# FIXME: kokoro machines have node and npm but currently they are symlinked to non-existent files
-# npm install -g typescript
-
 # Install emscripten.
-curl -L https://github.com/emscripten-core/emsdk/archive/a77638d.zip > emsdk.zip
+curl -L https://github.com/emscripten-core/emsdk/archive/refs/tags/3.1.60.zip > emsdk.zip
 unzip emsdk.zip ; mv emsdk-* emsdk ; cd emsdk
-python emsdk install latest
-python emsdk activate latest
+./emsdk install latest
+./emsdk activate latest
+source ./emsdk_env.sh
 
 export EMSDK="$PWD"
 cd ..

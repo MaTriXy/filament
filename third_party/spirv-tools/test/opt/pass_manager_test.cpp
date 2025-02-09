@@ -30,7 +30,7 @@ namespace {
 using spvtest::GetIdBound;
 using ::testing::Eq;
 
-// A null pass whose construtors accept arguments
+// A null pass whose constructors accept arguments
 class NullPassWithArgs : public NullPass {
  public:
   NullPassWithArgs(uint32_t) {}
@@ -107,8 +107,7 @@ class DuplicateInstPass : public Pass {
  public:
   const char* name() const override { return "DuplicateInst"; }
   Status Process() override {
-    auto inst =
-        MakeUnique<Instruction>(*(--context()->debug1_end())->Clone(context()));
+    auto inst = MakeUnique<Instruction>(*(--context()->debug1_end()));
     context()->AddDebug1Inst(std::move(inst));
     return Status::SuccessWithChange;
   }
@@ -121,21 +120,21 @@ TEST_F(PassManagerTest, Run) {
 
   AddPass<AppendOpNopPass>();
   AddPass<AppendOpNopPass>();
-  RunAndCheck(text.c_str(), (text + "OpNop\nOpNop\n").c_str());
+  RunAndCheck(text, text + "OpNop\nOpNop\n");
 
   RenewPassManger();
   AddPass<AppendOpNopPass>();
   AddPass<DuplicateInstPass>();
-  RunAndCheck(text.c_str(), (text + "OpNop\nOpNop\n").c_str());
+  RunAndCheck(text, text + "OpNop\nOpNop\n");
 
   RenewPassManger();
   AddPass<DuplicateInstPass>();
   AddPass<AppendOpNopPass>();
-  RunAndCheck(text.c_str(), (text + "OpSource ESSL 310\nOpNop\n").c_str());
+  RunAndCheck(text, text + "OpSource ESSL 310\nOpNop\n");
 
   RenewPassManger();
   AddPass<AppendMultipleOpNopPass>(3);
-  RunAndCheck(text.c_str(), (text + "OpNop\nOpNop\nOpNop\n").c_str());
+  RunAndCheck(text, text + "OpNop\nOpNop\nOpNop\n");
 }
 
 // A pass that appends an OpTypeVoid instruction that uses a given id.
@@ -145,8 +144,8 @@ class AppendTypeVoidInstPass : public Pass {
 
   const char* name() const override { return "AppendTypeVoidInstPass"; }
   Status Process() override {
-    auto inst = MakeUnique<Instruction>(context(), SpvOpTypeVoid, 0, result_id_,
-                                        std::vector<Operand>{});
+    auto inst = MakeUnique<Instruction>(context(), spv::Op::OpTypeVoid, 0,
+                                        result_id_, std::vector<Operand>{});
     context()->AddType(std::move(inst));
     return Status::SuccessWithChange;
   }

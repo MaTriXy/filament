@@ -58,7 +58,7 @@ class ConstantManager;
 class Constant {
  public:
   Constant() = delete;
-  virtual ~Constant() {}
+  virtual ~Constant() = default;
 
   // Make a deep copy of this constant.
   virtual std::unique_ptr<Constant> Copy() const = 0;
@@ -116,6 +116,14 @@ class Constant {
   // Integer type.
   int64_t GetS64() const;
 
+  // Returns the zero-extended representation of an integer constant. Must
+  // be an integral constant of at most 64 bits.
+  uint64_t GetZeroExtendedValue() const;
+
+  // Returns the sign-extended representation of an integer constant. Must
+  // be an integral constant of at most 64 bits.
+  int64_t GetSignExtendedValue() const;
+
   // Returns true if the constant is a zero or a composite containing 0s.
   virtual bool IsZero() const { return false; }
 
@@ -155,6 +163,21 @@ class ScalarConstant : public Constant {
     return is_zero;
   }
 
+  uint32_t GetU32BitValue() const {
+    // Relies on unsigned values smaller than 32-bit being zero extended.  See
+    // section 2.2.1 of the SPIR-V spec.
+    assert(words().size() == 1);
+    return words()[0];
+  }
+
+  uint64_t GetU64BitValue() const {
+    // Relies on unsigned values smaller than 64-bit being zero extended.  See
+    // section 2.2.1 of the SPIR-V spec.
+    assert(words().size() == 2);
+    return static_cast<uint64_t>(words()[1]) << 32 |
+           static_cast<uint64_t>(words()[0]);
+  }
+
  protected:
   ScalarConstant(const Type* ty, const std::vector<uint32_t>& w)
       : Constant(ty), words_(w) {}
@@ -181,23 +204,8 @@ class IntConstant : public ScalarConstant {
     return words()[0];
   }
 
-  uint32_t GetU32BitValue() const {
-    // Relies on unsigned values smaller than 32-bit being zero extended.  See
-    // section 2.2.1 of the SPIR-V spec.
-    assert(words().size() == 1);
-    return words()[0];
-  }
-
   int64_t GetS64BitValue() const {
     // Relies on unsigned values smaller than 64-bit being sign extended.  See
-    // section 2.2.1 of the SPIR-V spec.
-    assert(words().size() == 2);
-    return static_cast<uint64_t>(words()[1]) << 32 |
-           static_cast<uint64_t>(words()[0]);
-  }
-
-  uint64_t GetU64BitValue() const {
-    // Relies on unsigned values smaller than 64-bit being zero extended.  See
     // section 2.2.1 of the SPIR-V spec.
     assert(words().size() == 2);
     return static_cast<uint64_t>(words()[1]) << 32 |
@@ -432,7 +440,7 @@ class NullConstant : public Constant {
   std::unique_ptr<Constant> Copy() const override {
     return std::unique_ptr<Constant>(CopyNullConstant().release());
   }
-  bool IsZero() const override { return true; };
+  bool IsZero() const override { return true; }
 };
 
 // Hash function for Constant instances. Use the structure of the constant as
@@ -498,10 +506,11 @@ class ConstantManager {
   IRContext* context() const { return ctx_; }
 
   // Gets or creates a unique Constant instance of type |type| and a vector of
-  // constant defining words |words|. If a Constant instance existed already in
-  // the constant pool, it returns a pointer to it.  Otherwise, it creates one
-  // using CreateConstant. If a new Constant instance cannot be created, it
-  // returns nullptr.
+  // constant defining words or ids for elements of Vector type
+  // |literal_words_or_ids|. If a Constant instance existed already in the
+  // constant pool, it returns a pointer to it. Otherwise, it creates one using
+  // CreateConstant. If a new Constant instance cannot be created, it returns
+  // nullptr.
   const Constant* GetConstant(
       const Type* type, const std::vector<uint32_t>& literal_words_or_ids);
 
@@ -511,10 +520,26 @@ class ConstantManager {
                                                    literal_words_or_ids.end()));
   }
 
+  // Takes a type and creates a OpConstantComposite
+  // This allows a
+  // OpConstantNull %composite_type
+  // to become a
+  // OpConstantComposite %composite_type %null %null ... etc
+  // Assumes type is a Composite already, otherwise returns null
+  const Constant* GetNullCompositeConstant(const Type* type);
+
+  // Gets or creates a unique Constant instance of Vector type |type| with
+  // numeric elements and a vector of constant defining words |literal_words|.
+  // If a Constant instance existed already in the constant pool, it returns a
+  // pointer to it. Otherwise, it creates one using CreateConstant. If a new
+  // Constant instance cannot be created, it returns nullptr.
+  const Constant* GetNumericVectorConstantWithWords(
+      const Vector* type, const std::vector<uint32_t>& literal_words);
+
   // Gets or creates a Constant instance to hold the constant value of the given
   // instruction. It returns a pointer to a Constant instance or nullptr if it
   // could not create the constant.
-  const Constant* GetConstantFromInst(Instruction* inst);
+  const Constant* GetConstantFromInst(const Instruction* inst);
 
   // Gets or creates a constant defining instruction for the given Constant |c|.
   // If |c| had already been defined, it returns a pointer to the existing
@@ -524,12 +549,7 @@ class ConstantManager {
   // instruction at the end of the current module's types section.
   //
   // |type_id| is an optional argument for disambiguating equivalent types. If
-  // |type_id| is specified, it is used as the type of the constant when a new
-  // instruction is created. Otherwise the type of the constant is derived by
-  // getting an id from the type manager for |c|.
-  //
-  // When |type_id| is not zero, the type of |c| must be the type returned by
-  // type manager when given |type_id|.
+  // |type_id| is specified, the constant returned will have that type id.
   Instruction* GetDefiningInstruction(const Constant* c, uint32_t type_id = 0,
                                       Module::inst_iterator* pos = nullptr);
 
@@ -578,8 +598,11 @@ class ConstantManager {
   // Registers a new constant |cst| in the constant pool. If the constant
   // existed already, it returns a pointer to the previously existing Constant
   // in the pool. Otherwise, it returns |cst|.
-  const Constant* RegisterConstant(const Constant* cst) {
-    auto ret = const_pool_.insert(cst);
+  const Constant* RegisterConstant(std::unique_ptr<Constant> cst) {
+    auto ret = const_pool_.insert(cst.get());
+    if (ret.second) {
+      owned_constants_.emplace_back(std::move(cst));
+    }
     return *ret.first;
   }
 
@@ -591,7 +614,8 @@ class ConstantManager {
 
   // Returns a vector of constants representing each in operand. If an operand
   // is not constant its entry is nullptr.
-  std::vector<const Constant*> GetOperandConstants(Instruction* inst) const;
+  std::vector<const Constant*> GetOperandConstants(
+      const Instruction* inst) const;
 
   // Records a mapping between |inst| and the constant value generated by it.
   // It returns true if a new Constant was successfully mapped, false if |inst|
@@ -620,6 +644,27 @@ class ConstantManager {
     }
   }
 
+  // Returns the id of a 32-bit floating point constant with value |val|.
+  uint32_t GetFloatConstId(float val);
+
+  // Returns a 32-bit float constant with the given value.
+  const Constant* GetFloatConst(float val);
+
+  // Returns the id of a 64-bit floating point constant with value |val|.
+  uint32_t GetDoubleConstId(double val);
+
+  // Returns a 64-bit float constant with the given value.
+  const Constant* GetDoubleConst(double val);
+
+  // Returns the id of a 32-bit signed integer constant with value |val|.
+  uint32_t GetSIntConstId(int32_t val);
+
+  // Returns the id of a 32-bit unsigned integer constant with value |val|.
+  uint32_t GetUIntConstId(uint32_t val);
+
+  // Returns the id of a OpConstantNull with type of |type|.
+  uint32_t GetNullConstId(const Type* type);
+
  private:
   // Creates a Constant instance with the given type and a vector of constant
   // defining words. Returns a unique pointer to the created Constant instance
@@ -633,7 +678,7 @@ class ConstantManager {
   // type, either Bool, Integer or Float. If any of the rules above failed, the
   // creation will fail and nullptr will be returned. If the vector is empty,
   // a NullConstant instance will be created with the given type.
-  const Constant* CreateConstant(
+  std::unique_ptr<Constant> CreateConstant(
       const Type* type,
       const std::vector<uint32_t>& literal_words_or_ids) const;
 
@@ -680,6 +725,10 @@ class ConstantManager {
 
   // The constant pool.  All created constants are registered here.
   std::unordered_set<const Constant*, ConstantHash, ConstantEqual> const_pool_;
+
+  // The constant that are owned by the constant manager.  Every constant in
+  // |const_pool_| should be in |owned_constants_| as well.
+  std::vector<std::unique_ptr<Constant>> owned_constants_;
 };
 
 }  // namespace analysis

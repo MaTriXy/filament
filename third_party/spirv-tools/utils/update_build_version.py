@@ -17,19 +17,17 @@
 # Updates an output file with version info unless the new content is the same
 # as the existing content.
 #
-# Args: <spirv-tools_dir> <output-file>
+# Args: <changes-file> <output-file>
 #
 # The output file will contain a line of text consisting of two C source syntax
 # string literals separated by a comma:
-#  - The software version deduced from the CHANGES file in the given directory.
+#  - The software version deduced from the given CHANGES file.
 #  - A longer string with the project name, the software version number, and
-#    git commit information for the directory.  The commit information
-#    is the output of "git describe" if that succeeds, or "git rev-parse HEAD"
-#    if that succeeds, or otherwise a message containing the phrase
-#    "unknown hash".
+#    git commit information for the CHANGES file's directory.  The commit
+#    information is the output of "git describe" if that succeeds, or "git
+#    rev-parse HEAD" if that succeeds, or otherwise a message containing the
+#    phrase "unknown hash".
 # The string contents are escaped as necessary.
-
-from __future__ import print_function
 
 import datetime
 import errno
@@ -75,9 +73,8 @@ def command_output(cmd, directory):
     return stdout
 
 
-def deduce_software_version(directory):
-    """Returns a software version number parsed from the CHANGES file
-    in the given directory.
+def deduce_software_version(changes_file):
+    """Returns a software version number parsed from the given CHANGES file.
 
     The CHANGES file describes most recent versions first.
     """
@@ -87,8 +84,7 @@ def deduce_software_version(directory):
     # unexpected carriage returns on a linefeed-only system such as
     # Linux.
     pattern = re.compile(r'^(v\d+\.\d+(-dev)?) \d\d\d\d-\d\d-\d\d\s*$')
-    changes_file = os.path.join(directory, 'CHANGES')
-    with open(changes_file, mode='rU') as f:
+    with open(changes_file, mode='r') as f:
         for line in f.readlines():
             match = pattern.match(line)
             if match:
@@ -118,25 +114,26 @@ def describe(directory):
             # e.g. because the source tree might not be in a git tree.
             # In this case, usually use a timestamp.  However, to ensure
             # reproducible builds, allow the builder to override the wall
-            # clock time with enviornment variable SOURCE_DATE_EPOCH
+            # clock time with environment variable SOURCE_DATE_EPOCH
             # containing a (presumably) fixed timestamp.
             timestamp = int(os.environ.get('SOURCE_DATE_EPOCH', time.time()))
-            formatted = datetime.date.fromtimestamp(timestamp).isoformat()
+            formatted = datetime.datetime.utcfromtimestamp(timestamp).isoformat()
             return 'unknown hash, {}'.format(formatted)
 
 
 def main():
     if len(sys.argv) != 3:
-        print('usage: {} <spirv-tools-dir> <output-file>'.format(sys.argv[0]))
+        print('usage: {} <changes-files> <output-file>'.format(sys.argv[0]))
         sys.exit(1)
 
     output_file = sys.argv[2]
     mkdir_p(os.path.dirname(output_file))
 
     software_version = deduce_software_version(sys.argv[1])
+    directory = os.path.dirname(sys.argv[1])
     new_content = '"{}", "SPIRV-Tools {} {}"\n'.format(
         software_version, software_version,
-        describe(sys.argv[1]).replace('"', '\\"'))
+        describe(directory).replace('"', '\\"'))
 
     if os.path.isfile(output_file):
         with open(output_file, 'r') as f:

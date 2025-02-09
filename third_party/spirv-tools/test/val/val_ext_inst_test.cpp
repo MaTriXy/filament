@@ -60,6 +60,7 @@ using ValidateOpenCLStdFractLike = spvtest::ValidateBase<std::string>;
 using ValidateOpenCLStdFrexpLike = spvtest::ValidateBase<std::string>;
 using ValidateOpenCLStdLdexpLike = spvtest::ValidateBase<std::string>;
 using ValidateOpenCLStdUpsampleLike = spvtest::ValidateBase<std::string>;
+using ValidateClspvReflection = spvtest::ValidateBase<bool>;
 
 // Returns number of components in Pack/Unpack extended instructions.
 // |ext_inst_name| is expected to be of the format "PackHalf2x16".
@@ -107,6 +108,9 @@ OpCapability Int64
      << " %u32vec2_input"
      << " %u64_input"
      << "\n";
+  if (execution_model == "Fragment") {
+    ss << "OpExecutionMode %main OriginUpperLeft\n";
+  }
 
   ss << R"(
 %void = OpTypeVoid
@@ -425,6 +429,10 @@ OpCapability Matrix
 %f16vec8_input = OpVariable %f16vec8_ptr_input Input
 %f16_ptr_input = OpTypePointer Input %f16
 
+%u32vec8_ptr_input = OpTypePointer Input %u32vec8
+%u32vec8_input = OpVariable %u32vec8_ptr_input Input
+%u32_ptr_input = OpTypePointer Input %u32
+
 %f32_ptr_generic = OpTypePointer Generic %f32
 %u32_ptr_generic = OpTypePointer Generic %u32
 
@@ -490,20 +498,20 @@ TEST_P(ValidateGlslStd450SqrtLike, IntOperand) {
                         "Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllSqrtLike, ValidateGlslStd450SqrtLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "Round",
-                            "RoundEven",
-                            "FAbs",
-                            "Trunc",
-                            "FSign",
-                            "Floor",
-                            "Ceil",
-                            "Fract",
-                            "Sqrt",
-                            "InverseSqrt",
-                            "Normalize",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllSqrtLike, ValidateGlslStd450SqrtLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "Round",
+                             "RoundEven",
+                             "FAbs",
+                             "Trunc",
+                             "FSign",
+                             "Floor",
+                             "Ceil",
+                             "Fract",
+                             "Sqrt",
+                             "InverseSqrt",
+                             "Normalize",
+                         }));
 
 TEST_P(ValidateGlslStd450FMinLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -557,15 +565,15 @@ TEST_P(ValidateGlslStd450FMinLike, IntOperand2) {
                         "Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllFMinLike, ValidateGlslStd450FMinLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "FMin",
-                            "FMax",
-                            "Step",
-                            "Reflect",
-                            "NMin",
-                            "NMax",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllFMinLike, ValidateGlslStd450FMinLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "FMin",
+                             "FMax",
+                             "Step",
+                             "Reflect",
+                             "NMin",
+                             "NMax",
+                         }));
 
 TEST_P(ValidateGlslStd450FClampLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -632,15 +640,15 @@ TEST_P(ValidateGlslStd450FClampLike, IntOperand3) {
                         "Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllFClampLike, ValidateGlslStd450FClampLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "FClamp",
-                            "FMix",
-                            "SmoothStep",
-                            "Fma",
-                            "FaceForward",
-                            "NClamp",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllFClampLike, ValidateGlslStd450FClampLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "FClamp",
+                             "FMix",
+                             "SmoothStep",
+                             "Fma",
+                             "FaceForward",
+                             "NClamp",
+                         }));
 
 TEST_P(ValidateGlslStd450SAbsLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -713,14 +721,27 @@ TEST_P(ValidateGlslStd450SAbsLike, WrongBitWidthOperand) {
                         "Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllSAbsLike, ValidateGlslStd450SAbsLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "SAbs",
-                            "SSign",
-                            "FindILsb",
-                            "FindUMsb",
-                            "FindSMsb",
-                        }), );
+TEST_P(ValidateGlslStd450SAbsLike, TypelessOperand) {
+  const std::string ext_inst_name = GetParam();
+  const std::string body =
+      "%val1 = OpExtInst %s64 %extinst " + ext_inst_name + " %main_entry\n";
+
+  CompileSuccessfully(GenerateShaderCode(body));
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("GLSL.std.450 " + ext_inst_name +
+                ": expected all operands to be int scalars or vectors"));
+}
+
+INSTANTIATE_TEST_SUITE_P(AllSAbsLike, ValidateGlslStd450SAbsLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "SAbs",
+                             "SSign",
+                             "FindILsb",
+                             "FindUMsb",
+                             "FindSMsb",
+                         }));
 
 TEST_F(ValidateExtInst, FindUMsbNot32Bit) {
   const std::string body = R"(
@@ -862,13 +883,26 @@ TEST_P(ValidateGlslStd450UMinLike, WrongBitWidthOperand2) {
                         "Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllUMinLike, ValidateGlslStd450UMinLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "UMin",
-                            "SMin",
-                            "UMax",
-                            "SMax",
-                        }), );
+TEST_P(ValidateGlslStd450UMinLike, TypelessOperand) {
+  const std::string ext_inst_name = GetParam();
+  const std::string body = "%val1 = OpExtInst %s64 %extinst " + ext_inst_name +
+                           " %s64_0 %main_entry\n";
+
+  CompileSuccessfully(GenerateShaderCode(body));
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("GLSL.std.450 " + ext_inst_name +
+                ": expected all operands to be int scalars or vectors"));
+}
+
+INSTANTIATE_TEST_SUITE_P(AllUMinLike, ValidateGlslStd450UMinLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "UMin",
+                             "SMin",
+                             "UMax",
+                             "SMax",
+                         }));
 
 TEST_P(ValidateGlslStd450UClampLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -1025,11 +1059,24 @@ TEST_P(ValidateGlslStd450UClampLike, WrongBitWidthOperand3) {
                         "Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllUClampLike, ValidateGlslStd450UClampLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "UClamp",
-                            "SClamp",
-                        }), );
+TEST_P(ValidateGlslStd450UClampLike, TypelessOperand) {
+  const std::string ext_inst_name = GetParam();
+  const std::string body = "%val1 = OpExtInst %s64 %extinst " + ext_inst_name +
+                           " %main_entry %s64_0 %s64_0\n";
+
+  CompileSuccessfully(GenerateShaderCode(body));
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("GLSL.std.450 " + ext_inst_name +
+                ": expected all operands to be int scalars or vectors"));
+}
+
+INSTANTIATE_TEST_SUITE_P(AllUClampLike, ValidateGlslStd450UClampLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "UClamp",
+                             "SClamp",
+                         }));
 
 TEST_P(ValidateGlslStd450SinLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -1080,27 +1127,27 @@ TEST_P(ValidateGlslStd450SinLike, IntOperand) {
                         "Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllSinLike, ValidateGlslStd450SinLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "Radians",
-                            "Degrees",
-                            "Sin",
-                            "Cos",
-                            "Tan",
-                            "Asin",
-                            "Acos",
-                            "Atan",
-                            "Sinh",
-                            "Cosh",
-                            "Tanh",
-                            "Asinh",
-                            "Acosh",
-                            "Atanh",
-                            "Exp",
-                            "Exp2",
-                            "Log",
-                            "Log2",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllSinLike, ValidateGlslStd450SinLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "Radians",
+                             "Degrees",
+                             "Sin",
+                             "Cos",
+                             "Tan",
+                             "Asin",
+                             "Acos",
+                             "Atan",
+                             "Sinh",
+                             "Cosh",
+                             "Tanh",
+                             "Asinh",
+                             "Acosh",
+                             "Atanh",
+                             "Exp",
+                             "Exp2",
+                             "Log",
+                             "Log2",
+                         }));
 
 TEST_P(ValidateGlslStd450PowLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -1165,11 +1212,11 @@ TEST_P(ValidateGlslStd450PowLike, IntOperand2) {
                         "Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllPowLike, ValidateGlslStd450PowLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "Atan2",
-                            "Pow",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllPowLike, ValidateGlslStd450PowLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "Atan2",
+                             "Pow",
+                         }));
 
 TEST_F(ValidateExtInst, GlslStd450DeterminantSuccess) {
   const std::string body = R"(
@@ -1533,6 +1580,19 @@ TEST_F(ValidateExtInst, GlslStd450LdexpExpWrongSize) {
                         "number as Result Type"));
 }
 
+TEST_F(ValidateExtInst, GlslStd450LdexpExpNoType) {
+  const std::string body = R"(
+%val1 = OpExtInst %f32 %extinst Ldexp %f32_1 %main_entry
+)";
+
+  CompileSuccessfully(GenerateShaderCode(body));
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("GLSL.std.450 Ldexp: "
+                        "expected operand Exp to be a 32-bit int scalar "
+                        "or vector type"));
+}
+
 TEST_F(ValidateExtInst, GlslStd450FrexpStructSuccess) {
   const std::string body = R"(
 %val1 = OpExtInst %struct_f32_u32 %extinst FrexpStruct %f32_h
@@ -1792,14 +1852,14 @@ TEST_P(ValidateGlslStd450Pack, VWrongSizeVector) {
   EXPECT_THAT(getDiagnosticString(), HasSubstr(expected.str()));
 }
 
-INSTANTIATE_TEST_CASE_P(AllPack, ValidateGlslStd450Pack,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "PackSnorm4x8",
-                            "PackUnorm4x8",
-                            "PackSnorm2x16",
-                            "PackUnorm2x16",
-                            "PackHalf2x16",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllPack, ValidateGlslStd450Pack,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "PackSnorm4x8",
+                             "PackUnorm4x8",
+                             "PackSnorm2x16",
+                             "PackUnorm2x16",
+                             "PackHalf2x16",
+                         }));
 
 TEST_F(ValidateExtInst, PackDouble2x32Success) {
   const std::string body = R"(
@@ -2031,14 +2091,14 @@ TEST_P(ValidateGlslStd450Unpack, ResultPWrongBitWidth) {
   EXPECT_THAT(getDiagnosticString(), HasSubstr(expected.str()));
 }
 
-INSTANTIATE_TEST_CASE_P(AllUnpack, ValidateGlslStd450Unpack,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "UnpackSnorm4x8",
-                            "UnpackUnorm4x8",
-                            "UnpackSnorm2x16",
-                            "UnpackUnorm2x16",
-                            "UnpackHalf2x16",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllUnpack, ValidateGlslStd450Unpack,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "UnpackSnorm4x8",
+                             "UnpackUnorm4x8",
+                             "UnpackSnorm2x16",
+                             "UnpackUnorm2x16",
+                             "UnpackHalf2x16",
+                         }));
 
 TEST_F(ValidateExtInst, UnpackDouble2x32Success) {
   const std::string body = R"(
@@ -2410,6 +2470,49 @@ TEST_F(ValidateExtInst, GlslStd450InterpolateAtCentroidSuccess) {
   ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
 }
 
+TEST_F(ValidateExtInst, GlslStd450InterpolateAtCentroidInternalSuccess) {
+  const std::string body = R"(
+%ld1  = OpLoad %f32 %f32_input
+%val1 = OpExtInst %f32 %extinst InterpolateAtCentroid %ld1
+%ld2  = OpLoad %f32vec2 %f32vec2_input
+%val2 = OpExtInst %f32vec2 %extinst InterpolateAtCentroid %ld2
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body, "OpCapability InterpolationFunction\n"));
+  getValidatorOptions()->before_hlsl_legalization = true;
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateExtInst, GlslStd450InterpolateAtCentroidInternalInvalidDataF32) {
+  const std::string body = R"(
+%ld1  = OpLoad %f32 %f32_input
+%val1 = OpExtInst %f32 %extinst InterpolateAtCentroid %ld1
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body, "OpCapability InterpolationFunction\n"));
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("GLSL.std.450 InterpolateAtCentroid: "
+                        "expected Interpolant to be a pointer"));
+}
+
+TEST_F(ValidateExtInst,
+       GlslStd450InterpolateAtCentroidInternalInvalidDataF32Vec2) {
+  const std::string body = R"(
+%ld2  = OpLoad %f32vec2 %f32vec2_input
+%val2 = OpExtInst %f32vec2 %extinst InterpolateAtCentroid %ld2
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body, "OpCapability InterpolationFunction\n"));
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("GLSL.std.450 InterpolateAtCentroid: "
+                        "expected Interpolant to be a pointer"));
+}
+
 TEST_F(ValidateExtInst, GlslStd450InterpolateAtCentroidNoCapability) {
   const std::string body = R"(
 %val1 = OpExtInst %f32 %extinst InterpolateAtCentroid %f32_input
@@ -2512,6 +2615,49 @@ TEST_F(ValidateExtInst, GlslStd450InterpolateAtSampleSuccess) {
   CompileSuccessfully(
       GenerateShaderCode(body, "OpCapability InterpolationFunction\n"));
   ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateExtInst, GlslStd450InterpolateAtSampleInternalSuccess) {
+  const std::string body = R"(
+%ld1  = OpLoad %f32 %f32_input
+%val1 = OpExtInst %f32 %extinst InterpolateAtSample %ld1 %u32_1
+%ld2  = OpLoad %f32vec2 %f32vec2_input
+%val2 = OpExtInst %f32vec2 %extinst InterpolateAtSample %ld2 %u32_1
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body, "OpCapability InterpolationFunction\n"));
+  getValidatorOptions()->before_hlsl_legalization = true;
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateExtInst, GlslStd450InterpolateAtSampleInternalInvalidDataF32) {
+  const std::string body = R"(
+%ld1  = OpLoad %f32 %f32_input
+%val1 = OpExtInst %f32 %extinst InterpolateAtSample %ld1 %u32_1
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body, "OpCapability InterpolationFunction\n"));
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("GLSL.std.450 InterpolateAtSample: "
+                        "expected Interpolant to be a pointer"));
+}
+
+TEST_F(ValidateExtInst,
+       GlslStd450InterpolateAtSampleInternalInvalidDataF32Vec2) {
+  const std::string body = R"(
+%ld2  = OpLoad %f32vec2 %f32vec2_input
+%val2 = OpExtInst %f32vec2 %extinst InterpolateAtSample %ld2 %u32_1
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body, "OpCapability InterpolationFunction\n"));
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("GLSL.std.450 InterpolateAtSample: "
+                        "expected Interpolant to be a pointer"));
 }
 
 TEST_F(ValidateExtInst, GlslStd450InterpolateAtSampleNoCapability) {
@@ -2642,6 +2788,49 @@ TEST_F(ValidateExtInst, GlslStd450InterpolateAtOffsetSuccess) {
   CompileSuccessfully(
       GenerateShaderCode(body, "OpCapability InterpolationFunction\n"));
   ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateExtInst, GlslStd450InterpolateAtOffsetInternalSuccess) {
+  const std::string body = R"(
+%ld1  = OpLoad %f32 %f32_input
+%val1 = OpExtInst %f32 %extinst InterpolateAtOffset %ld1 %f32vec2_01
+%ld2  = OpLoad %f32vec2 %f32vec2_input
+%val2 = OpExtInst %f32vec2 %extinst InterpolateAtOffset %ld2 %f32vec2_01
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body, "OpCapability InterpolationFunction\n"));
+  getValidatorOptions()->before_hlsl_legalization = true;
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateExtInst, GlslStd450InterpolateAtOffsetInternalInvalidDataF32) {
+  const std::string body = R"(
+%ld1  = OpLoad %f32 %f32_input
+%val1 = OpExtInst %f32 %extinst InterpolateAtOffset %ld1 %f32vec2_01
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body, "OpCapability InterpolationFunction\n"));
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("GLSL.std.450 InterpolateAtOffset: "
+                        "expected Interpolant to be a pointer"));
+}
+
+TEST_F(ValidateExtInst,
+       GlslStd450InterpolateAtOffsetInternalInvalidDataF32Vec2) {
+  const std::string body = R"(
+%ld2  = OpLoad %f32vec2 %f32vec2_input
+%val2 = OpExtInst %f32vec2 %extinst InterpolateAtOffset %ld2 %f32vec2_01
+)";
+
+  CompileSuccessfully(
+      GenerateShaderCode(body, "OpCapability InterpolationFunction\n"));
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("GLSL.std.450 InterpolateAtOffset: "
+                        "expected Interpolant to be a pointer"));
 }
 
 TEST_F(ValidateExtInst, GlslStd450InterpolateAtOffsetNoCapability) {
@@ -2828,7 +3017,7 @@ TEST_P(ValidateOpenCLStdSqrtLike, IntOperand) {
                         "Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     AllSqrtLike, ValidateOpenCLStdSqrtLike,
     ::testing::ValuesIn(std::vector<std::string>{
         "acos",         "acosh",       "acospi",       "asin",
@@ -2848,7 +3037,7 @@ INSTANTIATE_TEST_CASE_P(
         "native_log",   "native_log2", "native_log10", "native_recip",
         "native_rsqrt", "native_sin",  "native_sqrt",  "native_tan",
         "degrees",      "radians",     "sign",
-    }), );
+    }));
 
 TEST_P(ValidateOpenCLStdFMinLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -2902,16 +3091,16 @@ TEST_P(ValidateOpenCLStdFMinLike, IntOperand2) {
                         "Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllFMinLike, ValidateOpenCLStdFMinLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "atan2",     "atan2pi",       "copysign",
-                            "fdim",      "fmax",          "fmin",
-                            "fmod",      "maxmag",        "minmag",
-                            "hypot",     "nextafter",     "pow",
-                            "powr",      "remainder",     "half_divide",
-                            "half_powr", "native_divide", "native_powr",
-                            "step",      "fmax_common",   "fmin_common",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllFMinLike, ValidateOpenCLStdFMinLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "atan2",     "atan2pi",       "copysign",
+                             "fdim",      "fmax",          "fmin",
+                             "fmod",      "maxmag",        "minmag",
+                             "hypot",     "nextafter",     "pow",
+                             "powr",      "remainder",     "half_divide",
+                             "half_powr", "native_divide", "native_powr",
+                             "step",      "fmax_common",   "fmin_common",
+                         }));
 
 TEST_P(ValidateOpenCLStdFClampLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -2978,14 +3167,14 @@ TEST_P(ValidateOpenCLStdFClampLike, IntOperand3) {
                         "Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllFClampLike, ValidateOpenCLStdFClampLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "fma",
-                            "mad",
-                            "fclamp",
-                            "mix",
-                            "smoothstep",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllFClampLike, ValidateOpenCLStdFClampLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "fma",
+                             "mad",
+                             "fclamp",
+                             "mix",
+                             "smoothstep",
+                         }));
 
 TEST_P(ValidateOpenCLStdSAbsLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -3045,14 +3234,14 @@ TEST_P(ValidateOpenCLStdSAbsLike, U64Operand) {
                 ": expected types of all operands to be equal to Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllSAbsLike, ValidateOpenCLStdSAbsLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "s_abs",
-                            "clz",
-                            "ctz",
-                            "popcount",
-                            "u_abs",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllSAbsLike, ValidateOpenCLStdSAbsLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "s_abs",
+                             "clz",
+                             "ctz",
+                             "popcount",
+                             "u_abs",
+                         }));
 
 TEST_P(ValidateOpenCLStdUMinLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -3144,26 +3333,26 @@ TEST_P(ValidateOpenCLStdUMinLike, U64Operand2) {
                 ": expected types of all operands to be equal to Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllUMinLike, ValidateOpenCLStdUMinLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "s_max",
-                            "u_max",
-                            "s_min",
-                            "u_min",
-                            "s_abs_diff",
-                            "s_add_sat",
-                            "u_add_sat",
-                            "s_mul_hi",
-                            "rotate",
-                            "s_sub_sat",
-                            "u_sub_sat",
-                            "s_hadd",
-                            "u_hadd",
-                            "s_rhadd",
-                            "u_rhadd",
-                            "u_abs_diff",
-                            "u_mul_hi",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllUMinLike, ValidateOpenCLStdUMinLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "s_max",
+                             "u_max",
+                             "s_min",
+                             "u_min",
+                             "s_abs_diff",
+                             "s_add_sat",
+                             "u_add_sat",
+                             "s_mul_hi",
+                             "rotate",
+                             "s_sub_sat",
+                             "u_sub_sat",
+                             "s_hadd",
+                             "u_hadd",
+                             "s_rhadd",
+                             "u_rhadd",
+                             "u_abs_diff",
+                             "u_mul_hi",
+                         }));
 
 TEST_P(ValidateOpenCLStdUClampLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -3281,15 +3470,15 @@ TEST_P(ValidateOpenCLStdUClampLike, U64Operand3) {
                 ": expected types of all operands to be equal to Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllUClampLike, ValidateOpenCLStdUClampLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "s_clamp",
-                            "u_clamp",
-                            "s_mad_hi",
-                            "u_mad_sat",
-                            "s_mad_sat",
-                            "u_mad_hi",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllUClampLike, ValidateOpenCLStdUClampLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "s_clamp",
+                             "u_clamp",
+                             "s_mad_hi",
+                             "u_mad_sat",
+                             "s_mad_sat",
+                             "u_mad_hi",
+                         }));
 
 // -------------------------------------------------------------
 TEST_P(ValidateOpenCLStdUMul24Like, Success) {
@@ -3332,7 +3521,7 @@ TEST_P(ValidateOpenCLStdUMul24Like, FloatResultType) {
 TEST_P(ValidateOpenCLStdUMul24Like, U64ResultType) {
   const std::string ext_inst_name = GetParam();
   const std::string body =
-      "%val1 = OpExtInst %u64 %extinst " + ext_inst_name + " %u64_0 %u64\n";
+      "%val1 = OpExtInst %u64 %extinst " + ext_inst_name + " %u64_0 %u64_0\n";
 
   CompileSuccessfully(GenerateKernelCode(body));
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
@@ -3395,11 +3584,11 @@ TEST_P(ValidateOpenCLStdUMul24Like, U64Operand2) {
                 ": expected types of all operands to be equal to Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllUMul24Like, ValidateOpenCLStdUMul24Like,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "s_mul24",
-                            "u_mul24",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllUMul24Like, ValidateOpenCLStdUMul24Like,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "s_mul24",
+                             "u_mul24",
+                         }));
 
 TEST_P(ValidateOpenCLStdUMad24Like, Success) {
   const std::string ext_inst_name = GetParam();
@@ -3530,11 +3719,11 @@ TEST_P(ValidateOpenCLStdUMad24Like, U64Operand3) {
                 ": expected types of all operands to be equal to Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllUMad24Like, ValidateOpenCLStdUMad24Like,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "s_mad24",
-                            "u_mad24",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllUMad24Like, ValidateOpenCLStdUMad24Like,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "s_mad24",
+                             "u_mad24",
+                         }));
 
 TEST_F(ValidateExtInst, OpenCLStdCrossSuccess) {
   const std::string body = R"(
@@ -3659,11 +3848,11 @@ TEST_P(ValidateOpenCLStdLengthLike, DifferentType) {
                         "Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllLengthLike, ValidateOpenCLStdLengthLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "length",
-                            "fast_length",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllLengthLike, ValidateOpenCLStdLengthLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "length",
+                             "fast_length",
+                         }));
 
 TEST_P(ValidateOpenCLStdDistanceLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -3748,11 +3937,11 @@ TEST_P(ValidateOpenCLStdDistanceLike, DifferentOperands) {
                         "expected operands P0 and P1 to be of the same type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllDistanceLike, ValidateOpenCLStdDistanceLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "distance",
-                            "fast_distance",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllDistanceLike, ValidateOpenCLStdDistanceLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "distance",
+                             "fast_distance",
+                         }));
 
 TEST_P(ValidateOpenCLStdNormalizeLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -3808,11 +3997,11 @@ TEST_P(ValidateOpenCLStdNormalizeLike, DifferentType) {
                         "expected operand P type to be equal to Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllNormalizeLike, ValidateOpenCLStdNormalizeLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "normalize",
-                            "fast_normalize",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllNormalizeLike, ValidateOpenCLStdNormalizeLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "normalize",
+                             "fast_normalize",
+                         }));
 
 TEST_F(ValidateExtInst, OpenCLStdBitselectSuccess) {
   const std::string body = R"(
@@ -4130,10 +4319,9 @@ TEST_P(ValidateOpenCLStdVStoreHalfLike, PNotPointer) {
   }
 
   CompileSuccessfully(GenerateKernelCode(ss.str()));
-  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("OpenCL.std " + ext_inst_name +
-                        ": expected operand P to be a pointer"));
+              HasSubstr("Operand '89[%_ptr_Workgroup_half]' cannot be a type"));
 }
 
 TEST_P(ValidateOpenCLStdVStoreHalfLike, ConstPointer) {
@@ -4206,15 +4394,15 @@ TEST_P(ValidateOpenCLStdVStoreHalfLike, PDataTypeFloat32) {
                 ": expected operand P data type to be 16-bit float scalar"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllVStoreHalfLike, ValidateOpenCLStdVStoreHalfLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "vstore_half",
-                            "vstore_half_r",
-                            "vstore_halfn",
-                            "vstore_halfn_r",
-                            "vstorea_halfn",
-                            "vstorea_halfn_r",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllVStoreHalfLike, ValidateOpenCLStdVStoreHalfLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "vstore_half",
+                             "vstore_half_r",
+                             "vstore_halfn",
+                             "vstore_halfn_r",
+                             "vstorea_halfn",
+                             "vstorea_halfn_r",
+                         }));
 
 TEST_P(ValidateOpenCLStdVLoadHalfLike, SuccessPhysical32) {
   const std::string ext_inst_name = GetParam();
@@ -4303,10 +4491,9 @@ TEST_P(ValidateOpenCLStdVLoadHalfLike, PNotPointer) {
      << " %u32_1 %f16_ptr_workgroup 2\n";
 
   CompileSuccessfully(GenerateKernelCode(ss.str()));
-  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("OpenCL.std " + ext_inst_name +
-                        ": expected operand P to be a pointer"));
+              HasSubstr("Operand '89[%_ptr_Workgroup_half]' cannot be a type"));
 }
 
 TEST_P(ValidateOpenCLStdVLoadHalfLike, OffsetWrongStorageType) {
@@ -4374,11 +4561,11 @@ TEST_P(ValidateOpenCLStdVLoadHalfLike, WrongN) {
                         "components of Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllVLoadHalfLike, ValidateOpenCLStdVLoadHalfLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "vload_halfn",
-                            "vloada_halfn",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllVLoadHalfLike, ValidateOpenCLStdVLoadHalfLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "vload_halfn",
+                             "vloada_halfn",
+                         }));
 
 TEST_F(ValidateExtInst, VLoadNSuccessFloatPhysical32) {
   std::ostringstream ss;
@@ -4476,22 +4663,24 @@ TEST_F(ValidateExtInst, VLoadNPNotPointer) {
         "%f32_ptr_uniform_constant 2\n";
 
   CompileSuccessfully(GenerateKernelCode(ss.str()));
-  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr("OpenCL.std vloadn: expected operand P to be a pointer"));
+      HasSubstr("Operand '120[%_ptr_UniformConstant_float]' cannot be a "
+                "type"));
 }
 
 TEST_F(ValidateExtInst, VLoadNWrongStorageClass) {
   std::ostringstream ss;
-  ss << "%ptr = OpAccessChain %u32_ptr_workgroup %u32vec8_workgroup %u32_1\n";
+  ss << "%ptr = OpAccessChain %u32_ptr_input %u32vec8_input %u32_1\n";
   ss << "%val1 = OpExtInst %u32vec2 %extinst vloadn %u32_1 %ptr 2\n";
 
   CompileSuccessfully(GenerateKernelCode(ss.str()));
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
               HasSubstr("OpenCL.std vloadn: expected operand P storage class "
-                        "to be UniformConstant or Generic"));
+                        "to be UniformConstant, Generic, CrossWorkgroup, "
+                        "Workgroup or Function"));
 }
 
 TEST_F(ValidateExtInst, VLoadNWrongComponentType) {
@@ -4589,10 +4778,10 @@ TEST_F(ValidateExtInst, VLoadHalfPNotPointer) {
         "%f16_ptr_uniform_constant\n";
 
   CompileSuccessfully(GenerateKernelCode(ss.str()));
-  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("OpenCL.std vload_half: expected operand P to be a pointer"));
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Operand '114[%_ptr_UniformConstant_half]' cannot be a "
+                        "type"));
 }
 
 TEST_F(ValidateExtInst, VLoadHalfWrongStorageClass) {
@@ -4743,22 +4932,23 @@ TEST_F(ValidateExtInst, VStoreNPNotPointer) {
         "%f32_ptr_generic\n";
 
   CompileSuccessfully(GenerateKernelCode(ss.str()));
-  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("OpenCL.std vstoren: expected operand P to be a pointer"));
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Operand '127[%_ptr_Generic_float]' cannot be a type"));
 }
 
-TEST_F(ValidateExtInst, VStoreNPNotGeneric) {
+TEST_F(ValidateExtInst, VStoreNWrongStorageClass) {
   std::ostringstream ss;
-  ss << "%ptr_w = OpAccessChain %f32_ptr_workgroup %f32vec8_workgroup %u32_1\n";
+  ss << "%ptr_w = OpAccessChain %f32_ptr_uniform_constant "
+        "%f32vec8_uniform_constant %u32_1\n";
   ss << "%val1 = OpExtInst %void %extinst vstoren %f32vec2_01 %u32_1 %ptr_w\n";
 
   CompileSuccessfully(GenerateKernelCode(ss.str()));
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
-  EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("OpenCL.std vstoren: expected operand P storage class "
-                        "to be Generic"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("OpenCL.std vstoren: expected operand P storage class "
+                "to be Generic, CrossWorkgroup, Workgroup or Function"));
 }
 
 TEST_F(ValidateExtInst, VStorePWrongDataType) {
@@ -5058,10 +5248,11 @@ TEST_F(ValidateExtInst, OpenCLStdPrintfFormatNotPointer) {
 )";
 
   CompileSuccessfully(GenerateKernelCode(body));
-  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr("OpenCL.std printf: expected operand Format to be a pointer"));
+      HasSubstr("Operand '137[%_ptr_UniformConstant_uchar]' cannot be a "
+                "type"));
 }
 
 TEST_F(ValidateExtInst, OpenCLStdPrintfFormatNotUniformConstStorageClass) {
@@ -5151,10 +5342,10 @@ TEST_F(ValidateExtInst, OpenCLStdPrefetchPtrNotPointer) {
 )";
 
   CompileSuccessfully(GenerateKernelCode(body));
-  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("OpenCL.std prefetch: expected operand Ptr to be a pointer"));
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Operand '99[%_ptr_CrossWorkgroup_uint]' cannot be a "
+                        "type"));
 }
 
 TEST_F(ValidateExtInst, OpenCLStdPrefetchPtrNotCrossWorkgroup) {
@@ -5299,19 +5490,19 @@ TEST_P(ValidateOpenCLStdFractLike, PointerWrongDataType) {
           ": expected data type of the pointer to be equal to Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllFractLike, ValidateOpenCLStdFractLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "fract",
-                            "modf",
-                            "sincos",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllFractLike, ValidateOpenCLStdFractLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "fract",
+                             "modf",
+                             "sincos",
+                         }));
 
 TEST_F(ValidateExtInst, OpenCLStdRemquoSuccess) {
   const std::string body = R"(
-%var_f32 = OpVariable %f32_ptr_function Function
-%var_f32vec2 = OpVariable %f32vec2_ptr_function Function
-%val1 = OpExtInst %f32 %extinst remquo %f32_3 %f32_2 %var_f32
-%val2 = OpExtInst %f32vec2 %extinst remquo %f32vec2_01 %f32vec2_12 %var_f32vec2
+%var_u32 = OpVariable %u32_ptr_function Function
+%var_u32vec2 = OpVariable %u32vec2_ptr_function Function
+%val1 = OpExtInst %f32 %extinst remquo %f32_3 %f32_2 %var_u32
+%val2 = OpExtInst %f32vec2 %extinst remquo %f32vec2_01 %f32vec2_12 %var_u32vec2
 )";
 
   CompileSuccessfully(GenerateKernelCode(body));
@@ -5320,8 +5511,8 @@ TEST_F(ValidateExtInst, OpenCLStdRemquoSuccess) {
 
 TEST_F(ValidateExtInst, OpenCLStdRemquoIntResultType) {
   const std::string body = R"(
-%var_f32 = OpVariable %f32_ptr_function Function
-%val1 = OpExtInst %u32 %extinst remquo %f32_3 %f32_2 %var_f32
+%var_u32 = OpVariable %u32_ptr_function Function
+%val1 = OpExtInst %u32 %extinst remquo %f32_3 %f32_2 %var_u32
 )";
 
   CompileSuccessfully(GenerateKernelCode(body));
@@ -5334,8 +5525,8 @@ TEST_F(ValidateExtInst, OpenCLStdRemquoIntResultType) {
 
 TEST_F(ValidateExtInst, OpenCLStdRemquoXWrongType) {
   const std::string body = R"(
-%var_f32 = OpVariable %f32_ptr_function Function
-%val1 = OpExtInst %f32 %extinst remquo %u32_3 %f32_2 %var_f32
+%var_u32 = OpVariable %f32_ptr_function Function
+%val1 = OpExtInst %f32 %extinst remquo %u32_3 %f32_2 %var_u32
 )";
 
   CompileSuccessfully(GenerateKernelCode(body));
@@ -5348,8 +5539,8 @@ TEST_F(ValidateExtInst, OpenCLStdRemquoXWrongType) {
 
 TEST_F(ValidateExtInst, OpenCLStdRemquoYWrongType) {
   const std::string body = R"(
-%var_f32 = OpVariable %f32_ptr_function Function
-%val1 = OpExtInst %f32 %extinst remquo %f32_3 %u32_2 %var_f32
+%var_u32 = OpVariable %f32_ptr_function Function
+%val1 = OpExtInst %f32 %extinst remquo %f32_3 %u32_2 %var_u32
 )";
 
   CompileSuccessfully(GenerateKernelCode(body));
@@ -5388,17 +5579,44 @@ TEST_F(ValidateExtInst, OpenCLStdRemquoPointerWrongStorageClass) {
 
 TEST_F(ValidateExtInst, OpenCLStdRemquoPointerWrongDataType) {
   const std::string body = R"(
-%var_u32 = OpVariable %u32_ptr_function Function
-%val1 = OpExtInst %f32 %extinst remquo %f32_3 %f32_2 %var_u32
+%var_f32 = OpVariable %f32_ptr_function Function
+%val1 = OpExtInst %f32 %extinst remquo %f32_3 %f32_2 %var_f32
+)";
+
+  CompileSuccessfully(GenerateKernelCode(body));
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpenCL.std remquo: "
+                        "expected data type of the pointer to be a 32-bit int "
+                        "scalar or vector type"));
+}
+
+TEST_F(ValidateExtInst, OpenCLStdRemquoPointerWrongDataTypeWidth) {
+  const std::string body = R"(
+%var_u64 = OpVariable %u64_ptr_function Function
+%val1 = OpExtInst %f32 %extinst remquo %f32_3 %f32_2 %var_u64
+)";
+  CompileSuccessfully(GenerateKernelCode(body));
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpenCL.std remquo: "
+                        "expected data type of the pointer to be a 32-bit int "
+                        "scalar or vector type"));
+}
+
+TEST_F(ValidateExtInst, OpenCLStdRemquoPointerWrongNumberOfComponents) {
+  const std::string body = R"(
+%var_u32vec2 = OpVariable %u32vec2_ptr_function Function
+%val1 = OpExtInst %f32 %extinst remquo %f32_3 %f32_2 %var_u32vec2
 )";
 
   CompileSuccessfully(GenerateKernelCode(body));
   ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
   EXPECT_THAT(
       getDiagnosticString(),
-      HasSubstr(
-          "OpenCL.std remquo: "
-          "expected data type of the pointer to be equal to Result Type"));
+      HasSubstr("OpenCL.std remquo: "
+                "expected data type of the pointer to have the same number "
+                "of components as Result Type"));
 }
 
 TEST_P(ValidateOpenCLStdFrexpLike, Success) {
@@ -5518,11 +5736,11 @@ TEST_P(ValidateOpenCLStdFrexpLike, PointerDataTypeDiffSize) {
                         "number of components as Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllFrexpLike, ValidateOpenCLStdFrexpLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "frexp",
-                            "lgamma_r",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllFrexpLike, ValidateOpenCLStdFrexpLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "frexp",
+                             "lgamma_r",
+                         }));
 
 TEST_F(ValidateExtInst, OpenCLStdIlogbSuccess) {
   const std::string body = R"(
@@ -5716,12 +5934,12 @@ TEST_P(ValidateOpenCLStdLdexpLike, ExponentWrongSize) {
                         "components as Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllLdexpLike, ValidateOpenCLStdLdexpLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "ldexp",
-                            "pown",
-                            "rootn",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllLdexpLike, ValidateOpenCLStdLdexpLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "ldexp",
+                             "pown",
+                             "rootn",
+                         }));
 
 TEST_P(ValidateOpenCLStdUpsampleLike, Success) {
   const std::string ext_inst_name = GetParam();
@@ -5808,11 +6026,720 @@ TEST_P(ValidateOpenCLStdUpsampleLike, HiLoWrongBitWidth) {
                 "be half of the bit width of components of Result Type"));
 }
 
-INSTANTIATE_TEST_CASE_P(AllUpsampleLike, ValidateOpenCLStdUpsampleLike,
-                        ::testing::ValuesIn(std::vector<std::string>{
-                            "u_upsample",
-                            "s_upsample",
-                        }), );
+INSTANTIATE_TEST_SUITE_P(AllUpsampleLike, ValidateOpenCLStdUpsampleLike,
+                         ::testing::ValuesIn(std::vector<std::string>{
+                             "u_upsample",
+                             "s_upsample",
+                         }));
+
+TEST_F(ValidateClspvReflection, RequiresNonSemanticExtension) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability Linkage
+%1 = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+)";
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("NonSemantic extended instruction sets cannot be "
+                        "declared without SPV_KHR_non_semantic_info"));
+}
+
+TEST_F(ValidateClspvReflection, DoesNotRequiresNonSemanticExtensionPost1p6) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability Linkage
+%1 = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+)";
+
+  CompileSuccessfully(text, SPV_ENV_UNIVERSAL_1_6);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_6));
+}
+
+TEST_F(ValidateClspvReflection, MissingVersion) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability Linkage
+OpExtension "SPV_KHR_non_semantic_info"
+%1 = OpExtInstImport "NonSemantic.ClspvReflection."
+OpMemoryModel Logical GLSL450
+%2 = OpTypeVoid
+%3 = OpTypeInt 32 0
+%4 = OpConstant %3 1
+%5 = OpExtInst %2 %1 SpecConstantWorkDim %4
+)";
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Missing NonSemantic.ClspvReflection import version"));
+}
+
+TEST_F(ValidateClspvReflection, BadVersion0) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability Linkage
+OpExtension "SPV_KHR_non_semantic_info"
+%1 = OpExtInstImport "NonSemantic.ClspvReflection.0"
+OpMemoryModel Logical GLSL450
+%2 = OpTypeVoid
+%3 = OpTypeInt 32 0
+%4 = OpConstant %3 1
+%5 = OpExtInst %2 %1 SpecConstantWorkDim %4
+)";
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Unknown NonSemantic.ClspvReflection import version"));
+}
+
+TEST_F(ValidateClspvReflection, BadVersionNotANumber) {
+  const std::string text = R"(
+OpCapability Shader
+OpCapability Linkage
+OpExtension "SPV_KHR_non_semantic_info"
+%1 = OpExtInstImport "NonSemantic.ClspvReflection.1a"
+OpMemoryModel Logical GLSL450
+%2 = OpTypeVoid
+%3 = OpTypeInt 32 0
+%4 = OpConstant %3 1
+%5 = OpExtInst %2 %1 SpecConstantWorkDim %4
+)";
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_DATA, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("NonSemantic.ClspvReflection import does not encode "
+                        "the version correctly"));
+}
+
+TEST_F(ValidateClspvReflection, Kernel) {
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %foo "foo"
+OpExecutionMode %foo LocalSize 1 1 1
+%foo_name = OpString "foo"
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%decl = OpExtInst %void %ext Kernel %foo %foo_name
+)";
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateClspvReflection, KernelNotAFunction) {
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %foo "foo"
+OpExecutionMode %foo LocalSize 1 1 1
+%foo_name = OpString "foo"
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%decl = OpExtInst %void %ext Kernel %foo_name %foo_name
+)";
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Kernel does not reference a function"));
+}
+
+TEST_F(ValidateClspvReflection, KernelNotAnEntryPoint) {
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %foo "foo"
+OpExecutionMode %foo LocalSize 1 1 1
+%foo_name = OpString "foo"
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%bar = OpFunction %void None %void_fn
+%bar_entry = OpLabel
+OpReturn
+OpFunctionEnd
+%decl = OpExtInst %void %ext Kernel %bar %foo_name
+)";
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Kernel does not reference an entry-point"));
+}
+
+TEST_F(ValidateClspvReflection, KernelNotGLCompute) {
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %foo "foo"
+OpExecutionMode %foo OriginUpperLeft
+%foo_name = OpString "foo"
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%decl = OpExtInst %void %ext Kernel %foo %foo_name
+)";
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Kernel must refer only to GLCompute entry-points"));
+}
+
+TEST_F(ValidateClspvReflection, KernelNameMismatch) {
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %foo "foo"
+OpExecutionMode %foo LocalSize 1 1 1
+%foo_name = OpString "bar"
+%void = OpTypeVoid
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%decl = OpExtInst %void %ext Kernel %foo %foo_name
+)";
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Name must match an entry-point for Kernel"));
+}
+
+using ArgumentBasics =
+    spvtest::ValidateBase<std::pair<std::string, std::string>>;
+
+INSTANTIATE_TEST_SUITE_P(
+    ValidateClspvReflectionArgumentKernel, ArgumentBasics,
+    ::testing::ValuesIn(std::vector<std::pair<std::string, std::string>>{
+        std::make_pair("ArgumentStorageBuffer", "%int_0 %int_0"),
+        std::make_pair("ArgumentUniform", "%int_0 %int_0"),
+        std::make_pair("ArgumentPodStorageBuffer",
+                       "%int_0 %int_0 %int_0 %int_4"),
+        std::make_pair("ArgumentPodUniform", "%int_0 %int_0 %int_0 %int_4"),
+        std::make_pair("ArgumentPodPushConstant", "%int_0 %int_4"),
+        std::make_pair("ArgumentSampledImage", "%int_0 %int_0"),
+        std::make_pair("ArgumentStorageImage", "%int_0 %int_0"),
+        std::make_pair("ArgumentSampler", "%int_0 %int_0"),
+        std::make_pair("ArgumentWorkgroup", "%int_0 %int_0")}));
+
+TEST_P(ArgumentBasics, KernelNotAnExtendedInstruction) {
+  const std::string ext_inst = std::get<0>(GetParam());
+  const std::string extra = std::get<1>(GetParam());
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %foo "foo"
+OpExecutionMode %foo LocalSize 1 1 1
+%foo_name = OpString "foo"
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_0 = OpConstant %int 0
+%int_4 = OpConstant %int 4
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%in = OpExtInst %void %ext )" +
+                           ext_inst + " %int_0 %int_0 " + extra;
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Kernel must be a Kernel extended instruction"));
+}
+
+TEST_P(ArgumentBasics, KernelFromDifferentImport) {
+  const std::string ext_inst = std::get<0>(GetParam());
+  const std::string extra = std::get<1>(GetParam());
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+%ext2 = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %foo "foo"
+OpExecutionMode %foo LocalSize 1 1 1
+%foo_name = OpString "foo"
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_0 = OpConstant %int 0
+%int_4 = OpConstant %int 4
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%decl = OpExtInst %void %ext2 Kernel %foo %foo_name
+%in = OpExtInst %void %ext )" +
+                           ext_inst + " %decl %int_0 " + extra;
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("Kernel must be from the same extended instruction import"));
+}
+
+TEST_P(ArgumentBasics, KernelWrongExtendedInstruction) {
+  const std::string ext_inst = std::get<0>(GetParam());
+  const std::string extra = std::get<1>(GetParam());
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %foo "foo"
+OpExecutionMode %foo LocalSize 1 1 1
+%foo_name = OpString "foo"
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_0 = OpConstant %int 0
+%int_4 = OpConstant %int 4
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%decl = OpExtInst %void %ext ArgumentInfo %foo_name
+%in = OpExtInst %void %ext )" +
+                           ext_inst + " %decl %int_0 " + extra;
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Kernel must be a Kernel extended instruction"));
+}
+
+TEST_P(ArgumentBasics, ArgumentInfo) {
+  const std::string ext_inst = std::get<0>(GetParam());
+  const std::string operands = std::get<1>(GetParam());
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %foo "foo"
+OpExecutionMode %foo LocalSize 1 1 1
+%foo_name = OpString "foo"
+%in_name = OpString "in"
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_0 = OpConstant %int 0
+%int_4 = OpConstant %int 4
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%decl = OpExtInst %void %ext Kernel %foo %foo_name
+%info = OpExtInst %void %ext ArgumentInfo %in_name
+%in = OpExtInst %void %ext )" +
+                           ext_inst + " %decl %int_0 " + operands + " %info";
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_P(ArgumentBasics, ArgumentInfoNotAnExtendedInstruction) {
+  const std::string ext_inst = std::get<0>(GetParam());
+  const std::string operands = std::get<1>(GetParam());
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %foo "foo"
+OpExecutionMode %foo LocalSize 1 1 1
+%foo_name = OpString "foo"
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_0 = OpConstant %int 0
+%int_4 = OpConstant %int 4
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%decl = OpExtInst %void %ext Kernel %foo %foo_name
+%in = OpExtInst %void %ext )" +
+                           ext_inst + " %decl %int_0 " + operands + " %int_0";
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("ArgInfo must be an ArgumentInfo extended instruction"));
+}
+
+TEST_P(ArgumentBasics, ArgumentInfoFromDifferentImport) {
+  const std::string ext_inst = std::get<0>(GetParam());
+  const std::string operands = std::get<1>(GetParam());
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+%ext2 = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %foo "foo"
+OpExecutionMode %foo LocalSize 1 1 1
+%foo_name = OpString "foo"
+%in_name = OpString "in"
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_0 = OpConstant %int 0
+%int_4 = OpConstant %int 4
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%decl = OpExtInst %void %ext Kernel %foo %foo_name
+%info = OpExtInst %void %ext2 ArgumentInfo %in_name
+%in = OpExtInst %void %ext )" +
+                           ext_inst + " %decl %int_0 " + operands + " %info";
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("ArgInfo must be from the same extended instruction import"));
+}
+
+using Uint32Constant =
+    spvtest::ValidateBase<std::pair<std::string, std::string>>;
+
+INSTANTIATE_TEST_SUITE_P(
+    ValidateClspvReflectionUint32Constants, Uint32Constant,
+    ::testing::ValuesIn(std::vector<std::pair<std::string, std::string>>{
+        std::make_pair("ArgumentStorageBuffer %decl %float_0 %int_0 %int_0",
+                       "Ordinal"),
+        std::make_pair("ArgumentStorageBuffer %decl %null %int_0 %int_0",
+                       "Ordinal"),
+        std::make_pair("ArgumentStorageBuffer %decl %int_0 %float_0 %int_0",
+                       "DescriptorSet"),
+        std::make_pair("ArgumentStorageBuffer %decl %int_0 %null %int_0",
+                       "DescriptorSet"),
+        std::make_pair("ArgumentStorageBuffer %decl %int_0 %int_0 %float_0",
+                       "Binding"),
+        std::make_pair("ArgumentStorageBuffer %decl %int_0 %int_0 %null",
+                       "Binding"),
+        std::make_pair("ArgumentUniform %decl %float_0 %int_0 %int_0",
+                       "Ordinal"),
+        std::make_pair("ArgumentUniform %decl %null %int_0 %int_0", "Ordinal"),
+        std::make_pair("ArgumentUniform %decl %int_0 %float_0 %int_0",
+                       "DescriptorSet"),
+        std::make_pair("ArgumentUniform %decl %int_0 %null %int_0",
+                       "DescriptorSet"),
+        std::make_pair("ArgumentUniform %decl %int_0 %int_0 %float_0",
+                       "Binding"),
+        std::make_pair("ArgumentUniform %decl %int_0 %int_0 %null", "Binding"),
+        std::make_pair("ArgumentSampledImage %decl %float_0 %int_0 %int_0",
+                       "Ordinal"),
+        std::make_pair("ArgumentSampledImage %decl %null %int_0 %int_0",
+                       "Ordinal"),
+        std::make_pair("ArgumentSampledImage %decl %int_0 %float_0 %int_0",
+                       "DescriptorSet"),
+        std::make_pair("ArgumentSampledImage %decl %int_0 %null %int_0",
+                       "DescriptorSet"),
+        std::make_pair("ArgumentSampledImage %decl %int_0 %int_0 %float_0",
+                       "Binding"),
+        std::make_pair("ArgumentSampledImage %decl %int_0 %int_0 %null",
+                       "Binding"),
+        std::make_pair("ArgumentStorageImage %decl %float_0 %int_0 %int_0",
+                       "Ordinal"),
+        std::make_pair("ArgumentStorageImage %decl %null %int_0 %int_0",
+                       "Ordinal"),
+        std::make_pair("ArgumentStorageImage %decl %int_0 %float_0 %int_0",
+                       "DescriptorSet"),
+        std::make_pair("ArgumentStorageImage %decl %int_0 %null %int_0",
+                       "DescriptorSet"),
+        std::make_pair("ArgumentStorageImage %decl %int_0 %int_0 %float_0",
+                       "Binding"),
+        std::make_pair("ArgumentStorageImage %decl %int_0 %int_0 %null",
+                       "Binding"),
+        std::make_pair("ArgumentSampler %decl %float_0 %int_0 %int_0",
+                       "Ordinal"),
+        std::make_pair("ArgumentSampler %decl %null %int_0 %int_0", "Ordinal"),
+        std::make_pair("ArgumentSampler %decl %int_0 %float_0 %int_0",
+                       "DescriptorSet"),
+        std::make_pair("ArgumentSampler %decl %int_0 %null %int_0",
+                       "DescriptorSet"),
+        std::make_pair("ArgumentSampler %decl %int_0 %int_0 %float_0",
+                       "Binding"),
+        std::make_pair("ArgumentSampler %decl %int_0 %int_0 %null", "Binding"),
+        std::make_pair("ArgumentPodStorageBuffer %decl %float_0 %int_0 %int_0 "
+                       "%int_0 %int_4",
+                       "Ordinal"),
+        std::make_pair(
+            "ArgumentPodStorageBuffer %decl %null %int_0 %int_0 %int_0 %int_4",
+            "Ordinal"),
+        std::make_pair("ArgumentPodStorageBuffer %decl %int_0 %float_0 %int_0 "
+                       "%int_0 %int_4",
+                       "DescriptorSet"),
+        std::make_pair(
+            "ArgumentPodStorageBuffer %decl %int_0 %null %int_0 %int_0 %int_4",
+            "DescriptorSet"),
+        std::make_pair("ArgumentPodStorageBuffer %decl %int_0 %int_0 %float_0 "
+                       "%int_0 %int_4",
+                       "Binding"),
+        std::make_pair(
+            "ArgumentPodStorageBuffer %decl %int_0 %int_0 %null %int_0 %int_4",
+            "Binding"),
+        std::make_pair("ArgumentPodStorageBuffer %decl %int_0 %int_0 %int_0 "
+                       "%float_0 %int_4",
+                       "Offset"),
+        std::make_pair(
+            "ArgumentPodStorageBuffer %decl %int_0 %int_0 %int_0 %null %int_4",
+            "Offset"),
+        std::make_pair("ArgumentPodStorageBuffer %decl %int_0 %int_0 %int_0 "
+                       "%int_0 %float_0",
+                       "Size"),
+        std::make_pair(
+            "ArgumentPodStorageBuffer %decl %int_0 %int_0 %int_0 %int_0 %null",
+            "Size"),
+        std::make_pair(
+            "ArgumentPodUniform %decl %float_0 %int_0 %int_0 %int_0 %int_4",
+            "Ordinal"),
+        std::make_pair(
+            "ArgumentPodUniform %decl %null %int_0 %int_0 %int_0 %int_4",
+            "Ordinal"),
+        std::make_pair(
+            "ArgumentPodUniform %decl %int_0 %float_0 %int_0 %int_0 %int_4",
+            "DescriptorSet"),
+        std::make_pair(
+            "ArgumentPodUniform %decl %int_0 %null %int_0 %int_0 %int_4",
+            "DescriptorSet"),
+        std::make_pair(
+            "ArgumentPodUniform %decl %int_0 %int_0 %float_0 %int_0 %int_4",
+            "Binding"),
+        std::make_pair(
+            "ArgumentPodUniform %decl %int_0 %int_0 %null %int_0 %int_4",
+            "Binding"),
+        std::make_pair(
+            "ArgumentPodUniform %decl %int_0 %int_0 %int_0 %float_0 %int_4",
+            "Offset"),
+        std::make_pair(
+            "ArgumentPodUniform %decl %int_0 %int_0 %int_0 %null %int_4",
+            "Offset"),
+        std::make_pair(
+            "ArgumentPodUniform %decl %int_0 %int_0 %int_0 %int_0 %float_0",
+            "Size"),
+        std::make_pair(
+            "ArgumentPodUniform %decl %int_0 %int_0 %int_0 %int_0 %null",
+            "Size"),
+        std::make_pair("ArgumentPodPushConstant %decl %float_0 %int_0 %int_4",
+                       "Ordinal"),
+        std::make_pair("ArgumentPodPushConstant %decl %null %int_0 %int_4",
+                       "Ordinal"),
+        std::make_pair("ArgumentPodPushConstant %decl %int_0 %float_0 %int_4",
+                       "Offset"),
+        std::make_pair("ArgumentPodPushConstant %decl %int_0 %null %int_4",
+                       "Offset"),
+        std::make_pair("ArgumentPodPushConstant %decl %int_0 %int_0 %float_0",
+                       "Size"),
+        std::make_pair("ArgumentPodPushConstant %decl %int_0 %int_0 %null",
+                       "Size"),
+        std::make_pair("ArgumentWorkgroup %decl %float_0 %int_0 %int_4",
+                       "Ordinal"),
+        std::make_pair("ArgumentWorkgroup %decl %null %int_0 %int_4",
+                       "Ordinal"),
+        std::make_pair("ArgumentWorkgroup %decl %int_0 %float_0 %int_4",
+                       "SpecId"),
+        std::make_pair("ArgumentWorkgroup %decl %int_0 %null %int_4", "SpecId"),
+        std::make_pair("ArgumentWorkgroup %decl %int_0 %int_0 %float_0",
+                       "ElemSize"),
+        std::make_pair("ArgumentWorkgroup %decl %int_0 %int_0 %null",
+                       "ElemSize"),
+        std::make_pair("SpecConstantWorkgroupSize %float_0 %int_0 %int_4", "X"),
+        std::make_pair("SpecConstantWorkgroupSize %null %int_0 %int_4", "X"),
+        std::make_pair("SpecConstantWorkgroupSize %int_0 %float_0 %int_4", "Y"),
+        std::make_pair("SpecConstantWorkgroupSize %int_0 %null %int_4", "Y"),
+        std::make_pair("SpecConstantWorkgroupSize %int_0 %int_0 %float_0", "Z"),
+        std::make_pair("SpecConstantWorkgroupSize %int_0 %int_0 %null", "Z"),
+        std::make_pair("SpecConstantGlobalOffset %float_0 %int_0 %int_4", "X"),
+        std::make_pair("SpecConstantGlobalOffset %null %int_0 %int_4", "X"),
+        std::make_pair("SpecConstantGlobalOffset %int_0 %float_0 %int_4", "Y"),
+        std::make_pair("SpecConstantGlobalOffset %int_0 %null %int_4", "Y"),
+        std::make_pair("SpecConstantGlobalOffset %int_0 %int_0 %float_0", "Z"),
+        std::make_pair("SpecConstantGlobalOffset %int_0 %int_0 %null", "Z"),
+        std::make_pair("SpecConstantWorkDim %float_0", "Dim"),
+        std::make_pair("SpecConstantWorkDim %null", "Dim"),
+        std::make_pair("PushConstantGlobalOffset %float_0 %int_0", "Offset"),
+        std::make_pair("PushConstantGlobalOffset %null %int_0", "Offset"),
+        std::make_pair("PushConstantGlobalOffset %int_0 %float_0", "Size"),
+        std::make_pair("PushConstantGlobalOffset %int_0 %null", "Size"),
+        std::make_pair("PushConstantEnqueuedLocalSize %float_0 %int_0",
+                       "Offset"),
+        std::make_pair("PushConstantEnqueuedLocalSize %null %int_0", "Offset"),
+        std::make_pair("PushConstantEnqueuedLocalSize %int_0 %float_0", "Size"),
+        std::make_pair("PushConstantEnqueuedLocalSize %int_0 %null", "Size"),
+        std::make_pair("PushConstantGlobalSize %float_0 %int_0", "Offset"),
+        std::make_pair("PushConstantGlobalSize %null %int_0", "Offset"),
+        std::make_pair("PushConstantGlobalSize %int_0 %float_0", "Size"),
+        std::make_pair("PushConstantGlobalSize %int_0 %null", "Size"),
+        std::make_pair("PushConstantRegionOffset %float_0 %int_0", "Offset"),
+        std::make_pair("PushConstantRegionOffset %null %int_0", "Offset"),
+        std::make_pair("PushConstantRegionOffset %int_0 %float_0", "Size"),
+        std::make_pair("PushConstantRegionOffset %int_0 %null", "Size"),
+        std::make_pair("PushConstantNumWorkgroups %float_0 %int_0", "Offset"),
+        std::make_pair("PushConstantNumWorkgroups %null %int_0", "Offset"),
+        std::make_pair("PushConstantNumWorkgroups %int_0 %float_0", "Size"),
+        std::make_pair("PushConstantNumWorkgroups %int_0 %null", "Size"),
+        std::make_pair("PushConstantRegionGroupOffset %float_0 %int_0",
+                       "Offset"),
+        std::make_pair("PushConstantRegionGroupOffset %null %int_0", "Offset"),
+        std::make_pair("PushConstantRegionGroupOffset %int_0 %float_0", "Size"),
+        std::make_pair("PushConstantRegionGroupOffset %int_0 %null", "Size"),
+        std::make_pair("ConstantDataStorageBuffer %float_0 %int_0 %data",
+                       "DescriptorSet"),
+        std::make_pair("ConstantDataStorageBuffer %null %int_0 %data",
+                       "DescriptorSet"),
+        std::make_pair("ConstantDataStorageBuffer %int_0 %float_0 %data",
+                       "Binding"),
+        std::make_pair("ConstantDataStorageBuffer %int_0 %null %data",
+                       "Binding"),
+        std::make_pair("ConstantDataUniform %float_0 %int_0 %data",
+                       "DescriptorSet"),
+        std::make_pair("ConstantDataUniform %null %int_0 %data",
+                       "DescriptorSet"),
+        std::make_pair("ConstantDataUniform %int_0 %float_0 %data", "Binding"),
+        std::make_pair("ConstantDataUniform %int_0 %null %data", "Binding"),
+        std::make_pair("LiteralSampler %float_0 %int_0 %int_4",
+                       "DescriptorSet"),
+        std::make_pair("LiteralSampler %null %int_0 %int_4", "DescriptorSet"),
+        std::make_pair("LiteralSampler %int_0 %float_0 %int_4", "Binding"),
+        std::make_pair("LiteralSampler %int_0 %null %int_4", "Binding"),
+        std::make_pair("LiteralSampler %int_0 %int_0 %float_0", "Mask"),
+        std::make_pair("LiteralSampler %int_0 %int_0 %null", "Mask"),
+        std::make_pair(
+            "PropertyRequiredWorkgroupSize %decl %float_0 %int_1 %int_4", "X"),
+        std::make_pair(
+            "PropertyRequiredWorkgroupSize %decl %null %int_1 %int_4", "X"),
+        std::make_pair(
+            "PropertyRequiredWorkgroupSize %decl %int_1 %float_0 %int_4", "Y"),
+        std::make_pair(
+            "PropertyRequiredWorkgroupSize %decl %int_1 %null %int_4", "Y"),
+        std::make_pair(
+            "PropertyRequiredWorkgroupSize %decl %int_1 %int_1 %float_0", "Z"),
+        std::make_pair(
+            "PropertyRequiredWorkgroupSize %decl %int_1 %int_1 %null", "Z")}));
+
+TEST_P(Uint32Constant, Invalid) {
+  const std::string ext_inst = std::get<0>(GetParam());
+  const std::string name = std::get<1>(GetParam());
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %foo "foo"
+OpExecutionMode %foo LocalSize 1 1 1
+%foo_name = OpString "foo"
+%data = OpString "1234"
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_0 = OpConstant %int 0
+%int_1 = OpConstant %int 1
+%int_4 = OpConstant %int 4
+%null = OpConstantNull %int
+%float = OpTypeFloat 32
+%float_0 = OpConstant %float 0
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%decl = OpExtInst %void %ext Kernel %foo %foo_name
+%inst = OpExtInst %void %ext )" +
+                           ext_inst;
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(name + " must be a 32-bit unsigned integer OpConstant"));
+}
+
+using StringOperand =
+    spvtest::ValidateBase<std::pair<std::string, std::string>>;
+
+INSTANTIATE_TEST_SUITE_P(
+    ValidateClspvReflectionStringOperands, StringOperand,
+    ::testing::ValuesIn(std::vector<std::pair<std::string, std::string>>{
+        std::make_pair("ConstantDataStorageBuffer %int_0 %int_0 %int_0",
+                       "Data"),
+        std::make_pair("ConstantDataUniform %int_0 %int_0 %int_0", "Data")}));
+
+TEST_P(StringOperand, Invalid) {
+  const std::string ext_inst = std::get<0>(GetParam());
+  const std::string name = std::get<1>(GetParam());
+  const std::string text = R"(
+OpCapability Shader
+OpExtension "SPV_KHR_non_semantic_info"
+%ext = OpExtInstImport "NonSemantic.ClspvReflection.1"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %foo "foo"
+OpExecutionMode %foo LocalSize 1 1 1
+%foo_name = OpString "foo"
+%data = OpString "1234"
+%void = OpTypeVoid
+%int = OpTypeInt 32 0
+%int_0 = OpConstant %int 0
+%int_1 = OpConstant %int 1
+%int_4 = OpConstant %int 4
+%null = OpConstantNull %int
+%float = OpTypeFloat 32
+%float_0 = OpConstant %float 0
+%void_fn = OpTypeFunction %void
+%foo = OpFunction %void None %void_fn
+%entry = OpLabel
+OpReturn
+OpFunctionEnd
+%decl = OpExtInst %void %ext Kernel %foo %foo_name
+%inst = OpExtInst %void %ext )" +
+                           ext_inst;
+
+  CompileSuccessfully(text);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(), HasSubstr(name + " must be an OpString"));
+}
 
 }  // namespace
 }  // namespace val

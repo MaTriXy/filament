@@ -29,6 +29,21 @@
 
 namespace spvtools {
 namespace opt {
+namespace {
+// Gather the set of blocks for all the path from |entry| to |root|.
+void GetBlocksInPath(uint32_t block, uint32_t entry,
+                     std::unordered_set<uint32_t>* blocks_in_path,
+                     const CFG& cfg) {
+  for (uint32_t pid : cfg.preds(block)) {
+    if (blocks_in_path->insert(pid).second) {
+      if (pid != entry) {
+        GetBlocksInPath(pid, entry, blocks_in_path, cfg);
+      }
+    }
+  }
+}
+}  // namespace
+
 size_t LoopPeelingPass::code_grow_threshold_ = 1000;
 
 void LoopPeeling::DuplicateAndConnectLoop(
@@ -39,6 +54,7 @@ void LoopPeeling::DuplicateAndConnectLoop(
   assert(CanPeelLoop() && "Cannot peel loop!");
 
   std::vector<BasicBlock*> ordered_loop_blocks;
+  // TODO(1841): Handle failure to create pre-header.
   BasicBlock* pre_header = loop_->GetOrCreatePreHeaderBlock();
 
   loop_->ComputeLoopStructuredOrder(&ordered_loop_blocks);
@@ -131,6 +147,7 @@ void LoopPeeling::DuplicateAndConnectLoop(
 
   // Force the creation of a new preheader for the original loop and set it as
   // the merge block for the cloned loop.
+  // TODO(1841): Handle failure to create pre-header.
   cloned_loop_->SetMergeBlock(loop_->GetOrCreatePreHeaderBlock());
 }
 
@@ -151,7 +168,7 @@ void LoopPeeling::InsertCanonicalInductionVariable(
       context_, &*insert_point,
       IRContext::kAnalysisDefUse | IRContext::kAnalysisInstrToBlockMapping);
   Instruction* uint_1_cst =
-      builder.Add32BitConstantInteger<uint32_t>(1, int_type_->IsSigned());
+      builder.GetIntConstant<uint32_t>(1, int_type_->IsSigned());
   // Create the increment.
   // Note that we do "1 + 1" here, one of the operand should the phi
   // value but we don't have it yet. The operand will be set latter.
@@ -162,8 +179,7 @@ void LoopPeeling::InsertCanonicalInductionVariable(
 
   canonical_induction_variable_ = builder.AddPhi(
       uint_1_cst->type_id(),
-      {builder.Add32BitConstantInteger<uint32_t>(0, int_type_->IsSigned())
-           ->result_id(),
+      {builder.GetIntConstant<uint32_t>(0, int_type_->IsSigned())->result_id(),
        GetClonedLoop()->GetPreHeaderBlock()->id(), iv_inc->result_id(),
        GetClonedLoop()->GetLatchBlock()->id()});
   // Connect everything.
@@ -185,7 +201,7 @@ void LoopPeeling::GetIteratorUpdateOperations(
   operations->insert(iterator);
   iterator->ForEachInId([def_use_mgr, loop, operations, this](uint32_t* id) {
     Instruction* insn = def_use_mgr->GetDef(*id);
-    if (insn->opcode() == SpvOpLabel) {
+    if (insn->opcode() == spv::Op::OpLabel) {
       return;
     }
     if (operations->count(insn)) {
@@ -196,19 +212,6 @@ void LoopPeeling::GetIteratorUpdateOperations(
     }
     GetIteratorUpdateOperations(loop, insn, operations);
   });
-}
-
-// Gather the set of blocks for all the path from |entry| to |root|.
-static void GetBlocksInPath(uint32_t block, uint32_t entry,
-                            std::unordered_set<uint32_t>* blocks_in_path,
-                            const CFG& cfg) {
-  for (uint32_t pid : cfg.preds(block)) {
-    if (blocks_in_path->insert(pid).second) {
-      if (pid != entry) {
-        GetBlocksInPath(pid, entry, blocks_in_path, cfg);
-      }
-    }
-  }
 }
 
 bool LoopPeeling::IsConditionCheckSideEffectFree() const {
@@ -230,9 +233,9 @@ bool LoopPeeling::IsConditionCheckSideEffectFree() const {
       if (!bb->WhileEachInst([this](Instruction* insn) {
             if (insn->IsBranch()) return true;
             switch (insn->opcode()) {
-              case SpvOpLabel:
-              case SpvOpSelectionMerge:
-              case SpvOpLoopMerge:
+              case spv::Op::OpLabel:
+              case spv::Op::OpSelectionMerge:
+              case spv::Op::OpLoopMerge:
                 return true;
               default:
                 break;
@@ -321,7 +324,7 @@ void LoopPeeling::FixExitCondition(
 
   BasicBlock* condition_block = cfg.block(condition_block_id);
   Instruction* exit_condition = condition_block->terminator();
-  assert(exit_condition->opcode() == SpvOpBranchConditional);
+  assert(exit_condition->opcode() == spv::Op::OpBranchConditional);
   BasicBlock::iterator insert_point = condition_block->tail();
   if (condition_block->GetMergeInst()) {
     --insert_point;
@@ -346,10 +349,10 @@ BasicBlock* LoopPeeling::CreateBlockBefore(BasicBlock* bb) {
   CFG& cfg = *context_->cfg();
   assert(cfg.preds(bb->id()).size() == 1 && "More than one predecessor");
 
+  // TODO(1841): Handle id overflow.
   std::unique_ptr<BasicBlock> new_bb =
       MakeUnique<BasicBlock>(std::unique_ptr<Instruction>(new Instruction(
-          context_, SpvOpLabel, 0, context_->TakeNextId(), {})));
-  new_bb->SetParent(loop_utils_.GetFunction());
+          context_, spv::Op::OpLabel, 0, context_->TakeNextId(), {})));
   // Update the loop descriptor.
   Loop* in_loop = (*loop_utils_.GetLoopDescriptor())[bb];
   if (in_loop) {
@@ -392,6 +395,7 @@ BasicBlock* LoopPeeling::CreateBlockBefore(BasicBlock* bb) {
 
 BasicBlock* LoopPeeling::ProtectLoop(Loop* loop, Instruction* condition,
                                      BasicBlock* if_merge) {
+  // TODO(1841): Handle failure to create pre-header.
   BasicBlock* if_block = loop->GetOrCreatePreHeaderBlock();
   // Will no longer be a pre-header because of the if.
   loop->SetPreHeaderBlock(nullptr);
@@ -422,7 +426,7 @@ void LoopPeeling::PeelBefore(uint32_t peel_factor) {
       context_, &*cloned_loop_->GetPreHeaderBlock()->tail(),
       IRContext::kAnalysisDefUse | IRContext::kAnalysisInstrToBlockMapping);
   Instruction* factor =
-      builder.Add32BitConstantInteger(peel_factor, int_type_->IsSigned());
+      builder.GetIntConstant(peel_factor, int_type_->IsSigned());
 
   Instruction* has_remaining_iteration = builder.AddLessThan(
       factor->result_id(), loop_iteration_count_->result_id());
@@ -484,7 +488,7 @@ void LoopPeeling::PeelAfter(uint32_t peel_factor) {
       context_, &*cloned_loop_->GetPreHeaderBlock()->tail(),
       IRContext::kAnalysisDefUse | IRContext::kAnalysisInstrToBlockMapping);
   Instruction* factor =
-      builder.Add32BitConstantInteger(peel_factor, int_type_->IsSigned());
+      builder.GetIntConstant(peel_factor, int_type_->IsSigned());
 
   Instruction* has_remaining_iteration = builder.AddLessThan(
       factor->result_id(), loop_iteration_count_->result_id());
@@ -677,8 +681,8 @@ std::pair<bool, Loop*> LoopPeelingPass::ProcessLoop(Loop* loop,
       InstructionBuilder(
           context(), loop->GetHeaderBlock(),
           IRContext::kAnalysisDefUse | IRContext::kAnalysisInstrToBlockMapping)
-          .Add32BitConstantInteger<uint32_t>(static_cast<uint32_t>(iterations),
-                                             is_signed),
+          .GetIntConstant<uint32_t>(static_cast<uint32_t>(iterations),
+                                    is_signed),
       canonical_induction_variable);
 
   if (!peeler.CanPeelLoop()) {
@@ -789,18 +793,18 @@ uint32_t LoopPeelingPass::LoopPeelingInfo::GetFirstNonLoopInvariantOperand(
   return 0;
 }
 
-static bool IsHandledCondition(SpvOp opcode) {
+static bool IsHandledCondition(spv::Op opcode) {
   switch (opcode) {
-    case SpvOpIEqual:
-    case SpvOpINotEqual:
-    case SpvOpUGreaterThan:
-    case SpvOpSGreaterThan:
-    case SpvOpUGreaterThanEqual:
-    case SpvOpSGreaterThanEqual:
-    case SpvOpULessThan:
-    case SpvOpSLessThan:
-    case SpvOpULessThanEqual:
-    case SpvOpSLessThanEqual:
+    case spv::Op::OpIEqual:
+    case spv::Op::OpINotEqual:
+    case spv::Op::OpUGreaterThan:
+    case spv::Op::OpSGreaterThan:
+    case spv::Op::OpUGreaterThanEqual:
+    case spv::Op::OpSGreaterThanEqual:
+    case spv::Op::OpULessThan:
+    case spv::Op::OpSLessThan:
+    case spv::Op::OpULessThanEqual:
+    case spv::Op::OpSLessThanEqual:
       return true;
     default:
       return false;
@@ -809,7 +813,7 @@ static bool IsHandledCondition(SpvOp opcode) {
 
 LoopPeelingPass::LoopPeelingInfo::Direction
 LoopPeelingPass::LoopPeelingInfo::GetPeelingInfo(BasicBlock* bb) const {
-  if (bb->terminator()->opcode() != SpvOpBranchConditional) {
+  if (bb->terminator()->opcode() != spv::Op::OpBranchConditional) {
     return GetNoneDirection();
   }
 
@@ -884,27 +888,27 @@ LoopPeelingPass::LoopPeelingInfo::GetPeelingInfo(BasicBlock* bb) const {
   switch (condition->opcode()) {
     default:
       return GetNoneDirection();
-    case SpvOpIEqual:
-    case SpvOpINotEqual:
+    case spv::Op::OpIEqual:
+    case spv::Op::OpINotEqual:
       return HandleEquality(lhs, rhs);
-    case SpvOpUGreaterThan:
-    case SpvOpSGreaterThan: {
+    case spv::Op::OpUGreaterThan:
+    case spv::Op::OpSGreaterThan: {
       cmp_operator = CmpOperator::kGT;
       break;
     }
-    case SpvOpULessThan:
-    case SpvOpSLessThan: {
+    case spv::Op::OpULessThan:
+    case spv::Op::OpSLessThan: {
       cmp_operator = CmpOperator::kLT;
       break;
     }
     // We add one to transform >= into > and <= into <.
-    case SpvOpUGreaterThanEqual:
-    case SpvOpSGreaterThanEqual: {
+    case spv::Op::OpUGreaterThanEqual:
+    case spv::Op::OpSGreaterThanEqual: {
       cmp_operator = CmpOperator::kGE;
       break;
     }
-    case SpvOpULessThanEqual:
-    case SpvOpSLessThanEqual: {
+    case spv::Op::OpULessThanEqual:
+    case spv::Op::OpSLessThanEqual: {
       cmp_operator = CmpOperator::kLE;
       break;
     }
@@ -1060,7 +1064,7 @@ LoopPeelingPass::LoopPeelingInfo::HandleInequality(CmpOperator cmp_op,
   }
 
   uint32_t cast_iteration = 0;
-  // sanity check: can we fit |iteration| in a uint32_t ?
+  // Integrity check: can we fit |iteration| in a uint32_t ?
   if (static_cast<uint64_t>(iteration) < std::numeric_limits<uint32_t>::max()) {
     cast_iteration = static_cast<uint32_t>(iteration);
   }

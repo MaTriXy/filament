@@ -178,7 +178,7 @@ private:
 
 class JsonishString final : public JsonishValue {
 public:
-    explicit JsonishString(const std::string&& string);
+    explicit JsonishString(const std::string& string);
 
     ~JsonishString() override = default;
 
@@ -200,7 +200,7 @@ public:
     JsonishObject() : JsonishValue(OBJECT) { }
 
     ~JsonishObject() override {
-        for (auto member : mMembers) {
+        for (const auto& member : mMembers) {
             delete member.second;
         }
     }
@@ -266,6 +266,7 @@ private:
     JsonishValue* parseValue() noexcept;
     JsonishObject* parseMembers() noexcept;
     JsonishArray* parseElements() noexcept;
+    JsonishValue* parseString() noexcept;
 
     const JsonLexeme* consumeLexeme(JsonType type) noexcept;
     const JsonLexeme* peekNextLexemeType() const noexcept;

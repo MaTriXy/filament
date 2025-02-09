@@ -24,12 +24,6 @@
 #error A valid FILAMENT_APP_USE_ backend define must be set.
 #endif
 
-#define METAL_AVAILABLE __has_include(<QuartzCore/CAMetalLayer.h>)
-
-#if !METAL_AVAILABLE && FILAMENT_APP_USE_METAL
-#error The iOS simulator does not support Metal.
-#endif
-
 @implementation FilamentView {
     FilamentApp* app;
     CADisplayLink* displayLink;
@@ -45,10 +39,11 @@
 #elif FILAMENT_APP_USE_METAL
         [self initializeMetalLayer];
 #endif
-        CGRect nativeBounds = [[UIScreen mainScreen] nativeBounds];
-        app = new FilamentApp((__bridge void*) self.layer, nativeBounds.size.width, nativeBounds.size.height);
-        app->initialize();
+        app = new FilamentApp((__bridge void*) self.layer);
         self.contentScaleFactor = UIScreen.mainScreen.nativeScale;
+        app->initialize();
+        app->updateViewportAndCameraProjection(self.bounds.size.width, self.bounds.size.height,
+                self.contentScaleFactor);
     }
 
     // Call renderloop 60 times a second.
@@ -75,6 +70,7 @@
 #if METAL_AVAILABLE
     CAMetalLayer* metalLayer = (CAMetalLayer*) self.layer;
     metalLayer.pixelFormat = MTLPixelFormatBGRA8Unorm;
+    metalLayer.opaque = YES;
 
     CGRect nativeBounds = [UIScreen mainScreen].nativeBounds;
     metalLayer.drawableSize = nativeBounds.size;
@@ -117,6 +113,34 @@
     CGPoint delta = CGPointMake(location.x - previousLocation.x, location.y - previousLocation.y);
     previousLocation = location;
     app->pan(delta.x, delta.y);
+}
+
+- (void)updateViewportAndCameraProjection {
+    if (!app) {
+        return;
+    }
+
+#if FILAMENT_APP_USE_METAL
+    CAMetalLayer* metalLayer = (CAMetalLayer*)self.layer;
+    const uint32_t width = self.bounds.size.width * self.contentScaleFactor;
+    const uint32_t height = self.bounds.size.height * self.contentScaleFactor;
+    metalLayer.drawableSize = CGSizeMake(width, height);
+#endif
+
+    app->updateViewportAndCameraProjection(self.bounds.size.width, self.bounds.size.height,
+        self.contentScaleFactor);
+}
+
+#pragma mark UIView methods
+
+- (void)layoutSubviews {
+    [super layoutSubviews];
+    [self updateViewportAndCameraProjection];
+}
+
+- (void)setContentScaleFactor:(CGFloat)contentScaleFactor {
+    [super setContentScaleFactor:contentScaleFactor];
+    [self updateViewportAndCameraProjection];
 }
 
 @end

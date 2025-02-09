@@ -19,7 +19,7 @@
 
 #include <filament/Box.h>
 #include <filament/Engine.h>
-#include <filament/MaterialEnums.h>
+#include <filament/VertexBuffer.h>
 #include <filament/RenderableManager.h>
 #include <filament/TransformManager.h>
 
@@ -35,8 +35,9 @@ using namespace filament::math;
 using namespace std;
 using namespace utils;
 
-namespace gltfio {
-namespace details {
+static const auto FREE_CALLBACK = [](void* mem, size_t, void*) { free(mem); };
+
+namespace filament::gltfio {
 
 struct FFilamentAsset;
 
@@ -139,12 +140,11 @@ Wireframe::Wireframe(FFilamentAsset* asset) : mAsset(asset) {
         .bufferType(IndexBuffer::IndexType::UINT)
         .build(*engine);
 
-    auto destroy = (VertexBuffer::BufferDescriptor::Callback) free;
     mVertexBuffer->setBufferAt(*engine, 0, VertexBuffer::BufferDescriptor(
-                    verts, mVertexBuffer->getVertexCount() * sizeof(float3), destroy));
+                    verts, mVertexBuffer->getVertexCount() * sizeof(float3), FREE_CALLBACK));
 
     mIndexBuffer->setBuffer(*engine, IndexBuffer::BufferDescriptor(
-                    inds, mIndexBuffer->getIndexCount() * sizeof(uint32_t), destroy));
+                    inds, mIndexBuffer->getIndexCount() * sizeof(uint32_t), FREE_CALLBACK));
 
     mEntity = EntityManager::get().create();
 
@@ -163,5 +163,4 @@ Wireframe::~Wireframe() {
     engine->destroy(mIndexBuffer);
 }
 
-} // namespace details
 } // namsepace gltfio

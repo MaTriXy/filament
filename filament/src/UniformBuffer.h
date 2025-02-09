@@ -14,15 +14,17 @@
  * limitations under the License.
  */
 
-#ifndef TNT_FILAMENT_DRIVER_UNIFORMBUFFER_H
-#define TNT_FILAMENT_DRIVER_UNIFORMBUFFER_H
+#ifndef TNT_FILAMENT_UNIFORMBUFFER_H
+#define TNT_FILAMENT_UNIFORMBUFFER_H
 
 #include <algorithm>
 
 #include "private/backend/DriverApi.h"
 
+#include <utils/Allocator.h>
 #include <utils/compiler.h>
 #include <utils/Log.h>
+#include <utils/debug.h>
 
 #include <backend/BufferDescriptor.h>
 
@@ -30,8 +32,7 @@
 #include <math/mat4.h>
 
 #include <stddef.h>
-#include <assert.h>
-
+#include <string.h>
 
 namespace filament {
 
@@ -59,15 +60,15 @@ public:
         // immediately jump into libc's free()
         if (mBuffer && !isLocalStorage()) {
             // test not necessary but avoids a call to libc (and this is a common enough case)
-            UniformBuffer::free(mBuffer, mSize);
+            free(mBuffer, mSize);
         }
     }
 
     UniformBuffer& setUniforms(const UniformBuffer& rhs) noexcept;
 
     // invalidate a range of uniforms and return a pointer to it. offset and size given in bytes
-    void* invalidateUniforms(size_t offset, size_t size) {
-        assert(offset + size <= mSize);
+    void* invalidateUniforms(size_t const offset, size_t const size) {
+        assert_invariant(offset + size <= mSize);
         mSomethingDirty = true;
         return static_cast<char*>(mBuffer) + offset;
     }
@@ -94,17 +95,15 @@ public:
      * -----------------------------------------------
      */
 
+    // Note: we purposely not include types that require conversion here
+    // (e.g. bool and bool vectors)
     template <typename T>
     struct is_supported_type {
         using type = typename std::enable_if<
-                std::is_same<bool, T>::value ||
                 std::is_same<float, T>::value ||
                 std::is_same<int32_t, T>::value ||
                 std::is_same<uint32_t, T>::value ||
                 std::is_same<math::quatf, T>::value ||
-                std::is_same<math::bool2, T>::value ||
-                std::is_same<math::bool3, T>::value ||
-                std::is_same<math::bool4, T>::value ||
                 std::is_same<math::int2, T>::value ||
                 std::is_same<math::int3, T>::value ||
                 std::is_same<math::int4, T>::value ||
@@ -119,33 +118,45 @@ public:
         >::type;
     };
 
-    // invalidate an array of uniforms and return a pointer to the first element
-    // offset in bytes, and count is the number of elements to invalidate
-    template <typename T, typename = typename is_supported_type<T>::type>
-    void setUniformArray(size_t offset, T const* UTILS_RESTRICT begin, size_t count) noexcept {
-        T* UTILS_RESTRICT p = static_cast<T*>(invalidateUniforms(offset, sizeof(T) * count));
-        std::copy_n(begin, count, p);
+    // Invalidates an array of uniforms and returns a pointer to the first element.
+    //
+    // The offset is in bytes, and the count is the number of elements to invalidate.
+    // Note that Filament treats arrays of size 1 as being equivalent to a scalar.
+    //
+    // To compute the size occupied by the array, we account for std140 alignment, which specifies
+    // that the start of each array element is aligned to the size of a vec4. Consider an array that
+    // has three floats. It would be laid out in memory as follows, where each letter is a 32-bit
+    // word:
+    //
+    //      a x x x b x x x c
+    //
+    // The "x" symbols represent dummy words.
+    template<typename T, typename = typename is_supported_type<T>::type>
+    UTILS_ALWAYS_INLINE
+    void setUniformArray(size_t const offset, T const* UTILS_RESTRICT begin, size_t const count) noexcept {
+        static_assert(!std::is_same_v<T, math::mat3f>);
+        setUniformArrayUntyped<sizeof(T)>(offset, begin, count);
     }
 
-    template <typename T, typename = typename is_supported_type<T>::type>
-    static void setUniform(void* addr, size_t offset, const T& v) noexcept {
-        addr = static_cast<char*>(addr) + offset;
-        T* p = static_cast<T*>(addr);
-        *p = v;
-    }
-
-    // set uniform of known types to the proper offset (e.g.: use offsetof())
     // (see specialization for mat3f below)
-    template <typename T, typename = typename is_supported_type<T>::type>
-    void setUniform(size_t offset, const T& v) noexcept {
-        setUniform(invalidateUniforms(offset, sizeof(T)), 0, v);
+    template<typename T, typename = typename is_supported_type<T>::type>
+    UTILS_ALWAYS_INLINE
+    static inline void setUniform(void* addr, size_t const offset, const T& v) noexcept {
+        static_assert(!std::is_same_v<T, math::mat3f>);
+        setUniformUntyped<sizeof(T)>(addr, offset, &v);
+    }
+
+    template<typename T, typename = typename is_supported_type<T>::type>
+    UTILS_ALWAYS_INLINE
+    inline void setUniform(size_t const offset, const T& v) noexcept {
+        static_assert(!std::is_same_v<T, math::mat3f>);
+        setUniformUntyped<sizeof(T)>(offset, &v);
     }
 
     // get uniform of known types from the proper offset (e.g.: use offsetof())
     template<typename T, typename = typename is_supported_type<T>::type>
-    T const& getUniform(size_t offset) const noexcept {
-        // we don't support mat3f because a specialization would force us to return by value.
-        static_assert(!std::is_same<math::mat3f, T>::value, "mat3f not supported");
+    T getUniform(size_t const offset) const noexcept {
+        static_assert(!std::is_same_v<T, math::mat3f>);
         return *reinterpret_cast<T const*>(static_cast<char const*>(mBuffer) + offset);
     }
 
@@ -157,14 +168,21 @@ public:
 
     // copy the UBO data and cleans the dirty bits
     backend::BufferDescriptor toBufferDescriptor(
-            backend::DriverApi& driver, size_t offset, size_t size) const noexcept {
+            backend::DriverApi& driver, size_t const offset, size_t const size) const noexcept {
         backend::BufferDescriptor p;
         p.size = size;
         p.buffer = driver.allocate(p.size); // TODO: use out-of-line buffer if too large
-        memcpy(p.buffer, static_cast<const char*>(getBuffer()) + offset, p.size);
+        memcpy(p.buffer, static_cast<const char*>(getBuffer()) + offset, p.size); // inlined
         clean();
         return p;
     }
+
+    // set uniform of known types to the proper offset (e.g.: use offsetof())
+    template<size_t Size>
+    void setUniformUntyped(size_t offset, void const* UTILS_RESTRICT v) noexcept;
+
+    template<size_t Size>
+    void setUniformArrayUntyped(size_t offset, void const* UTILS_RESTRICT begin, size_t count) noexcept;
 
 private:
 #if !defined(NDEBUG)
@@ -173,56 +191,42 @@ private:
     static void* alloc(size_t size) noexcept;
     static void free(void* addr, size_t size) noexcept;
 
+    template<size_t Size, std::enable_if_t<
+            Size == 4 || Size == 8 || Size == 12 || Size == 16 || Size == 64, bool> = true>
+    UTILS_ALWAYS_INLINE
+    static void setUniformUntyped(void* addr, size_t const offset, void const* v) noexcept {
+        memcpy(static_cast<char*>(addr) + offset, v, Size); // inlined
+    }
+
     inline bool isLocalStorage() const noexcept { return mBuffer == mStorage; }
 
-    // TODO: we need a better to calculate this local storage.
-    // Probably the better thing to do would be to use a special allocator.
-    // Local storage is limited by the total size of a handle (128 byte for GL)
     char mStorage[96];
     void *mBuffer = nullptr;
     uint32_t mSize = 0;
     mutable bool mSomethingDirty = false;
 };
 
-// specialization for float3 (which has a different alignment)
-template<>
-inline void
-UniformBuffer::setUniformArray(size_t offset, math::float3 const* begin, size_t count) noexcept {
-    math::float4* p = static_cast<math::float4*>(invalidateUniforms(offset,
-            sizeof(math::float4) * count));
-    math::float3 const* const end = begin + count;
-    while (begin != end) {
-        p->xyz = *begin++;
-        ++p;
-    }
-}
-
 // specialization for mat3f (which has a different alignment, see std140 layout rules)
 template<>
-inline void UniformBuffer::setUniform(void* addr, size_t offset, const math::mat3f& v) noexcept {
-    struct mat43 {
-        float v[3][4];
-    };
+void UniformBuffer::setUniform(void* addr, size_t offset, const math::mat3f& v) noexcept;
 
-    addr = static_cast<char*>(addr) + offset;
-    mat43& temp = *static_cast<mat43*>(addr);
+template<>
+void UniformBuffer::setUniform(size_t offset, const math::mat3f& v) noexcept;
 
-    temp.v[0][0] = v[0][0];
-    temp.v[0][1] = v[0][1];
-    temp.v[0][2] = v[0][2];
-    temp.v[0][3] = 0; // not needed, but doesn't cost anything
+template<>
+inline void UniformBuffer::setUniformArray(
+        size_t const offset, math::mat3f const* UTILS_RESTRICT begin, size_t const count) noexcept {
+    // pretend each mat3 is an array of 3 float3
+    setUniformArray(offset, reinterpret_cast<math::float3 const*>(begin), count * 3);
+}
 
-    temp.v[1][0] = v[1][0];
-    temp.v[1][1] = v[1][1];
-    temp.v[1][2] = v[1][2];
-    temp.v[1][3] = 0; // not needed, but doesn't cost anything
-
-    temp.v[2][0] = v[2][0];
-    temp.v[2][1] = v[2][1];
-    temp.v[2][2] = v[2][2];
-    temp.v[2][3] = 0; // not needed, but doesn't cost anything
+template<>
+inline math::mat3f UniformBuffer::getUniform(size_t const offset) const noexcept {
+    math::float4 const* p = reinterpret_cast<math::float4 const*>(
+            static_cast<char const*>(mBuffer) + offset);
+    return { p[0].xyz, p[1].xyz, p[2].xyz };
 }
 
 } // namespace filament
 
-#endif // TNT_FILAMENT_DRIVER_UNIFORMBUFFER_H
+#endif // TNT_FILAMENT_UNIFORMBUFFER_H

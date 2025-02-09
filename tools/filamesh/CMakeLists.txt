@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.19)
 project(filamesh)
 
 set(TARGET filamesh)
@@ -16,22 +16,20 @@ set(SRCS
 # ==================================================================================================
 add_executable(${TARGET} ${SRCS})
 
-target_link_libraries(${TARGET} PUBLIC math)
-target_link_libraries(${TARGET} PUBLIC utils)
-target_link_libraries(${TARGET} PUBLIC assimp)
-target_link_libraries(${TARGET} PRIVATE getopt filameshio meshoptimizer)
+target_link_libraries(${TARGET} PRIVATE assimp getopt filameshio meshoptimizer)
+set_target_properties(${TARGET} PROPERTIES FOLDER Tools)
 
 # ==================================================================================================
 # Compile options and optimizations
 # ==================================================================================================
-target_compile_options(${TARGET} PRIVATE
-        -Wno-deprecated-register
-)
+if(NOT MSVC)
+    target_compile_options(${TARGET} PRIVATE -Wno-deprecated-register)
 
-if (NOT LINUX)
-    target_compile_options(${TARGET} PRIVATE
-            -Wno-address-of-packed-member
-    )
+    if (NOT LINUX)
+        target_compile_options(${TARGET} PRIVATE
+                -Wno-address-of-packed-member
+        )
+    endif()
 endif()
 
 # =================================================================================================

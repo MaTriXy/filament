@@ -27,25 +27,24 @@ namespace filamat {
 
 class MaterialTextChunk final : public Chunk {
 public:
-    MaterialTextChunk(const std::vector<TextEntry> &entries, LineDictionary &dictionary,
-            ChunkType type) : Chunk(type), mDictionary(dictionary), mEntries(entries) {
+    MaterialTextChunk(const std::vector<TextEntry>&& entries, const LineDictionary& dictionary,
+            ChunkType type) : Chunk(type), mEntries(entries), mDictionary(dictionary) {
     }
-    ~MaterialTextChunk() = default;
+    ~MaterialTextChunk() override = default;
 
 private:
     void flatten(Flattener& f) override;
 
-    const char* getShaderText(size_t entryIndex) const noexcept;
     void writeEntryAttributes(size_t entryIndex, Flattener& f) const noexcept;
 
     // Structure to keep track of duplicates.
-    struct ShaderAttribute{
+    struct ShaderMapping {
         bool isDup = false;
         size_t dupOfIndex = 0;
     };
-    std::vector<ShaderAttribute> mDuplicateMap;
+    std::vector<ShaderMapping> mDuplicateMap;
 
-    const std::vector<TextEntry>& mEntries;
+    const std::vector<TextEntry> mEntries;
     const LineDictionary& mDictionary;
 };
 

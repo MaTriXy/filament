@@ -22,6 +22,7 @@
 
 #include <filamat/MaterialBuilder.h>
 
+#include <map>
 #include <memory>
 #include <ostream>
 
@@ -31,12 +32,6 @@ namespace matc {
 
 class Config {
 public:
-    enum class Mode {
-        MATERIAL,
-        DEPTH,
-        POSTPROCESS,
-    };
-
     enum class OutputFormat {
         BLOB,
         C_HEADER,
@@ -45,6 +40,11 @@ public:
     using Platform = filamat::MaterialBuilder::Platform;
     using TargetApi = filamat::MaterialBuilder::TargetApi;
     using Optimization = filamat::MaterialBuilder::Optimization;
+
+    // For defines, template, and material parameters, we use an ordered map with a transparent comparator.
+    // Even though the key is stored using std::string, this allows you to make lookups using
+    // std::string_view. There is no need to construct a std::string object just to make a lookup.
+    using StringReplacementMap = std::map<std::string, std::string, std::less<>>;
 
     enum class Metadata {
         NONE,
@@ -79,10 +79,6 @@ public:
         return mDebug;
     }
 
-    Mode getMode() const noexcept {
-        return mMode;
-    }
-
     Platform getPlatform() const noexcept {
         return mPlatform;
     }
@@ -115,21 +111,60 @@ public:
         return mPrintShaders;
     }
 
-    uint8_t getVariantFilter() const noexcept {
+    bool saveRawVariants() const noexcept {
+        return mSaveRawVariants;
+    }
+
+    bool rawShaderMode() const noexcept {
+        return mRawShaderMode;
+    }
+
+    bool noSamplerValidation() const noexcept {
+        return mNoSamplerValidation;
+    }
+
+    bool includeEssl1() const noexcept {
+        return mIncludeEssl1;
+    }
+
+    filament::UserVariantFilterMask getVariantFilter() const noexcept {
         return mVariantFilter;
+    }
+
+    const StringReplacementMap& getDefines() const noexcept {
+        return mDefines;
+    }
+
+    const StringReplacementMap& getTemplateMap() const noexcept {
+        return mTemplateMap;
+    }
+
+    const StringReplacementMap& getMaterialParameters() const noexcept {
+        return mMaterialParameters;
+    }
+
+    filament::backend::FeatureLevel getFeatureLevel() const noexcept {
+        return mFeatureLevel;
     }
 
 protected:
     bool mDebug = false;
     bool mIsValid = true;
     bool mPrintShaders = false;
+    bool mRawShaderMode = false;
+    bool mNoSamplerValidation = false;
+    bool mSaveRawVariants = false;
     Optimization mOptimizationLevel = Optimization::PERFORMANCE;
     Metadata mReflectionTarget = Metadata::NONE;
-    Mode mMode = Mode::MATERIAL;
     Platform mPlatform = Platform::ALL;
     OutputFormat mOutputFormat = OutputFormat::BLOB;
-    TargetApi mTargetApi = TargetApi::OPENGL;
-    uint8_t mVariantFilter = 0;
+    TargetApi mTargetApi = (TargetApi) 0;
+    filament::backend::FeatureLevel mFeatureLevel = filament::backend::FeatureLevel::FEATURE_LEVEL_3;
+    StringReplacementMap mDefines;
+    StringReplacementMap mTemplateMap;
+    StringReplacementMap mMaterialParameters;
+    filament::UserVariantFilterMask mVariantFilter = 0;
+    bool mIncludeEssl1 = true;
 };
 
 }

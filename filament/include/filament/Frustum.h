@@ -19,19 +19,20 @@
 #ifndef TNT_FILAMENT_FRUSTUM_H
 #define TNT_FILAMENT_FRUSTUM_H
 
-#include <filament/Box.h>
-
 #include <utils/compiler.h>
 
 #include <math/mat4.h>
+#include <math/vec3.h>
+#include <math/vec4.h>
 
 #include <utils/unwindows.h> // Because we define NEAR and FAR in the Plane enum.
 
+#include <stdint.h>
+
 namespace filament {
 
-namespace details {
+class Box;
 class Culler;
-} // namespace details;
 
 /**
  * A frustum defined by six planes
@@ -54,8 +55,9 @@ public:
     Frustum& operator=(Frustum&& rhs) noexcept = default;
 
     /**
-     * Creates a frustum from a projection matrix (usually the projection * view matrix)
-     * @param pv a 4x4 projection matrix
+     * Creates a frustum from a projection matrix in GL convention
+     * (usually the projection * view matrix)
+     * @param pv a 4x4 projection matrix in GL convention
      */
     explicit Frustum(const math::mat4f& pv);
 
@@ -68,7 +70,7 @@ public:
     /**
      * Returns the plane equation parameters with normalized normals
      * @param plane Identifier of the plane to retrieve the equation of
-     * @return A plane equation encoded a float4 R such as R.x*x + R.y*y + R.z*z = R.w
+     * @return A plane equation encoded a float4 R such as R.x*x + R.y*y + R.z*z + R.w = 0
      */
     math::float4 getNormalizedPlane(Plane plane) const noexcept;
 
@@ -77,14 +79,14 @@ public:
      * @param planes six plane equations encoded as in getNormalizedPlane() in
      *              left, right, bottom, top, far, near order
      */
-    void getNormalizedPlanes(math::float4 planes[6]) const noexcept;
+    void getNormalizedPlanes(math::float4 planes[UTILS_NONNULL 6]) const noexcept;
 
     /**
      * Returns all six frustum planes in left, right, bottom, top, far, near order
      * @return six plane equations encoded as in getNormalizedPlane() in
      *              left, right, bottom, top, far, near order
      */
-    math::float4 const* getNormalizedPlanes() const noexcept { return mPlanes; }
+    math::float4 const* UTILS_NONNULL getNormalizedPlanes() const noexcept { return mPlanes; }
 
     /**
      * Returns whether a box intersects the frustum (i.e. is visible)
@@ -112,11 +114,17 @@ public:
     float contains(math::float3 p) const noexcept;
 
 private:
-    friend class details::Culler;
+    friend class Culler;
     math::float4 mPlanes[6];
 };
 
-
 } // namespace filament
+
+#if !defined(NDEBUG)
+namespace utils::io {
+class ostream;
+} // namespace utils::io
+utils::io::ostream& operator<<(utils::io::ostream& out, filament::Frustum const& frustum);
+#endif
 
 #endif // TNT_FILAMENT_FRUSTUM_H

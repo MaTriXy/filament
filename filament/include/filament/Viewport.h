@@ -23,9 +23,6 @@
 
 #include <utils/compiler.h>
 
-#include <math/scalar.h>
-#include <math/vec2.h>
-
 #include <stddef.h>
 #include <stdint.h>
 
@@ -42,11 +39,6 @@ public:
      * Creates a Viewport of zero width and height at the origin.
      */
     Viewport() noexcept : backend::Viewport{} {}
-
-    Viewport(const Viewport& viewport) noexcept = default;
-    Viewport(Viewport&& viewport) noexcept = default;
-    Viewport& operator=(const Viewport& viewport) noexcept = default;
-    Viewport& operator=(Viewport&& viewport) noexcept = default;
 
     /**
      * Creates a Viewport from its left-bottom coordinates, width and height in pixels
@@ -67,20 +59,11 @@ public:
      */
     bool empty() const noexcept { return !width || !height; }
 
-    /**
-     * Computes a new scaled Viewport
-     * @param s scaling factor on the x and y axes.
-     * @return A new scaled Viewport. The coordinates and dimensions of the new Viewport are
-     * rounded to the nearest integer value.
-     */
-    Viewport scale(math::float2 s) const noexcept;
-
 private:
-
     /**
      * Compares two Viewports for equality
      * @param lhs reference to the left hand side Viewport
-     * @param rhs reference to the rgiht hand side Viewport
+     * @param rhs reference to the right hand side Viewport
      * @return true if \p rhs and \p lhs are identical.
      */
     friend bool operator==(Viewport const& lhs, Viewport const& rhs) noexcept {
@@ -92,7 +75,7 @@ private:
     /**
      * Compares two Viewports for inequality
      * @param lhs reference to the left hand side Viewport
-     * @param rhs reference to the rgiht hand side Viewport
+     * @param rhs reference to the right hand side Viewport
      * @return true if \p rhs and \p lhs are different.
      */
     friend bool operator!=(Viewport const& lhs, Viewport const& rhs) noexcept {

@@ -122,40 +122,60 @@ inline bool getPrimitiveType(cgltf_primitive_type in,
         case cgltf_primitive_type_lines:
             *out = filament::RenderableManager::PrimitiveType::LINES;
             return true;
+        case cgltf_primitive_type_line_strip:
+            *out = filament::RenderableManager::PrimitiveType::LINE_STRIP;
+            return true;
         case cgltf_primitive_type_triangles:
             *out = filament::RenderableManager::PrimitiveType::TRIANGLES;
             return true;
-        case cgltf_primitive_type_line_loop:
-        case cgltf_primitive_type_line_strip:
         case cgltf_primitive_type_triangle_strip:
+            *out = filament::RenderableManager::PrimitiveType::TRIANGLE_STRIP;
+            return true;
+        case cgltf_primitive_type_invalid:
+        case cgltf_primitive_type_line_loop:
         case cgltf_primitive_type_triangle_fan:
+        case cgltf_primitive_type_max_enum:
             return false;
     }
     return false;
 }
 
+// This converts a cgltf component type into a Filament Attribute type.
+//
+// This function has two out parameters. One result is a safe "permitted type" which we know is
+// universally accepted across GPU's and backends, but may require conversion (see Transcoder). The
+// other result is the "actual type" which requires no conversion.
+//
+// Returns false if the given component type is invalid.
 inline bool getElementType(cgltf_type type, cgltf_component_type ctype,
-        filament::VertexBuffer::AttributeType* atype) {
+        filament::VertexBuffer::AttributeType* permitType,
+        filament::VertexBuffer::AttributeType* actualType) {
     switch (type) {
 	    case cgltf_type_scalar:
             switch (ctype) {
                 case cgltf_component_type_r_8:
-                    *atype = filament::VertexBuffer::AttributeType::BYTE;
+                    *permitType = filament::VertexBuffer::AttributeType::BYTE;
+                    *actualType = filament::VertexBuffer::AttributeType::BYTE;
                     return true;
                 case cgltf_component_type_r_8u:
-                    *atype = filament::VertexBuffer::AttributeType::UBYTE;
+                    *permitType = filament::VertexBuffer::AttributeType::UBYTE;
+                    *actualType = filament::VertexBuffer::AttributeType::UBYTE;
                     return true;
                 case cgltf_component_type_r_16:
-                    *atype = filament::VertexBuffer::AttributeType::SHORT;
+                    *permitType = filament::VertexBuffer::AttributeType::SHORT;
+                    *actualType = filament::VertexBuffer::AttributeType::SHORT;
                     return true;
                 case cgltf_component_type_r_16u:
-                    *atype = filament::VertexBuffer::AttributeType::USHORT;
+                    *permitType = filament::VertexBuffer::AttributeType::USHORT;
+                    *actualType = filament::VertexBuffer::AttributeType::USHORT;
                     return true;
                 case cgltf_component_type_r_32u:
-                    *atype = filament::VertexBuffer::AttributeType::UINT;
+                    *permitType = filament::VertexBuffer::AttributeType::UINT;
+                    *actualType = filament::VertexBuffer::AttributeType::UINT;
                     return true;
                 case cgltf_component_type_r_32f:
-                    *atype = filament::VertexBuffer::AttributeType::FLOAT;
+                    *permitType = filament::VertexBuffer::AttributeType::FLOAT;
+                    *actualType = filament::VertexBuffer::AttributeType::FLOAT;
                     return true;
                 default:
                     return false;
@@ -164,19 +184,24 @@ inline bool getElementType(cgltf_type type, cgltf_component_type ctype,
 	    case cgltf_type_vec2:
             switch (ctype) {
                 case cgltf_component_type_r_8:
-                    *atype = filament::VertexBuffer::AttributeType::BYTE2;
+                    *permitType = filament::VertexBuffer::AttributeType::BYTE2;
+                    *actualType = filament::VertexBuffer::AttributeType::BYTE2;
                     return true;
                 case cgltf_component_type_r_8u:
-                    *atype = filament::VertexBuffer::AttributeType::UBYTE2;
+                    *permitType = filament::VertexBuffer::AttributeType::UBYTE2;
+                    *actualType = filament::VertexBuffer::AttributeType::UBYTE2;
                     return true;
                 case cgltf_component_type_r_16:
-                    *atype = filament::VertexBuffer::AttributeType::SHORT2;
+                    *permitType = filament::VertexBuffer::AttributeType::SHORT2;
+                    *actualType = filament::VertexBuffer::AttributeType::SHORT2;
                     return true;
                 case cgltf_component_type_r_16u:
-                    *atype = filament::VertexBuffer::AttributeType::USHORT2;
+                    *permitType = filament::VertexBuffer::AttributeType::USHORT2;
+                    *actualType = filament::VertexBuffer::AttributeType::USHORT2;
                     return true;
                 case cgltf_component_type_r_32f:
-                    *atype = filament::VertexBuffer::AttributeType::FLOAT2;
+                    *permitType = filament::VertexBuffer::AttributeType::FLOAT2;
+                    *actualType = filament::VertexBuffer::AttributeType::FLOAT2;
                     return true;
                 default:
                     return false;
@@ -185,19 +210,24 @@ inline bool getElementType(cgltf_type type, cgltf_component_type ctype,
 	    case cgltf_type_vec3:
             switch (ctype) {
                 case cgltf_component_type_r_8:
-                    *atype = filament::VertexBuffer::AttributeType::BYTE3;
+                    *permitType = filament::VertexBuffer::AttributeType::FLOAT3;
+                    *actualType = filament::VertexBuffer::AttributeType::BYTE3;
                     return true;
                 case cgltf_component_type_r_8u:
-                    *atype = filament::VertexBuffer::AttributeType::UBYTE3;
+                    *permitType = filament::VertexBuffer::AttributeType::FLOAT3;
+                    *actualType = filament::VertexBuffer::AttributeType::UBYTE3;
                     return true;
                 case cgltf_component_type_r_16:
-                    *atype = filament::VertexBuffer::AttributeType::SHORT3;
+                    *permitType = filament::VertexBuffer::AttributeType::SHORT3;
+                    *actualType = filament::VertexBuffer::AttributeType::SHORT3;
                     return true;
                 case cgltf_component_type_r_16u:
-                    *atype = filament::VertexBuffer::AttributeType::USHORT3;
+                    *permitType = filament::VertexBuffer::AttributeType::FLOAT3;
+                    *actualType = filament::VertexBuffer::AttributeType::USHORT3;
                     return true;
                 case cgltf_component_type_r_32f:
-                    *atype = filament::VertexBuffer::AttributeType::FLOAT3;
+                    *permitType = filament::VertexBuffer::AttributeType::FLOAT3;
+                    *actualType = filament::VertexBuffer::AttributeType::FLOAT3;
                     return true;
                 default:
                     return false;
@@ -206,19 +236,24 @@ inline bool getElementType(cgltf_type type, cgltf_component_type ctype,
 	    case cgltf_type_vec4:
             switch (ctype) {
                 case cgltf_component_type_r_8:
-                    *atype = filament::VertexBuffer::AttributeType::BYTE4;
+                    *permitType = filament::VertexBuffer::AttributeType::BYTE4;
+                    *actualType = filament::VertexBuffer::AttributeType::BYTE4;
                     return true;
                 case cgltf_component_type_r_8u:
-                    *atype = filament::VertexBuffer::AttributeType::UBYTE4;
+                    *permitType = filament::VertexBuffer::AttributeType::UBYTE4;
+                    *actualType = filament::VertexBuffer::AttributeType::UBYTE4;
                     return true;
                 case cgltf_component_type_r_16:
-                    *atype = filament::VertexBuffer::AttributeType::SHORT4;
+                    *permitType = filament::VertexBuffer::AttributeType::SHORT4;
+                    *actualType = filament::VertexBuffer::AttributeType::SHORT4;
                     return true;
                 case cgltf_component_type_r_16u:
-                    *atype = filament::VertexBuffer::AttributeType::USHORT4;
+                    *permitType = filament::VertexBuffer::AttributeType::USHORT4;
+                    *actualType = filament::VertexBuffer::AttributeType::USHORT4;
                     return true;
                 case cgltf_component_type_r_32f:
-                    *atype = filament::VertexBuffer::AttributeType::FLOAT4;
+                    *permitType = filament::VertexBuffer::AttributeType::FLOAT4;
+                    *actualType = filament::VertexBuffer::AttributeType::FLOAT4;
                     return true;
                 default:
                     return false;

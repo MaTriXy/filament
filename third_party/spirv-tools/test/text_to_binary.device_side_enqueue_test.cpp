@@ -44,12 +44,12 @@ TEST_P(OpEnqueueKernelGood, Sample) {
       " %wait_events %ret_event %invoke %param %param_size %param_align " +
       GetParam().local_size_source;
   EXPECT_THAT(CompiledInstructions(input),
-              Eq(MakeInstruction(SpvOpEnqueueKernel,
+              Eq(MakeInstruction(spv::Op::OpEnqueueKernel,
                                  {1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12},
                                  GetParam().local_size_operands)));
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     TextToBinaryTest, OpEnqueueKernelGood,
     ::testing::ValuesIn(std::vector<KernelEnqueueCase>{
         // Provide IDs for pointer-to-local arguments for the
@@ -71,7 +71,7 @@ INSTANTIATE_TEST_CASE_P(
          {13, 14, 15, 16, 17, 18, 19, 20, 21}},
         {"%l0 %l1 %l2 %l3 %l4 %l5 %l6 %l7 %l8 %l9",
          {13, 14, 15, 16, 17, 18, 19, 20, 21, 22}},
-    }), );
+    }));
 
 // Test some bad parses of OpEnqueueKernel.  For other cases, we're relying
 // on the uniformity of the parsing algorithm.  The following two tests, ensure
@@ -83,7 +83,8 @@ TEST_F(OpKernelEnqueueBad, MissingLastOperand) {
       CompileFailure(
           "%result = OpEnqueueKernel %type %queue %flags %NDRange %num_events"
           " %wait_events %ret_event %invoke %param %param_size"),
-      Eq("Expected operand, found end of stream."));
+      Eq("Expected operand for OpEnqueueKernel instruction, but found the end "
+         "of the stream."));
 }
 
 TEST_F(OpKernelEnqueueBad, InvalidLastOperand) {

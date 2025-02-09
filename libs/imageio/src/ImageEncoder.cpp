@@ -22,7 +22,7 @@
 #include <functional>
 #include <limits>
 #include <memory>
-#include <ostream>
+#include <iostream> // for cerr
 
 #if defined(WIN32)
     #include <Winsock2.h>
@@ -50,9 +50,10 @@ namespace image {
 class PNGEncoder : public ImageEncoder::Encoder {
 public:
     enum class PixelFormat {
-        sRGB,       // 8-bits sRGB
-        RGBM,       // 8-bits RGBM
-        LINEAR_RGB, // 8-bits RGB
+        sRGB,           // 8-bits sRGB
+        RGBM,           // 8-bits RGBM
+        LINEAR_RGB,     // 8-bits RGB
+        RGB_10_11_11_REV,
     };
 
     static PNGEncoder* create(std::ostream& stream, PixelFormat format = PixelFormat::sRGB);
@@ -70,7 +71,7 @@ private:
     bool encode(const LinearImage& image) override;
 
     int chooseColorType(const LinearImage& image) const;
-    uint32_t getChannelsCount() const;
+    uint32_t getChannelsCount(int colorType) const;
 
     static void cb_error(png_structp png, png_const_charp error);
     static void cb_stream(png_structp png, png_bytep buffer, png_size_t size);
@@ -197,6 +198,9 @@ bool ImageEncoder::encode(std::ostream& stream, Format format, const LinearImage
         case Format::PNG_LINEAR:
             encoder.reset(PNGEncoder::create(stream, PNGEncoder::PixelFormat::LINEAR_RGB));
             break;
+        case Format::RGB_10_11_11_REV:
+            encoder.reset(PNGEncoder::create(stream, PNGEncoder::PixelFormat::RGB_10_11_11_REV));
+            break;
         case Format::HDR:
             encoder.reset(HDREncoder::create(stream));
             break;
@@ -232,6 +236,8 @@ ImageEncoder::Format ImageEncoder::chooseFormat(const std::string& name, bool fo
 
     if (ext == "rgbm") return Format::PNG;
 
+    if (ext == "rgb32f") return Format::RGB_10_11_11_REV;
+
     if (ext == "hdr") return Format::HDR;
 
     if (ext == "psd") return Format::PSD;
@@ -249,6 +255,8 @@ std::string ImageEncoder::chooseExtension(ImageEncoder::Format format) {
         case Format::PNG:
         case Format::PNG_LINEAR:
             return ".png";
+        case Format::RGB_10_11_11_REV:
+            return ".rgb32f";
         case Format::RGBM:
             return ".rgbm";
         case Format::HDR:
@@ -272,8 +280,8 @@ PNGEncoder* PNGEncoder::create(std::ostream& stream, PixelFormat format) {
 }
 
 PNGEncoder::PNGEncoder(std::ostream& stream, PixelFormat format)
-    : mStream(stream), mStreamStartPos(stream.tellp()), mFormat(format),
-      mPNG(png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr)) {
+    : mPNG(png_create_write_struct(PNG_LIBPNG_VER_STRING, nullptr, nullptr, nullptr)),
+      mStream(stream), mStreamStartPos(stream.tellp()), mFormat(format) {
 }
 
 PNGEncoder::~PNGEncoder() {
@@ -290,33 +298,54 @@ int PNGEncoder::chooseColorType(const LinearImage& image) const {
     switch (channels) {
         case 1:
             return PNG_COLOR_TYPE_GRAY;
-        default:
-            std::cerr << "Warning: strange number of channels in PNG" << std::endl;
         case 3:
             switch (mFormat) {
                 case PixelFormat::RGBM:
+                case PixelFormat::RGB_10_11_11_REV:
                     return PNG_COLOR_TYPE_RGBA;
                 default:
                     return PNG_COLOR_TYPE_RGB;
             }
+        case 4:
+            return PNG_COLOR_TYPE_RGBA;
+        default:
+            std::cerr << "Warning: strange number of channels in PNG" << std::endl;
+            return PNG_COLOR_TYPE_RGB;
     }
 }
 
-uint32_t PNGEncoder::getChannelsCount() const {
+uint32_t PNGEncoder::getChannelsCount(int colorType) const {
     switch (mFormat) {
         case PixelFormat::RGBM:
+        case PixelFormat::RGB_10_11_11_REV:
             return 4;
         default:
+            switch (colorType) {
+                case PNG_COLOR_TYPE_GRAY: return 1;
+                case PNG_COLOR_TYPE_RGB:  return 3;
+                case PNG_COLOR_TYPE_RGBA: return 4;
+            }
             return 3;
     }
 }
 
 bool PNGEncoder::encode(const LinearImage& image) {
     size_t srcChannels = image.getChannels();
-    if ((mFormat == PixelFormat::RGBM && srcChannels != 3) ||
-            (srcChannels != 1 && srcChannels != 3)) {
-        std::cerr << "Cannot encode PNG: " << srcChannels << " channels." << std::endl;
-        return false;
+
+    switch (mFormat) {
+        case PixelFormat::RGBM:
+        case PixelFormat::RGB_10_11_11_REV:
+            if (srcChannels != 3) {
+                std::cerr << "Cannot encode PNG: " << srcChannels << " channels." << std::endl;
+                return false;
+            }
+            break;
+        default:
+            if (srcChannels != 1 && srcChannels != 3 && srcChannels != 4) {
+                std::cerr << "Cannot encode PNG: " << srcChannels << " channels." << std::endl;
+                return false;
+            }
+            break;
     }
 
     try {
@@ -325,11 +354,13 @@ bool PNGEncoder::encode(const LinearImage& image) {
         // Write header (8 bit colour depth)
         size_t width = image.getWidth();
         size_t height = image.getHeight();
-        png_set_IHDR(mPNG, mInfo, width, height,
-              8, chooseColorType(image), PNG_INTERLACE_NONE,
-              PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+        int colorType = chooseColorType(image);
 
-        if (mFormat == PixelFormat::LINEAR_RGB) {
+        png_set_IHDR(mPNG, mInfo, width, height,
+                     8, colorType, PNG_INTERLACE_NONE,
+                     PNG_COMPRESSION_TYPE_BASE, PNG_FILTER_TYPE_BASE);
+
+        if (mFormat == PixelFormat::LINEAR_RGB || mFormat == PixelFormat::RGB_10_11_11_REV) {
             png_set_gAMA(mPNG, mInfo, 1.0);
         } else {
             png_set_sRGB_gAMA_and_cHRM(mPNG, mInfo, PNG_sRGB_INTENT_PERCEPTUAL);
@@ -345,21 +376,34 @@ bool PNGEncoder::encode(const LinearImage& image) {
             dstChannels = 1;
             data = fromLinearToGrayscale<uint8_t>(image);
         } else {
-            dstChannels = getChannelsCount();
+            dstChannels = getChannelsCount(colorType);
             switch (mFormat) {
                 case PixelFormat::RGBM:
                     data = fromLinearToRGBM<uint8_t>(image);
                     break;
+                case PixelFormat::RGB_10_11_11_REV:
+                    data = fromLinearToRGB_10_11_11_REV(image);
+                    break;
                 case PixelFormat::sRGB:
+                    if (dstChannels == 4) {
+                        data = fromLinearTosRGB<uint8_t, 4>(image);
+                    } else {
+                        data = fromLinearTosRGB<uint8_t, 3>(image);
+                    }
+                    break;
                 case PixelFormat::LINEAR_RGB:
-                    data = fromLinearToRGB<uint8_t>(image);
+                    if (dstChannels == 4) {
+                        data = fromLinearToRGB<uint8_t, 4>(image);
+                    } else {
+                        data = fromLinearToRGB<uint8_t, 3>(image);
+                    }
                     break;
             }
         }
 
         for (size_t y = 0; y < height; y++) {
-            row_pointers[y] = reinterpret_cast<png_bytep>(&data[y * width * dstChannels *
-                    sizeof(uint8_t)]);
+            row_pointers[y] = reinterpret_cast<png_bytep>
+                    (&data[y * width * dstChannels * sizeof(uint8_t)]);
         }
 
         png_write_image(mPNG, row_pointers.get());
@@ -714,7 +758,7 @@ EXREncoder* EXREncoder::create(std::ostream& stream, const std::string& compress
 EXREncoder::EXREncoder(std::ostream& stream, const std::string& compression,
                        const std::string& destName)
         : mStream(stream), mStreamStartPos(stream.tellp()),
-          mCompression(compression), mDestName(destName) {
+          mDestName(destName), mCompression(compression) {
 }
 
 static int toEXRCompression(const std::string& c) {

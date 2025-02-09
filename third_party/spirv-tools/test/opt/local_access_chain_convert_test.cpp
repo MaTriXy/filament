@@ -24,8 +24,6 @@ namespace {
 
 using LocalAccessChainConvertTest = PassTest<::testing::Test>;
 
-#ifdef SPIRV_EFFCEE
-
 TEST_F(LocalAccessChainConvertTest, StructOfVecsOfFloatConverted) {
   //  #version 140
   //
@@ -90,6 +88,205 @@ OpStore %19 %18
 %20 = OpAccessChain %_ptr_Function_v4float %s0 %int_1
 %21 = OpLoad %v4float %20
 OpStore %gl_FragColor %21
+OpReturn
+OpFunctionEnd
+)";
+
+  SinglePassRunAndMatch<LocalAccessChainConvertPass>(predefs_before + before,
+                                                     true);
+}
+
+TEST_F(LocalAccessChainConvertTest, DebugScopeAndLineInfoForNewInstructions) {
+  //  #version 140
+  //
+  //  in vec4 BaseColor;
+  //
+  //  struct S_t {
+  //      vec4 v0;
+  //      vec4 v1;
+  //  };
+  //
+  //  void main()
+  //  {
+  //      S_t s0;
+  //      s0.v1 = BaseColor;
+  //      gl_FragColor = s0.v1;
+  //  }
+
+  const std::string predefs_before =
+      R"(OpCapability Shader
+%1 = OpExtInstImport "GLSL.std.450"
+%ext = OpExtInstImport "OpenCL.DebugInfo.100"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %main "main" %BaseColor %gl_FragColor
+OpExecutionMode %main OriginUpperLeft
+OpSource GLSL 140
+OpName %main "main"
+OpName %S_t "S_t"
+OpMemberName %S_t 0 "v0"
+OpMemberName %S_t 1 "v1"
+OpName %s0 "s0"
+OpName %BaseColor "BaseColor"
+OpName %gl_FragColor "gl_FragColor"
+%5 = OpString "ps.hlsl"
+%6 = OpString "float"
+%var_name = OpString "s0"
+%main_name = OpString "main"
+%void = OpTypeVoid
+%8 = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v4float = OpTypeVector %float 4
+%S_t = OpTypeStruct %v4float %v4float
+%_ptr_Function_S_t = OpTypePointer Function %S_t
+%int = OpTypeInt 32 1
+%int_1 = OpConstant %int 1
+%int_32 = OpConstant %int 32
+%_ptr_Input_v4float = OpTypePointer Input %v4float
+%BaseColor = OpVariable %_ptr_Input_v4float Input
+%_ptr_Function_v4float = OpTypePointer Function %v4float
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+%gl_FragColor = OpVariable %_ptr_Output_v4float Output
+%20 = OpExtInst %void %ext DebugSource %5
+%21 = OpExtInst %void %ext DebugCompilationUnit 1 4 %20 HLSL
+%22 = OpExtInst %void %ext DebugTypeBasic %6 %int_32 Float
+%23 = OpExtInst %void %ext DebugTypeVector %22 4
+%24 = OpExtInst %void %ext DebugTypeFunction FlagIsProtected|FlagIsPrivate %23
+%dbg_main = OpExtInst %void %ext DebugFunction %main_name %24 %20 4 1 %21 %main_name FlagIsProtected|FlagIsPrivate 4 %main
+%25 = OpExtInst %void %ext DebugLocalVariable %var_name %23 %20 0 0 %dbg_main FlagIsLocal
+)";
+
+  const std::string before =
+      R"(
+; CHECK: [[st_id:%\w+]] = OpLoad %v4float %BaseColor
+; CHECK: OpLine {{%\w+}} 1 0
+; CHECK: [[ld1:%\w+]] = OpLoad %S_t %s0
+; CHECK: [[ex1:%\w+]] = OpCompositeInsert %S_t [[st_id]] [[ld1]] 1
+; CHECK: OpStore %s0 [[ex1]]
+; CHECK: OpLine {{%\w+}} 3 0
+; CHECK: [[ld2:%\w+]] = OpLoad %S_t %s0
+; CHECK: [[ex2:%\w+]] = OpCompositeExtract %v4float [[ld2]] 1
+; CHECK: OpLine {{%\w+}} 4 0
+; CHECK: OpStore %gl_FragColor [[ex2]]
+%main = OpFunction %void None %8
+%17 = OpLabel
+%26 = OpExtInst %void %ext DebugScope %dbg_main
+%s0 = OpVariable %_ptr_Function_S_t Function
+%18 = OpLoad %v4float %BaseColor
+OpLine %5 0 0
+%19 = OpAccessChain %_ptr_Function_v4float %s0 %int_1
+OpLine %5 1 0
+OpStore %19 %18
+OpLine %5 2 0
+%27 = OpAccessChain %_ptr_Function_v4float %s0 %int_1
+OpLine %5 3 0
+%28 = OpLoad %v4float %27
+OpLine %5 4 0
+OpStore %gl_FragColor %28
+OpReturn
+OpFunctionEnd
+)";
+
+  SinglePassRunAndMatch<LocalAccessChainConvertPass>(predefs_before + before,
+                                                     true);
+}
+
+TEST_F(LocalAccessChainConvertTest, TestTargetsReferencedByDebugValue) {
+  //  #version 140
+  //
+  //  in vec4 BaseColor;
+  //
+  //  struct S_t {
+  //      vec4 v0;
+  //      vec4 v1;
+  //  };
+  //
+  //  void main()
+  //  {
+  //      S_t s0;
+  //      s0.v1 = BaseColor;
+  //      gl_FragColor = s0.v1;
+  //  }
+
+  const std::string predefs_before =
+      R"(OpCapability Shader
+%1 = OpExtInstImport "GLSL.std.450"
+%ext = OpExtInstImport "OpenCL.DebugInfo.100"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %main "main" %BaseColor %gl_FragColor
+OpExecutionMode %main OriginUpperLeft
+OpSource GLSL 140
+OpName %main "main"
+OpName %S_t "S_t"
+OpMemberName %S_t 0 "v0"
+OpMemberName %S_t 1 "v1"
+OpName %s0 "s0"
+OpName %BaseColor "BaseColor"
+OpName %gl_FragColor "gl_FragColor"
+%5 = OpString "ps.hlsl"
+%6 = OpString "float"
+%var_name = OpString "s0"
+%main_name = OpString "main"
+%void = OpTypeVoid
+%8 = OpTypeFunction %void
+%float = OpTypeFloat 32
+%v4float = OpTypeVector %float 4
+%S_t = OpTypeStruct %v4float %v4float
+%_ptr_Function_S_t = OpTypePointer Function %S_t
+%int = OpTypeInt 32 1
+%int_1 = OpConstant %int 1
+%int_32 = OpConstant %int 32
+%_ptr_Input_v4float = OpTypePointer Input %v4float
+%BaseColor = OpVariable %_ptr_Input_v4float Input
+%_ptr_Function_v4float = OpTypePointer Function %v4float
+%_ptr_Output_v4float = OpTypePointer Output %v4float
+%gl_FragColor = OpVariable %_ptr_Output_v4float Output
+%deref = OpExtInst %void %ext DebugOperation Deref
+%deref_expr = OpExtInst %void %ext DebugExpression %deref
+%null_expr = OpExtInst %void %ext DebugExpression
+%20 = OpExtInst %void %ext DebugSource %5
+%21 = OpExtInst %void %ext DebugCompilationUnit 1 4 %20 HLSL
+%22 = OpExtInst %void %ext DebugTypeBasic %6 %int_32 Float
+%23 = OpExtInst %void %ext DebugTypeVector %22 4
+%24 = OpExtInst %void %ext DebugTypeFunction FlagIsProtected|FlagIsPrivate %23
+%dbg_main = OpExtInst %void %ext DebugFunction %main_name %24 %20 4 1 %21 %main_name FlagIsProtected|FlagIsPrivate 4 %main
+%25 = OpExtInst %void %ext DebugLocalVariable %var_name %23 %20 0 0 %dbg_main FlagIsLocal
+)";
+
+  const std::string before =
+      R"(
+; CHECK: [[st_id:%\w+]] = OpLoad %v4float %BaseColor
+; CHECK: OpLine {{%\w+}} 0 0
+; CHECK: [[s0_1_ptr:%\w+]] = OpAccessChain %_ptr_Function_v4float %s0 %int_1
+; CHECK: DebugValue [[dbg_s0:%\w+]] [[s0_1_ptr]]
+; CHECK: OpLine {{%\w+}} 1 0
+; CHECK: [[s0:%\w+]] = OpLoad %S_t %s0
+; CHECK: [[comp:%\w+]] = OpCompositeInsert %S_t [[st_id]] [[s0]] 1
+; CHECK: OpStore %s0 [[comp]]
+; CHECK: OpLine {{%\w+}} 2 0
+; CHECK: [[s0_2_ptr:%\w+]] = OpAccessChain %_ptr_Function_v4float %s0 %int_1
+; CHECK: OpLine {{%\w+}} 3 0
+; CHECK: [[s0:%\w+]] = OpLoad %S_t %s0
+; CHECK: [[s0_2_val:%\w+]] = OpCompositeExtract %v4float [[s0]] 1
+; CHECK: DebugValue [[dbg_s0]] [[s0_2_val]]
+; CHECK: OpLine {{%\w+}} 4 0
+; CHECK: OpStore %gl_FragColor [[s0_2_val]]
+%main = OpFunction %void None %8
+%17 = OpLabel
+%26 = OpExtInst %void %ext DebugScope %dbg_main
+%s0 = OpVariable %_ptr_Function_S_t Function
+%18 = OpLoad %v4float %BaseColor
+OpLine %5 0 0
+%19 = OpAccessChain %_ptr_Function_v4float %s0 %int_1
+%29 = OpExtInst %void %ext DebugValue %25 %19 %deref_expr %int_1
+OpLine %5 1 0
+OpStore %19 %18
+OpLine %5 2 0
+%27 = OpAccessChain %_ptr_Function_v4float %s0 %int_1
+OpLine %5 3 0
+%28 = OpLoad %v4float %27
+%30 = OpExtInst %void %ext DebugValue %25 %28 %null_expr %int_1
+OpLine %5 4 0
+OpStore %gl_FragColor %28
 OpReturn
 OpFunctionEnd
 )";
@@ -625,7 +822,6 @@ OpFunctionEnd
   SinglePassRunAndMatch<LocalAccessChainConvertPass>(predefs_before + before,
                                                      true);
 }
-#endif  // SPIRV_EFFCEE
 
 TEST_F(LocalAccessChainConvertTest, DynamicallyIndexedVarNotConverted) {
   //  #version 140
@@ -695,6 +891,455 @@ OpStore %27 %26
 %28 = OpAccessChain %_ptr_Function_v4float %s0 %int_1
 %29 = OpLoad %v4float %28
 OpStore %gl_FragColor %29
+OpReturn
+OpFunctionEnd
+)";
+
+  SinglePassRunAndCheck<LocalAccessChainConvertPass>(assembly, assembly, false,
+                                                     true);
+}
+
+TEST_F(LocalAccessChainConvertTest, VariablePointersStorageBuffer) {
+  // A case with a storage buffer variable pointer.  We should still convert
+  // the access chain on the function scope symbol.
+  const std::string test =
+      R"(
+; CHECK: OpFunction
+; CHECK: [[var:%\w+]] = OpVariable {{%\w+}} Function
+; CHECK: [[ld:%\w+]] = OpLoad {{%\w+}} [[var]]
+; CHECK: OpCompositeExtract {{%\w+}} [[ld]] 0 0
+               OpCapability Shader
+               OpCapability VariablePointersStorageBuffer
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint GLCompute %2 "main"
+               OpExecutionMode %2 LocalSize 1 1 1
+               OpSource GLSL 450
+               OpMemberDecorate %_struct_3 0 Offset 0
+               OpDecorate %_struct_3 Block
+               OpDecorate %4 DescriptorSet 0
+               OpDecorate %4 Binding 0
+               OpDecorate %_ptr_StorageBuffer_int ArrayStride 4
+               OpDecorate %_arr_int_int_128 ArrayStride 4
+       %void = OpTypeVoid
+          %8 = OpTypeFunction %void
+        %int = OpTypeInt 32 1
+    %int_128 = OpConstant %int 128
+%_arr_int_int_128 = OpTypeArray %int %int_128
+  %_struct_3 = OpTypeStruct %_arr_int_int_128
+%_ptr_StorageBuffer__struct_3 = OpTypePointer StorageBuffer %_struct_3
+%_ptr_Function__struct_3 = OpTypePointer Function %_struct_3
+          %4 = OpVariable %_ptr_StorageBuffer__struct_3 StorageBuffer
+       %bool = OpTypeBool
+       %true = OpConstantTrue %bool
+      %int_0 = OpConstant %int 0
+      %int_1 = OpConstant %int 1
+%_ptr_StorageBuffer_int = OpTypePointer StorageBuffer %int
+%_ptr_Function_int = OpTypePointer Function %int
+          %2 = OpFunction %void None %8
+         %18 = OpLabel
+         %19 = OpVariable %_ptr_Function__struct_3 Function
+         %20 = OpAccessChain %_ptr_StorageBuffer_int %4 %int_0 %int_0
+               OpBranch %21
+         %21 = OpLabel
+         %22 = OpPhi %_ptr_StorageBuffer_int %20 %18 %23 %24
+               OpLoopMerge %25 %24 None
+               OpBranchConditional %true %26 %25
+         %26 = OpLabel
+               OpStore %22 %int_0
+               OpBranch %24
+         %24 = OpLabel
+         %23 = OpPtrAccessChain %_ptr_StorageBuffer_int %22 %int_1
+               OpBranch %21
+         %25 = OpLabel
+         %27 = OpAccessChain %_ptr_Function_int %19 %int_0 %int_0
+         %28 = OpLoad %int %27
+               OpReturn
+               OpFunctionEnd
+)";
+
+  SinglePassRunAndMatch<LocalAccessChainConvertPass>(test, true);
+}
+
+TEST_F(LocalAccessChainConvertTest, VariablePointers) {
+  // A case with variable pointer capability.  We should not convert
+  // the access chain on the function scope symbol because the variable pointer
+  // could the analysis to miss references to function scope symbols.
+  const std::string test =
+      R"(OpCapability Shader
+OpCapability VariablePointers
+%1 = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint GLCompute %2 "main"
+OpExecutionMode %2 LocalSize 1 1 1
+OpSource GLSL 450
+OpMemberDecorate %_struct_3 0 Offset 0
+OpDecorate %_struct_3 Block
+OpDecorate %4 DescriptorSet 0
+OpDecorate %4 Binding 0
+OpDecorate %_ptr_StorageBuffer_int ArrayStride 4
+OpDecorate %_arr_int_int_128 ArrayStride 4
+%void = OpTypeVoid
+%8 = OpTypeFunction %void
+%int = OpTypeInt 32 1
+%int_128 = OpConstant %int 128
+%_arr_int_int_128 = OpTypeArray %int %int_128
+%_struct_3 = OpTypeStruct %_arr_int_int_128
+%_ptr_StorageBuffer__struct_3 = OpTypePointer StorageBuffer %_struct_3
+%_ptr_Function__struct_3 = OpTypePointer Function %_struct_3
+%4 = OpVariable %_ptr_StorageBuffer__struct_3 StorageBuffer
+%bool = OpTypeBool
+%true = OpConstantTrue %bool
+%int_0 = OpConstant %int 0
+%int_1 = OpConstant %int 1
+%_ptr_StorageBuffer_int = OpTypePointer StorageBuffer %int
+%_ptr_Function_int = OpTypePointer Function %int
+%2 = OpFunction %void None %8
+%18 = OpLabel
+%19 = OpVariable %_ptr_Function__struct_3 Function
+%20 = OpAccessChain %_ptr_StorageBuffer_int %4 %int_0 %int_0
+OpBranch %21
+%21 = OpLabel
+%22 = OpPhi %_ptr_StorageBuffer_int %20 %18 %23 %24
+OpLoopMerge %25 %24 None
+OpBranchConditional %true %26 %25
+%26 = OpLabel
+OpStore %22 %int_0
+OpBranch %24
+%24 = OpLabel
+%23 = OpPtrAccessChain %_ptr_StorageBuffer_int %22 %int_1
+OpBranch %21
+%25 = OpLabel
+%27 = OpAccessChain %_ptr_Function_int %19 %int_0 %int_0
+%28 = OpLoad %int %27
+OpReturn
+OpFunctionEnd
+)";
+
+  SinglePassRunAndCheck<LocalAccessChainConvertPass>(test, test, false, true);
+}
+
+TEST_F(LocalAccessChainConvertTest, IdOverflowReplacingLoad) {
+  const std::string text =
+      R"(
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %4 "PSMain"
+               OpExecutionMode %4 OriginUpperLeft
+               OpDecorate %10 Location 47360
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+  %_struct_8 = OpTypeStruct %v4float
+%_ptr_Function__struct_8 = OpTypePointer Function %_struct_8
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_Function_v4float = OpTypePointer Function %v4float
+          %4 = OpFunction %void None %3
+          %5 = OpLabel
+         %10 = OpVariable %_ptr_Function__struct_8 Function
+    %4194301 = OpAccessChain %_ptr_Function_v4float %10 %int_0
+    %4194302 = OpLoad %v4float %4194301
+               OpReturn
+               OpFunctionEnd
+)";
+
+  SetAssembleOptions(SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+
+  std::vector<Message> messages = {
+      {SPV_MSG_ERROR, "", 0, 0, "ID overflow. Try running compact-ids."}};
+  SetMessageConsumer(GetTestMessageConsumer(messages));
+  auto result = SinglePassRunToBinary<LocalAccessChainConvertPass>(text, true);
+  EXPECT_EQ(Pass::Status::Failure, std::get<1>(result));
+}
+
+TEST_F(LocalAccessChainConvertTest, IdOverflowReplacingStore1) {
+  const std::string text =
+      R"(
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %4 "PSMain"
+               OpExecutionMode %4 OriginUpperLeft
+               OpDecorate %10 Location 47360
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+  %_struct_7 = OpTypeStruct %v4float
+%_ptr_Function__struct_7 = OpTypePointer Function %_struct_7
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_Function_v4float = OpTypePointer Function %v4float
+         %13 = OpConstantNull %v4float
+          %4 = OpFunction %void None %3
+          %5 = OpLabel
+         %10 = OpVariable %_ptr_Function__struct_7 Function
+    %4194302 = OpAccessChain %_ptr_Function_v4float %10 %int_0
+               OpStore %4194302 %13
+               OpReturn
+               OpFunctionEnd
+)";
+
+  SetAssembleOptions(SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+
+  std::vector<Message> messages = {
+      {SPV_MSG_ERROR, "", 0, 0, "ID overflow. Try running compact-ids."}};
+  SetMessageConsumer(GetTestMessageConsumer(messages));
+  auto result = SinglePassRunToBinary<LocalAccessChainConvertPass>(text, true);
+  EXPECT_EQ(Pass::Status::Failure, std::get<1>(result));
+}
+
+TEST_F(LocalAccessChainConvertTest, IdOverflowReplacingStore2) {
+  const std::string text =
+      R"(
+               OpCapability Shader
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %4 "PSMain"
+               OpExecutionMode %4 OriginUpperLeft
+               OpDecorate %10 Location 47360
+       %void = OpTypeVoid
+          %3 = OpTypeFunction %void
+      %float = OpTypeFloat 32
+    %v4float = OpTypeVector %float 4
+  %_struct_7 = OpTypeStruct %v4float
+%_ptr_Function__struct_7 = OpTypePointer Function %_struct_7
+        %int = OpTypeInt 32 1
+      %int_0 = OpConstant %int 0
+%_ptr_Function_v4float = OpTypePointer Function %v4float
+         %13 = OpConstantNull %v4float
+          %4 = OpFunction %void None %3
+          %5 = OpLabel
+         %10 = OpVariable %_ptr_Function__struct_7 Function
+    %4194301 = OpAccessChain %_ptr_Function_v4float %10 %int_0
+               OpStore %4194301 %13
+               OpReturn
+               OpFunctionEnd
+)";
+
+  SetAssembleOptions(SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+
+  std::vector<Message> messages = {
+      {SPV_MSG_ERROR, "", 0, 0, "ID overflow. Try running compact-ids."}};
+  SetMessageConsumer(GetTestMessageConsumer(messages));
+  auto result = SinglePassRunToBinary<LocalAccessChainConvertPass>(text, true);
+  EXPECT_EQ(Pass::Status::Failure, std::get<1>(result));
+}
+
+TEST_F(LocalAccessChainConvertTest, AccessChainWithNoIndex) {
+  const std::string before =
+      R"(
+; CHECK: OpFunction
+; CHECK: [[var:%\w+]] = OpVariable
+; CHECK: OpStore [[var]] %true
+; CHECK: OpLoad %bool [[var]]
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %2 "main"
+               OpExecutionMode %2 OriginUpperLeft
+               OpSource ESSL 310
+       %void = OpTypeVoid
+          %4 = OpTypeFunction %void
+       %bool = OpTypeBool
+       %true = OpConstantTrue %bool
+%_ptr_Function_bool = OpTypePointer Function %bool
+          %2 = OpFunction %void None %4
+          %8 = OpLabel
+          %9 = OpVariable %_ptr_Function_bool Function
+         %10 = OpAccessChain %_ptr_Function_bool %9
+               OpStore %10 %true
+         %11 = OpLoad %bool %10
+               OpReturn
+               OpFunctionEnd
+)";
+
+  SinglePassRunAndMatch<LocalAccessChainConvertPass>(before, true);
+}
+TEST_F(LocalAccessChainConvertTest, AccessChainWithLongIndex) {
+  // The access chain take a value that is larger than 32-bit.  The index cannot
+  // be encoded in an OpCompositeExtract, so nothing should be done.
+  const std::string before =
+      R"(OpCapability Shader
+OpCapability Int64
+%1 = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %2 "main_0004f4d4_85b2f584"
+OpExecutionMode %2 OriginUpperLeft
+%ulong = OpTypeInt 64 0
+%ulong_8589934592 = OpConstant %ulong 8589934592
+%ulong_8589934591 = OpConstant %ulong 8589934591
+%_arr_ulong_ulong_8589934592 = OpTypeArray %ulong %ulong_8589934592
+%_ptr_Function__arr_ulong_ulong_8589934592 = OpTypePointer Function %_arr_ulong_ulong_8589934592
+%_ptr_Function_ulong = OpTypePointer Function %ulong
+%void = OpTypeVoid
+%10 = OpTypeFunction %void
+%2 = OpFunction %void None %10
+%11 = OpLabel
+%12 = OpVariable %_ptr_Function__arr_ulong_ulong_8589934592 Function
+%13 = OpAccessChain %_ptr_Function_ulong %12 %ulong_8589934591
+%14 = OpLoad %ulong %13
+OpReturn
+OpFunctionEnd
+)";
+
+  SinglePassRunAndCheck<LocalAccessChainConvertPass>(before, before, false,
+                                                     true);
+}
+
+TEST_F(LocalAccessChainConvertTest, AccessChainWith32BitIndexInLong) {
+  // The access chain has a value that is 32-bits, but it is stored in a 64-bit
+  // variable.  This access change can be converted to an extract.
+  const std::string before =
+      R"(
+; CHECK: OpFunction
+; CHECK: [[var:%\w+]] = OpVariable
+; CHECK: [[ld:%\w+]] = OpLoad {{%\w+}} [[var]]
+; CHECK: OpCompositeExtract %ulong [[ld]] 3
+               OpCapability Shader
+               OpCapability Int64
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %2 "main_0004f4d4_85b2f584"
+               OpExecutionMode %2 OriginUpperLeft
+      %ulong = OpTypeInt 64 0
+%ulong_8589934592 = OpConstant %ulong 8589934592
+%ulong_3 = OpConstant %ulong 3
+%_arr_ulong_ulong_8589934592 = OpTypeArray %ulong %ulong_8589934592
+%_ptr_Function__arr_ulong_ulong_8589934592 = OpTypePointer Function %_arr_ulong_ulong_8589934592
+%_ptr_Function_ulong = OpTypePointer Function %ulong
+       %void = OpTypeVoid
+         %10 = OpTypeFunction %void
+          %2 = OpFunction %void None %10
+         %11 = OpLabel
+         %12 = OpVariable %_ptr_Function__arr_ulong_ulong_8589934592 Function
+         %13 = OpAccessChain %_ptr_Function_ulong %12 %ulong_3
+         %14 = OpLoad %ulong %13
+               OpReturn
+               OpFunctionEnd
+)";
+
+  SinglePassRunAndMatch<LocalAccessChainConvertPass>(before, true);
+}
+
+TEST_F(LocalAccessChainConvertTest, AccessChainWithVarIndex) {
+  // The access chain has a value that is not constant, so there should not be
+  // any changes.
+  const std::string before =
+      R"(OpCapability Shader
+%1 = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %2 "main_0004f4d4_85b2f584"
+OpExecutionMode %2 OriginUpperLeft
+%uint = OpTypeInt 32 0
+%uint_5 = OpConstant %uint 5
+%_arr_uint_uint_5 = OpTypeArray %uint %uint_5
+%_ptr_Function__arr_uint_uint_5 = OpTypePointer Function %_arr_uint_uint_5
+%_ptr_Function_uint = OpTypePointer Function %uint
+%8 = OpUndef %uint
+%void = OpTypeVoid
+%10 = OpTypeFunction %void
+%2 = OpFunction %void None %10
+%11 = OpLabel
+%12 = OpVariable %_ptr_Function__arr_uint_uint_5 Function
+%13 = OpAccessChain %_ptr_Function_uint %12 %8
+%14 = OpLoad %uint %13
+OpReturn
+OpFunctionEnd
+)";
+
+  SinglePassRunAndCheck<LocalAccessChainConvertPass>(before, before, false,
+                                                     true);
+}
+
+TEST_F(LocalAccessChainConvertTest, OutOfBoundsAccess) {
+  // The access chain indexes element 12 in an array of size 10.  Nothing should
+  // be done.
+  const std::string assembly =
+      R"(OpCapability Shader
+%1 = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %2 "main" %3
+OpExecutionMode %2 OriginUpperLeft
+%void = OpTypeVoid
+%5 = OpTypeFunction %void
+%int = OpTypeInt 32 1
+%int_10 = OpConstant %int 10
+%_arr_int_int_10 = OpTypeArray %int %int_10
+%_ptr_Function_int = OpTypePointer Function %int
+%int_12 = OpConstant %int 12
+%_ptr_Output_int = OpTypePointer Output %int
+%3 = OpVariable %_ptr_Output_int Output
+%_ptr_Function__arr_int_int_10 = OpTypePointer Function %_arr_int_int_10
+%2 = OpFunction %void None %5
+%13 = OpLabel
+%14 = OpVariable %_ptr_Function__arr_int_int_10 Function
+%15 = OpAccessChain %_ptr_Function_int %14 %int_12
+%16 = OpLoad %int %15
+OpStore %3 %16
+OpReturn
+OpFunctionEnd
+)";
+
+  SinglePassRunAndCheck<LocalAccessChainConvertPass>(assembly, assembly, false,
+                                                     true);
+}
+
+TEST_F(LocalAccessChainConvertTest, OutOfBoundsAccessAtBoundary) {
+  // The access chain indexes element 10 in an array of size 10.  Nothing should
+  // be done.
+  const std::string assembly =
+      R"(OpCapability Shader
+%1 = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %2 "main" %3
+OpExecutionMode %2 OriginUpperLeft
+%void = OpTypeVoid
+%5 = OpTypeFunction %void
+%int = OpTypeInt 32 1
+%int_10 = OpConstant %int 10
+%_arr_int_int_10 = OpTypeArray %int %int_10
+%_ptr_Function_int = OpTypePointer Function %int
+%_ptr_Output_int = OpTypePointer Output %int
+%3 = OpVariable %_ptr_Output_int Output
+%_ptr_Function__arr_int_int_10 = OpTypePointer Function %_arr_int_int_10
+%2 = OpFunction %void None %5
+%12 = OpLabel
+%13 = OpVariable %_ptr_Function__arr_int_int_10 Function
+%14 = OpAccessChain %_ptr_Function_int %13 %int_10
+%15 = OpLoad %int %14
+OpStore %3 %15
+OpReturn
+OpFunctionEnd
+)";
+
+  SinglePassRunAndCheck<LocalAccessChainConvertPass>(assembly, assembly, false,
+                                                     true);
+}
+
+TEST_F(LocalAccessChainConvertTest, NegativeIndex) {
+  // The access chain has a negative index and should not be converted because
+  // the extract instruction cannot hold a negative number.
+  const std::string assembly =
+      R"(OpCapability Shader
+%1 = OpExtInstImport "GLSL.std.450"
+OpMemoryModel Logical GLSL450
+OpEntryPoint Fragment %2 "main"
+OpExecutionMode %2 OriginUpperLeft
+%void = OpTypeVoid
+%4 = OpTypeFunction %void
+%int = OpTypeInt 32 1
+%uint = OpTypeInt 32 0
+%uint_3808428041 = OpConstant %uint 3808428041
+%_arr_int_uint_3808428041 = OpTypeArray %int %uint_3808428041
+%_ptr_Function__arr_int_uint_3808428041 = OpTypePointer Function %_arr_int_uint_3808428041
+%_ptr_Function_int = OpTypePointer Function %int
+%int_n1272971256 = OpConstant %int -1272971256
+%2 = OpFunction %void None %4
+%12 = OpLabel
+%13 = OpVariable %_ptr_Function__arr_int_uint_3808428041 Function
+%14 = OpAccessChain %_ptr_Function_int %13 %int_n1272971256
+%15 = OpLoad %int %14
 OpReturn
 OpFunctionEnd
 )";

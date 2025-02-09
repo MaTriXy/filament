@@ -24,9 +24,7 @@
 #include <tsl/robin_map.h>
 #include <utils/Hash.h>
 
-namespace filament {
-namespace backend {
-namespace metal {
+namespace filament::backend {
 
 struct MetalContext;
 
@@ -38,27 +36,25 @@ public:
 
     struct BlitArgs {
         struct Attachment {
-            id<MTLTexture> color = nil;
-            id<MTLTexture> depth = nil;
-            MTLRegion region;
+            id<MTLTexture> texture = nil;
+            MTLRegion region = {};
             uint8_t level = 0;
+            uint32_t slice = 0;      // must be 0 on source attachment
         };
 
-        Attachment source, destination;
+        // Valid source formats:       2D, 2DArray, 2DMultisample, 3D
+        // Valid destination formats:  2D, 2DArray, 3D, Cube
+        Attachment source;
+        Attachment destination;
         SamplerMagFilter filter;
 
-        bool colorDestinationIsFullAttachment() const {
-            return destination.color.width == destination.region.size.width &&
-                   destination.color.height == destination.region.size.height;
-        }
-
-        bool depthDestinationIsFullAttachment() const {
-            return destination.depth.width == destination.region.size.width &&
-                   destination.depth.height == destination.region.size.height;
+        bool destinationIsFullAttachment() const {
+            return destination.texture.width == destination.region.size.width &&
+                   destination.texture.height == destination.region.size.height;
         }
     };
 
-    void blit(const BlitArgs& args);
+    void blit(id<MTLCommandBuffer> cmdBuffer, const BlitArgs& args, const char* label);
 
     /**
      * Free resources. Should be called at least once per process when no further calls to blit will
@@ -68,29 +64,36 @@ public:
 
 private:
 
-    static void setupColorAttachment(const BlitArgs& args, MTLRenderPassDescriptor* descriptor);
-    static void setupDepthAttachment(const BlitArgs& args, MTLRenderPassDescriptor* descriptor);
+    static void setupAttachment(MTLRenderPassAttachmentDescriptor* descriptor,
+            const BlitArgs& args, uint32_t depthPlane);
 
     struct BlitFunctionKey {
-        bool blitColor;
-        bool blitDepth;
-        bool msaaColorSource;
-        bool msaaDepthSource;
+        bool msaaColorSource{};
+        bool sources3D{};
+        char padding[2]{};
 
-        bool operator==(const BlitFunctionKey& rhs) const noexcept {
-            return blitColor == rhs.blitColor &&
-                   blitDepth == rhs.blitDepth &&
-                   msaaColorSource == rhs.msaaDepthSource &&
-                   msaaDepthSource == rhs.msaaDepthSource;
+        bool isValid() const noexcept {
+            // MSAA 3D textures do not exist.
+            bool const hasMsaa = msaaColorSource;
+            return !(hasMsaa && sources3D);
         }
 
-        BlitFunctionKey() {
-            std::memset(this, 0, sizeof(BlitFunctionKey));
+        bool operator==(const BlitFunctionKey& rhs) const noexcept {
+            return msaaColorSource == rhs.msaaColorSource &&
+                   sources3D == rhs.sources3D;
         }
     };
 
-    void blitFastPath(bool& blitColor, bool& blitDepth, const BlitArgs& args);
-    id<MTLFunction> compileFragmentFunction(BlitFunctionKey key);
+    static bool blitFastPath(id<MTLCommandBuffer> cmdBuffer,
+            const BlitArgs& args, const char* label);
+
+    void blitSlowPath(id<MTLCommandBuffer> cmdBuffer,
+            const BlitArgs& args, const char* label);
+
+    void blitDepthPlane(id <MTLCommandBuffer> cmdBuffer, const BlitArgs& args,
+            uint32_t depthPlaneSource, uint32_t depthPlaneDest, const char* label);
+
+    id<MTLFunction> compileFragmentFunction(BlitFunctionKey key) const;
     id<MTLFunction> getBlitVertexFunction();
     id<MTLFunction> getBlitFragmentFunction(BlitFunctionKey key);
 
@@ -101,11 +104,9 @@ private:
     tsl::robin_map<BlitFunctionKey, Function, HashFn> mBlitFunctions;
 
     id<MTLFunction> mVertexFunction = nil;
-
 };
 
-} // namespace metal
-} // namespace backend
-} // namespace filament
+} // namespace filament::backend
+
 
 #endif //TNT_METALBLITTER_H

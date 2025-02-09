@@ -19,7 +19,6 @@
 #include <sstream>
 #include <ostream>
 #include <iterator>
-#include <regex>
 
 #if defined(WIN32)
 #   include <utils/compiler.h>
@@ -42,13 +41,22 @@ Path::Path(const char* path)
     : Path(std::string(path)) {
 }
 
+Path::Path(std::string_view pathname)
+    : Path(std::string(pathname)) {
+}
+
 Path::Path(const std::string& path)
     : m_path(getCanonicalPath(path)) {
 }
 
 bool Path::exists() const {
+#if defined(_WIN64) || defined(_M_X64)
+    struct _stat64 file;
+    return _stat64(c_str(), &file) == 0;
+#else
     struct stat file;
     return stat(c_str(), &file) == 0;
+#endif
 }
 
 bool Path::isFile() const {
@@ -70,7 +78,8 @@ bool Path::isDirectory() const {
 Path Path::concat(const Path& path) const {
     if (path.isEmpty()) return *this;
     if (path.isAbsolute()) return path;
-    if (m_path.back() != SEPARATOR && !m_path.empty()) {
+    // std::string::back() is UB if the string is empty, so we rely on short-circuit evaluation
+    if (!m_path.empty() && m_path.back() != SEPARATOR) {
         return Path(m_path + SEPARATOR + path.getPath());
     }
     return Path(m_path + path.getPath());
@@ -80,7 +89,8 @@ void Path::concatToSelf(const Path& path)  {
     if (!path.isEmpty()) {
         if (path.isAbsolute()) {
             m_path = path.getPath();
-        } else if (m_path.back() != SEPARATOR) {
+        // std::string::back() is UB if the string is empty, so we rely on short-circuit evaluation
+        } else if (!m_path.empty() && m_path.back() != SEPARATOR) {
             m_path = getCanonicalPath(m_path + SEPARATOR + path.getPath());
         } else {
             m_path = getCanonicalPath(m_path + path.getPath());
@@ -183,17 +193,17 @@ std::vector<std::string> Path::split() const {
     size_t current;
     ssize_t next = -1;
 
-    // Matches a leading disk designator (C:\), forward slash (/), or back slash (\)
-    const static std::regex driveDesignationRegex(R"_regex(^([a-zA-Z]:\\|\\|\/))_regex");
-    std::smatch match;
-    if (std::regex_search(m_path, match, driveDesignationRegex)) {
-        segments.push_back(match[0]);
-        next = match[0].length() - 1;
+    // If there is a leading disk designator such as C:, this naturally becomes the first segment.
+    // However if there there is leading slash or back slash, we need to explicitly preserve it.
+    // Note that we are guaranteed to have at least one char in the path at this point.
+    if (m_path[0] == '/' || m_path[0] == '\\') {
+        segments.push_back(m_path.substr(0, 1));
+        next = 0;
     }
 
     do {
       current = size_t(next + 1);
-      next = m_path.find_first_of(SEPARATOR_STR, current);
+      next = m_path.find_first_of(SEPARATOR, current);
 
       std::string segment(m_path.substr(current, next - current));
       if (!segment.empty()) segments.push_back(segment);
@@ -226,7 +236,7 @@ std::string Path::getCanonicalPath(const std::string& path) {
         std::string segment(path.substr(current, next - current));
         size_t size = segment.length();
 
-        // skip empty (keedp initial)
+        // skip empty (keep initial)
         if (size == 0 && !segments.empty()) {
             continue;
         }

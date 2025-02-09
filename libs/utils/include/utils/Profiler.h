@@ -17,11 +17,13 @@
 #ifndef TNT_UTILS_PROFILER_H
 #define TNT_UTILS_PROFILER_H
 
+#include <ratio>
+#include <chrono>   // note: This is safe (only used inline)
+
 #include <assert.h>
+#include <stddef.h>
 #include <stdint.h>
 #include <string.h>
-
-#include <chrono>   // note: This is safe (only used inline)
 
 #if defined(__linux__)
 #   include <unistd.h>
@@ -34,6 +36,7 @@
 namespace utils {
 
 class Profiler {
+public:
     enum {
         INSTRUCTIONS    = 0,   // must be zero
         CPU_CYCLES      = 1,
@@ -47,17 +50,15 @@ class Profiler {
         // Must be last one
         EVENT_COUNT
     };
-
-public:
-
+	
     enum {
-        EV_CPU_CYCLES = 1 << CPU_CYCLES,
-        EV_L1D_REFS   = 1 << DCACHE_REFS,
-        EV_L1D_MISSES = 1 << DCACHE_MISSES,
-        EV_BPU_REFS   = 1 << BRANCHES,
-        EV_BPU_MISSES = 1 << BRANCH_MISSES,
-        EV_L1I_REFS   = 1 << ICACHE_REFS,
-        EV_L1I_MISSES = 1 << ICACHE_MISSES,
+        EV_CPU_CYCLES = 1u << CPU_CYCLES,
+        EV_L1D_REFS   = 1u << DCACHE_REFS,
+        EV_L1D_MISSES = 1u << DCACHE_MISSES,
+        EV_BPU_REFS   = 1u << BRANCHES,
+        EV_BPU_MISSES = 1u << BRANCH_MISSES,
+        EV_L1I_REFS   = 1u << ICACHE_REFS,
+        EV_L1I_MISSES = 1u << ICACHE_MISSES,
         // helpers
         EV_L1D_RATES = EV_L1D_REFS | EV_L1D_MISSES,
         EV_L1I_RATES = EV_L1I_REFS | EV_L1I_MISSES,
@@ -83,13 +84,14 @@ public:
 
     class Counters {
         friend class Profiler;
+
         uint64_t nr;
         uint64_t time_enabled;
         uint64_t time_running;
         struct {
             uint64_t value;
             uint64_t id;
-        } counters[Profiler::EVENT_COUNT];
+        } counters[EVENT_COUNT];
 
         friend Counters operator-(Counters lhs, const Counters& rhs) noexcept {
             lhs.nr -= rhs.nr;

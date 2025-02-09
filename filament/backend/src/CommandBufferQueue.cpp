@@ -15,35 +15,68 @@
  */
 
 #include "private/backend/CommandBufferQueue.h"
-
-#include <assert.h>
-
-#include <utils/Log.h>
-#include <utils/Systrace.h>
-
+#include "private/backend/CircularBuffer.h"
 #include "private/backend/CommandStream.h"
+
+#include <utils/compiler.h>
+#include <utils/Log.h>
+#include <utils/Mutex.h>
+#include <utils/ostream.h>
+#include <utils/Panic.h>
+#include <utils/Systrace.h>
+#include <utils/debug.h>
+
+#include <algorithm>
+#include <mutex>
+#include <iterator>
+#include <utility>
+#include <vector>
+
+#include <stddef.h>
+#include <stdint.h>
 
 using namespace utils;
 
-namespace filament {
-namespace backend {
+namespace filament::backend {
 
-CommandBufferQueue::CommandBufferQueue(size_t requiredSize, size_t bufferSize)
-        : mRequiredSize((requiredSize + CircularBuffer::BLOCK_MASK) & ~CircularBuffer::BLOCK_MASK),
+CommandBufferQueue::CommandBufferQueue(size_t requiredSize, size_t bufferSize, bool paused)
+        : mRequiredSize((requiredSize + (CircularBuffer::getBlockSize() - 1u)) & ~(CircularBuffer::getBlockSize() -1u)),
           mCircularBuffer(bufferSize),
-          mFreeSpace(mCircularBuffer.size()) {
-    assert(mCircularBuffer.size() > requiredSize);
+          mFreeSpace(mCircularBuffer.size()),
+          mPaused(paused) {
+    assert_invariant(mCircularBuffer.size() > requiredSize);
 }
 
 CommandBufferQueue::~CommandBufferQueue() {
-    assert(mCommandBuffersToExecute.empty());
+    assert_invariant(mCommandBuffersToExecute.empty());
 }
 
 void CommandBufferQueue::requestExit() {
-    std::unique_lock<utils::Mutex> lock(mLock);
-    mExitRequested = true;
+    std::lock_guard<utils::Mutex> const lock(mLock);
+    mExitRequested = EXIT_REQUESTED;
     mCondition.notify_one();
 }
+
+bool CommandBufferQueue::isPaused() const noexcept {
+    std::lock_guard<utils::Mutex> const lock(mLock);
+    return mPaused;
+}
+
+void CommandBufferQueue::setPaused(bool paused) {
+    std::lock_guard<utils::Mutex> const lock(mLock);
+    if (paused) {
+        mPaused = true;
+    } else {
+        mPaused = false;
+        mCondition.notify_one();
+    }
+}
+
+bool CommandBufferQueue::isExitRequested() const {
+    std::lock_guard<utils::Mutex> const lock(mLock);
+    return (bool)mExitRequested;
+}
+
 
 void CommandBufferQueue::flush() noexcept {
     SYSTRACE_CALL();
@@ -57,68 +90,75 @@ void CommandBufferQueue::flush() noexcept {
     // always guaranteed to have enough space for the NoopCommand
     new(circularBuffer.allocate(sizeof(NoopCommand))) NoopCommand(nullptr);
 
-    // end of this slice
-    void* const head = circularBuffer.getHead();
-
-    // beginning of this slice
-    void* const tail = circularBuffer.getTail();
-
-    // size of this slice
-    uint32_t used = uint32_t(intptr_t(head) - intptr_t(tail));
-
-    circularBuffer.circularize();
-
-    std::unique_lock<utils::Mutex> lock(mLock);
-    mCommandBuffersToExecute.push_back({ tail, head });
-
-    // circular buffer is too small, we corrupted the stream
-    assert(used <= mFreeSpace);
-
-    // wait until there is enough space in the buffer
-    mFreeSpace -= used;
     const size_t requiredSize = mRequiredSize;
 
+    // get the current buffer
+    auto const [begin, end] = circularBuffer.getBuffer();
+
+    assert_invariant(circularBuffer.empty());
+
+    // size of the current buffer
+    size_t const used = std::distance(
+            static_cast<char const*>(begin), static_cast<char const*>(end));
+
+
+    std::unique_lock<utils::Mutex> lock(mLock);
+
+    // circular buffer is too small, we corrupted the stream
+    FILAMENT_CHECK_POSTCONDITION(used <= mFreeSpace) <<
+            "Backend CommandStream overflow. Commands are corrupted and unrecoverable.\n"
+            "Please increase minCommandBufferSizeMB inside the Config passed to Engine::create.\n"
+            "Space used at this time: " << used <<
+            " bytes, overflow: " << used - mFreeSpace << " bytes";
+
+    mFreeSpace -= used;
+    mCommandBuffersToExecute.push_back({ begin, end });
+    mCondition.notify_one();
+
+    // wait until there is enough space in the buffer
+    if (UTILS_UNLIKELY(mFreeSpace < requiredSize)) {
+
 #ifndef NDEBUG
-    size_t totalUsed = circularBuffer.size() - mFreeSpace;
-    mHighWatermark = std::max(mHighWatermark, totalUsed);
-    if (UTILS_UNLIKELY(totalUsed > requiredSize)) {
-        slog.d << "CommandStream used too much space: " << totalUsed
-            << ", out of " << requiredSize << " (will block)" << io::endl;
-    }
+        size_t const totalUsed = circularBuffer.size() - mFreeSpace;
+        slog.d << "CommandStream used too much space (will block): "
+                << "needed space " << requiredSize << " out of " << mFreeSpace
+                << ", totalUsed=" << totalUsed << ", current=" << used
+                << ", queue size=" << mCommandBuffersToExecute.size() << " buffers"
+                << io::endl;
+
+        mHighWatermark = std::max(mHighWatermark, totalUsed);
 #endif
 
-    if (UTILS_LIKELY(mFreeSpace >= requiredSize)) {
-        // ideally (and usually) we don't have to wait, this is the common case, so special case
-        // the unlock-before-notify, optimization.
-        lock.unlock();
-        mCondition.notify_one();
-    } else {
-        // unfortunately, there is not enough space left, we'll have to wait.
-        mCondition.notify_one(); // too bad there isn't a notify-and-wait
         SYSTRACE_NAME("waiting: CircularBuffer::flush()");
+
+        FILAMENT_CHECK_POSTCONDITION(!mPaused) <<
+                "CommandStream is full, but since the rendering thread is paused, "
+                "the buffer cannot flush and we will deadlock. Instead, abort.";
+
         mCondition.wait(lock, [this, requiredSize]() -> bool {
+            // TODO: on macOS, we need to call pumpEvents from time to time
             return mFreeSpace >= requiredSize;
         });
     }
 }
 
-std::vector<CommandBufferQueue::Slice> CommandBufferQueue::waitForCommands() const {
+std::vector<CommandBufferQueue::Range> CommandBufferQueue::waitForCommands() const {
     if (!UTILS_HAS_THREADING) {
         return std::move(mCommandBuffersToExecute);
     }
     std::unique_lock<utils::Mutex> lock(mLock);
-    while (mCommandBuffersToExecute.empty() && !mExitRequested) {
+    while ((mCommandBuffersToExecute.empty() || mPaused) && !mExitRequested) {
         mCondition.wait(lock);
     }
     return std::move(mCommandBuffersToExecute);
 }
 
-void CommandBufferQueue::releaseBuffer(CommandBufferQueue::Slice const& buffer) {
-    std::unique_lock<utils::Mutex> lock(mLock);
-    mFreeSpace += uintptr_t(buffer.end) - uintptr_t(buffer.begin);
-    lock.unlock();
+void CommandBufferQueue::releaseBuffer(CommandBufferQueue::Range const& buffer) {
+    size_t const used = std::distance(
+            static_cast<char const*>(buffer.begin), static_cast<char const*>(buffer.end));
+    std::lock_guard<utils::Mutex> const lock(mLock);
+    mFreeSpace += used;
     mCondition.notify_one();
 }
 
-} // namespace backend
-} // namespace filament
+} // namespace filament::backend

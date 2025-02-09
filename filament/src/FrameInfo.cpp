@@ -16,157 +16,190 @@
 
 #include "FrameInfo.h"
 
-#include "details/Fence.h"
+#include <filament/Renderer.h>
 
-#include <utils/JobSystem.h>
+#include <backend/DriverEnums.h>
+
+#include <utils/compiler.h>
+#include <utils/debug.h>
+#include <utils/FixedCapacityVector.h>
 #include <utils/Log.h>
+#include <utils/ostream.h>
 #include <utils/Systrace.h>
 
-#include <math/scalar.h>
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <memory>
+#include <ratio>
 
-#include <cmath>
+#include <stdint.h>
+#include <stddef.h>
 
 namespace filament {
+
 using namespace utils;
+using namespace backend;
 
-// ------------------------------------------------------------------------------------------------
-
-FrameInfoManager::FrameInfoManager(FEngine& engine)
-        : mEngine(engine),
-          mPoolArena("FrameInfo", sizeof(FrameInfo) * POOL_COUNT) {
-    mFrameInfoHistory.resize(HISTORY_COUNT);
+FrameInfoManager::FrameInfoManager(DriverApi& driver) noexcept {
+    for (auto& query : mQueries) {
+        query.handle = driver.createTimerQuery();
+    }
 }
 
 FrameInfoManager::~FrameInfoManager() noexcept = default;
 
-void FrameInfo::beginFrame(FrameInfoManager* mgr) {
-    Fence* fence = mgr->getEngine().createFence(Fence::Type::HARD);
-    mgr->push([this, fence]() {
-        Fence::waitAndDestroy(fence, Fence::Mode::DONT_FLUSH);
-        laps[START] = clock::now();
-    });
-}
-
-void FrameInfo::lap(FrameInfoManager* mgr, lap_id id) {
-    Fence* fence = mgr->getEngine().createFence(Fence::Type::HARD);
-    mgr->push([this, fence, id]() {
-        Fence::waitAndDestroy(fence, Fence::Mode::DONT_FLUSH);
-        laps[id] = clock::now();
-    });
-}
-
-void FrameInfo::endFrame(FrameInfoManager* mgr) {
-    Fence* fence = mgr->getEngine().createFence(Fence::Type::HARD);
-    mgr->push([this, mgr, fence]() {
-        char buf[256];
-        snprintf(buf, 256, "GPU time [id=%u]", frame);
-        SYSTRACE_NAME(buf);
-
-        Fence::waitAndDestroy(fence, Fence::Mode::DONT_FLUSH);
-        laps[FINISH] = clock::now();
-        mgr->finish(this);
-    });
-}
-
-// ------------------------------------------------------------------------------------------------
-
-void FrameInfoManager::beginFrame(uint32_t frameId) {
-    SYSTRACE_CONTEXT();
-    SYSTRACE_ASYNC_BEGIN("frame latency", frameId);
-
-    FrameInfo* info = obtain();
-    mCurrentFrameInfo = info;
-    if (info) {
-        info->frame = frameId;
-        info->beginFrame(this);
+void FrameInfoManager::terminate(DriverApi& driver) noexcept {
+    for (auto& query : mQueries) {
+        driver.destroyTimerQuery(query.handle);
     }
 }
 
-void FrameInfoManager::endFrame() {
-    FrameInfo* const info = mCurrentFrameInfo;
-    if (info) {
-        mCurrentFrameInfo = nullptr;
-        info->endFrame(this);
+void FrameInfoManager::beginFrame(DriverApi& driver, Config const& config, uint32_t frameId) noexcept {
+    auto& history = mFrameTimeHistory;
+    // don't exceed the capacity, drop the oldest entry
+    if (UTILS_LIKELY(history.size() == history.capacity())) {
+        history.pop_back();
+    }
+
+    // create a new entry
+    auto& front = history.emplace_front(frameId);
+
+    // store the current time
+    front.beginFrame = std::chrono::steady_clock::now();
+
+    // references are not invalidated by CircularQueue<>, so we can associate a reference to
+    // the slot we created to the timer query used to find the frame time.
+    mQueries[mIndex].pInfo = std::addressof(front);
+    // issue the timer query
+    driver.beginTimerQuery(mQueries[mIndex].handle);
+    // issue the custom backend command to get the backend time
+    driver.queueCommand([&front](){
+        front.backendBeginFrame = std::chrono::steady_clock::now();
+    });
+
+    // now is a good time to check the oldest active query
+    while (mLast != mIndex) {
+        uint64_t elapsed = 0;
+        TimerQueryResult const result = driver.getTimerQueryValue(mQueries[mLast].handle, &elapsed);
+        switch (result) {
+            case TimerQueryResult::NOT_READY:
+                // nothing to do
+                break;
+            case TimerQueryResult::ERROR:
+                mLast = (mLast + 1) % POOL_COUNT;
+                break;
+            case TimerQueryResult::AVAILABLE: {
+                SYSTRACE_CONTEXT();
+                SYSTRACE_VALUE32("FrameInfo::elapsed", uint32_t(elapsed));
+                // conversion to our duration happens here
+                pFront = mQueries[mLast].pInfo;
+                pFront->frameTime = std::chrono::duration<uint64_t, std::nano>(elapsed);
+                mLast = (mLast + 1) % POOL_COUNT;
+                denoiseFrameTime(history, config);
+                break;
+            }
+        }
+        if (result != TimerQueryResult::AVAILABLE) {
+            break;
+        }
+        // read the pending timer queries until we find one that's not ready
+    }
+
+    // keep this just for debugging
+    if constexpr (false) {
+        using namespace utils;
+        auto h = getFrameInfoHistory(1);
+        if (!h.empty()) {
+            slog.d << frameId << ": "
+                   << h[0].frameId << " (" << frameId - h[0].frameId << ")"
+                   << ", Dm=" << h[0].endFrame - h[0].beginFrame
+                   << ", L =" << h[0].backendBeginFrame - h[0].beginFrame
+                   << ", Db=" << h[0].backendEndFrame - h[0].backendBeginFrame
+                   << ", T =" << h[0].frameTime
+                   << io::endl;
+        }
     }
 }
 
-void FrameInfoManager::cancelFrame() {
-    FrameInfo* info = mCurrentFrameInfo;
-    if (info) {
-        mCurrentFrameInfo = nullptr;
-        push([this, info]() {
-            mPoolArena.free(info);
+void FrameInfoManager::endFrame(DriverApi& driver) noexcept {
+    auto& front = mFrameTimeHistory.front();
+    // close the timer query
+    driver.endTimerQuery(mQueries[mIndex].handle);
+    // queue custom backend command to query the current time
+    driver.queueCommand([&front](){
+        // backend frame end-time
+        front.backendEndFrame = std::chrono::steady_clock::now();
+        // signal that the data is available
+        front.ready.store(true, std::memory_order_release);
+    });
+    // and finally acquire the time on the main thread
+    front.endFrame = std::chrono::steady_clock::now();
+    mIndex = (mIndex + 1) % POOL_COUNT;
+}
+
+void FrameInfoManager::denoiseFrameTime(FrameHistoryQueue& history, Config const& config) noexcept {
+    assert_invariant(!history.empty());
+
+    // find the first slot that has a valid frame duration
+    size_t first = history.size();
+    for (size_t i = 0, c = history.size(); i < c; ++i) {
+        if (history[i].frameTime != duration(0)) {
+            first = i;
+            break;
+        }
+    }
+    assert_invariant(first != history.size());
+
+    // we need at least 3 valid frame time to calculate the median
+    if (history.size() >= first + 3) {
+        // apply a median filter to get a good representation of the frame time of the last
+        // N frames.
+        std::array<duration, MAX_FRAMETIME_HISTORY> median; // NOLINT -- it's initialized below
+        size_t const size = std::min({
+            history.size() - first,
+            median.size(),
+            size_t(config.historySize) });
+
+        for (size_t i = 0; i < size; ++i) {
+            median[i] = history[first + i].frameTime;
+        }
+        std::sort(median.begin(), median.begin() + size);
+        duration const denoisedFrameTime = median[size / 2];
+
+        history[first].denoisedFrameTime = denoisedFrameTime;
+        history[first].valid = true;
+     }
+}
+
+FixedCapacityVector<Renderer::FrameInfo> FrameInfoManager::getFrameInfoHistory(
+        size_t historySize) const noexcept {
+    auto result = FixedCapacityVector<Renderer::FrameInfo>::with_capacity(MAX_FRAMETIME_HISTORY);
+    auto const& history = mFrameTimeHistory;
+    size_t i = 0;
+    size_t const c = history.size();
+    for (; i < c; ++i) {
+        auto const& entry = history[i];
+        if (entry.ready.load(std::memory_order_acquire) && entry.valid) {
+            // once we found an entry ready,
+            // we know by construction that all following ones are too
+            break;
+        }
+    }
+    for (; i < c && historySize; ++i, --historySize) {
+        auto const& entry = history[i];
+        using namespace std::chrono;
+        result.push_back({
+                entry.frameId,
+                duration_cast<nanoseconds>(entry.frameTime).count(),
+                duration_cast<nanoseconds>(entry.denoisedFrameTime).count(),
+                duration_cast<nanoseconds>(entry.beginFrame.time_since_epoch()).count(),
+                duration_cast<nanoseconds>(entry.endFrame.time_since_epoch()).count(),
+                duration_cast<nanoseconds>(entry.backendBeginFrame.time_since_epoch()).count(),
+                duration_cast<nanoseconds>(entry.backendEndFrame.time_since_epoch()).count()
         });
     }
-}
-
-UTILS_ALWAYS_INLINE
-inline FrameInfo* FrameInfoManager::obtain() noexcept {
-    return mPoolArena.alloc<FrameInfo>(1);
-}
-
-void FrameInfoManager::finish(FrameInfo* info) noexcept {
-    SYSTRACE_CONTEXT();
-    SYSTRACE_ASYNC_END("frame latency", info->frame);
-
-    // store the new frame info into the history array
-    std::unique_lock<std::mutex> lock(mLock);
-    auto& history = mFrameInfoHistory;
-    if (history.size() >= HISTORY_COUNT) {
-        // if the history has grown enough, remove the oldest element
-        history.erase(history.begin());
-    }
-    // add a copy of the new element to the history
-    history.push_back(*info);
-    lock.unlock();
-
-    // return the item to the pool without the lock held
-    mPoolArena.free(info);
-}
-
-// ------------------------------------------------------------------------------------------------
-
-FrameInfoManager::SyncThread::~SyncThread() {
-    if (mThread.joinable()) {
-        requestExitAndWait();
-    }
-}
-
-void FrameInfoManager::SyncThread::run() {
-    mThread = std::thread(&SyncThread::loop, this);
-}
-
-void FrameInfoManager::SyncThread::requestExitAndWait() {
-    std::unique_lock<std::mutex> lock(mLock);
-    mExitRequested = true;
-    lock.unlock();
-    mCondition.notify_one();
-    mThread.join();
-}
-
-void FrameInfoManager::SyncThread::enqueue(SyncThread::Job&& job) {
-    std::unique_lock<std::mutex> lock(mLock);
-    mQueue.push_back(std::forward<SyncThread::Job>(job));
-    lock.unlock();
-    mCondition.notify_one();
-}
-
-void FrameInfoManager::SyncThread::loop() {
-    JobSystem::setThreadPriority(JobSystem::Priority::URGENT_DISPLAY);
-    JobSystem::setThreadName("SyncThread");
-    auto& queue = mQueue;
-    bool exitRequested;
-    do {
-        std::unique_lock<std::mutex> lock(mLock);
-        mCondition.wait(lock, [this, &queue]() -> bool { return mExitRequested || !queue.empty(); });
-        exitRequested = mExitRequested;
-        if (!queue.empty()) {
-            Job job(queue.front());
-            queue.pop_front();
-            lock.unlock();
-            job();
-        }
-    } while (!exitRequested);
+    return result;
 }
 
 } // namespace filament

@@ -16,9 +16,12 @@
 
 #include "FilamentApp.h"
 
+#include <filament/Material.h>
+#include <filament/Viewport.h>
+
 #include <filameshio/MeshReader.h>
 
-#include <image/KtxUtility.h>
+#include <ktxreader/Ktx1Reader.h>
 
 #include <sstream>
 
@@ -26,8 +29,14 @@
 // textures this app uses.
 #include "resources.h"
 
+using namespace ktxreader;
+
 using namespace filament;
 using namespace filamesh;
+
+const double kFov = 60.0;
+const double kNearPlane = 0.1;
+const double kFarPlane = 10.0;
 
 void FilamentApp::initialize() {
 #if FILAMENT_APP_USE_OPENGL
@@ -38,20 +47,20 @@ void FilamentApp::initialize() {
     swapChain = engine->createSwapChain(nativeLayer);
     renderer = engine->createRenderer();
     scene = engine->createScene();
-    camera = engine->createCamera();
+    Entity c = EntityManager::get().create();
+    camera = engine->createCamera(c);
 
     filaView = engine->createView();
-    filaView->setDepthPrepass(filament::View::DepthPrepass::DISABLED);
 
-    image::KtxBundle* iblBundle = new image::KtxBundle(RESOURCES_VENETIAN_CROSSROADS_IBL_DATA,
-            RESOURCES_VENETIAN_CROSSROADS_IBL_SIZE);
+    image::Ktx1Bundle* iblBundle = new image::Ktx1Bundle(RESOURCES_VENETIAN_CROSSROADS_2K_IBL_DATA,
+            RESOURCES_VENETIAN_CROSSROADS_2K_IBL_SIZE);
     filament::math::float3 harmonics[9];
-    parseSphereHarmonics(iblBundle->getMetadata("sh"), harmonics);
-    app.iblTexture = image::KtxUtility::createTexture(engine, iblBundle, false, true);
+    iblBundle->getSphericalHarmonics(harmonics);
+    app.iblTexture = Ktx1Reader::createTexture(engine, iblBundle, false);
 
-    image::KtxBundle* skyboxBundle = new image::KtxBundle(RESOURCES_VENETIAN_CROSSROADS_SKYBOX_DATA,
-            RESOURCES_VENETIAN_CROSSROADS_SKYBOX_SIZE);
-    app.skyboxTexture = image::KtxUtility::createTexture(engine, skyboxBundle, false, true);
+    image::Ktx1Bundle* skyboxBundle = new image::Ktx1Bundle(RESOURCES_VENETIAN_CROSSROADS_2K_SKYBOX_DATA,
+            RESOURCES_VENETIAN_CROSSROADS_2K_SKYBOX_SIZE);
+    app.skyboxTexture = Ktx1Reader::createTexture(engine, skyboxBundle, false);
 
     app.skybox = Skybox::Builder()
         .environment(app.skyboxTexture)
@@ -89,15 +98,9 @@ void FilamentApp::initialize() {
 
     filaView->setScene(scene);
     filaView->setCamera(camera);
-    filaView->setViewport(Viewport(0, 0, width, height));
 
-    const uint32_t w = filaView->getViewport().width;
-    const uint32_t h = filaView->getViewport().height;
-    const float aspect = (float) w / h;
     cameraManipulator.setCamera(camera);
-    cameraManipulator.setViewport(w, h);
     cameraManipulator.lookAt(filament::math::double3(0, 0, 3), filament::math::double3(0, 0, 0));
-    camera->setProjection(60, aspect, 0.1, 10);
 }
 
 void FilamentApp::render() {
@@ -109,6 +112,22 @@ void FilamentApp::render() {
 
 void FilamentApp::pan(float deltaX, float deltaY) {
     cameraManipulator.rotate(filament::math::double2(deltaX, -deltaY), 10);
+}
+
+void FilamentApp::updateViewportAndCameraProjection(uint32_t width, uint32_t height,
+        float scaleFactor) {
+    if (!filaView || !camera) {
+        return;
+    }
+
+    cameraManipulator.setViewport(width, height);
+
+    const uint32_t scaledWidth = width * scaleFactor;
+    const uint32_t scaledHeight = height * scaleFactor;
+    filaView->setViewport({0, 0, scaledWidth, scaledHeight});
+
+    const double aspect = (double)width / height;
+    camera->setProjection(kFov, aspect, kNearPlane, kFarPlane);
 }
 
 FilamentApp::~FilamentApp() {
@@ -124,22 +143,9 @@ FilamentApp::~FilamentApp() {
     engine->destroy(renderer);
     engine->destroy(scene);
     engine->destroy(filaView);
-    engine->destroy(camera);
+    Entity c = camera->getEntity();
+    engine->destroyCameraComponent(c);
+    EntityManager::get().destroy(c);
     engine->destroy(swapChain);
     engine->destroy(&engine);
-}
-
-void FilamentApp::parseSphereHarmonics(const char* str, filament::math::float3 harmonics[9]) {
-    std::istringstream iss(str);
-    std::string read;
-    for (int i = 0; i < 9; i++) {
-        filament::math::float3 harmonic;
-        iss >> read;
-        harmonic.x = std::stof(read);
-        iss >> read;
-        harmonic.y = std::stof(read);
-        iss >> read;
-        harmonic.z = std::stof(read);
-        harmonics[i] = std::move(harmonic);
-    }
 }

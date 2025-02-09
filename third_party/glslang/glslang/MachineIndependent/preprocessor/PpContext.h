@@ -1,5 +1,6 @@
 //
 // Copyright (C) 2013 LunarG, Inc.
+// Copyright (C) 2015-2018 Google, Inc.
 // All rights reserved.
 //
 // Redistribution and use in source and binary forms, with or without
@@ -83,6 +84,7 @@ NVIDIA HAS BEEN ADVISED OF THE POSSIBILITY OF SUCH DAMAGE.
 #include <sstream>
 
 #include "../ParseHelper.h"
+#include "PpTokens.h"
 
 /* windows only pragma */
 #ifdef _MSC_VER
@@ -100,21 +102,24 @@ public:
         i64val = 0;
         loc.init();
         name[0] = 0;
+        fullyExpanded = false;
     }
 
     // Used for comparing macro definitions, so checks what is relevant for that.
-    bool operator==(const TPpToken& right)
+    bool operator==(const TPpToken& right) const
     {
         return space == right.space &&
                ival == right.ival && dval == right.dval && i64val == right.i64val &&
                strncmp(name, right.name, MaxTokenLength) == 0;
     }
-    bool operator!=(const TPpToken& right) { return ! operator==(right); }
+    bool operator!=(const TPpToken& right) const { return ! operator==(right); }
 
     TSourceLoc loc;
     // True if a space (for white space or a removed comment) should also be
     // recognized, in front of the token returned:
     bool space;
+
+    bool fullyExpanded;
     // Numeric value of the token:
     union {
         int ival;
@@ -211,7 +216,8 @@ public:
         virtual int scan(TPpToken*) = 0;
         virtual int getch() = 0;
         virtual void ungetch() = 0;
-        virtual bool peekPasting() { return false; }          // true when about to see ##
+        virtual bool peekPasting() { return false; }             // true when about to see ##
+        virtual bool peekContinuedPasting(int) { return false; } // true when non-spaced tokens can paste
         virtual bool endOfReplacementList() { return false; } // true when at the end of a macro replacement list (RHS of #define)
         virtual bool isMacroInput() { return false; }
 
@@ -242,24 +248,79 @@ public:
     // From PpTokens.cpp
     //
 
+    // Capture the needed parts of a token stream for macro recording/playback.
     class TokenStream {
     public:
-        TokenStream() : current(0) { }
+        // Manage a stream of these 'Token', which capture the relevant parts
+        // of a TPpToken, plus its atom.
+        class Token {
+        public:
+            Token(int atom, const TPpToken& ppToken) : 
+                atom(atom),
+                space(ppToken.space),
+                i64val(ppToken.i64val),
+                name(ppToken.name) { }
+            int get(TPpToken& ppToken)
+            {
+                ppToken.clear();
+                ppToken.space = space;
+                ppToken.i64val = i64val;
+                snprintf(ppToken.name, sizeof(ppToken.name), "%s", name.c_str());
+                return atom;
+            }
+            bool isAtom(int a) const { return atom == a; }
+            int getAtom() const { return atom; }
+            bool nonSpaced() const { return !space; }
+        protected:
+            Token() {}
+            int atom;
+            bool space;        // did a space precede the token?
+            long long i64val;
+            TString name;
+        };
+
+        TokenStream() : currentPos(0) { }
 
         void putToken(int token, TPpToken* ppToken);
+        bool peekToken(int atom) { return !atEnd() && stream[currentPos].isAtom(atom); }
+        bool peekContinuedPasting(int atom)
+        {
+            // This is basically necessary because, for example, the PP
+            // tokenizer only accepts valid numeric-literals plus suffixes, so
+            // separates numeric-literals plus bad suffix into two tokens, which
+            // should get both pasted together as one token when token pasting.
+            //
+            // The following code is a bit more generalized than the above example.
+            if (!atEnd() && atom == PpAtomIdentifier && stream[currentPos].nonSpaced()) {
+                switch(stream[currentPos].getAtom()) {
+                    case PpAtomConstInt:
+                    case PpAtomConstUint:
+                    case PpAtomConstInt64:
+                    case PpAtomConstUint64:
+                    case PpAtomConstInt16:
+                    case PpAtomConstUint16:
+                    case PpAtomConstFloat:
+                    case PpAtomConstDouble:
+                    case PpAtomConstFloat16:
+                    case PpAtomConstString:
+                    case PpAtomIdentifier:
+                        return true;
+                    default:
+                        break;
+                }
+            }
+
+            return false;
+        }
         int getToken(TParseContextBase&, TPpToken*);
-        bool atEnd() { return current >= data.size(); }
+        bool atEnd() { return currentPos >= stream.size(); }
         bool peekTokenizedPasting(bool lastTokenPastes);
         bool peekUntokenizedPasting();
-        void reset() { current = 0; }
+        void reset() { currentPos = 0; }
 
     protected:
-        void putSubtoken(char);
-        int getSubtoken();
-        void ungetSubtoken();
-
-        TVector<unsigned char> data;
-        size_t current;
+        TVector<Token> stream;
+        size_t currentPos;
     };
 
     //
@@ -319,6 +380,10 @@ protected:
     int  getChar() { return inputStack.back()->getch(); }
     void ungetChar() { inputStack.back()->ungetch(); }
     bool peekPasting() { return !inputStack.empty() && inputStack.back()->peekPasting(); }
+    bool peekContinuedPasting(int a)
+    {
+        return !inputStack.empty() && inputStack.back()->peekContinuedPasting(a);
+    }
     bool endOfReplacementList() { return inputStack.empty() || inputStack.back()->endOfReplacementList(); }
     bool isMacroInput() { return inputStack.size() > 0 && inputStack.back()->isMacroInput(); }
 
@@ -343,6 +408,7 @@ protected:
         virtual int getch() override { assert(0); return EndOfInput; }
         virtual void ungetch() override { assert(0); }
         bool peekPasting() override { return prepaste; }
+        bool peekContinuedPasting(int a) override { return mac->body.peekContinuedPasting(a); }
         bool endOfReplacementList() override { return mac->body.atEnd(); }
         bool isMacroInput() override { return true; }
 
@@ -412,19 +478,35 @@ protected:
     //
     // From PpTokens.cpp
     //
-    void pushTokenStreamInput(TokenStream&, bool pasting = false);
+    void pushTokenStreamInput(TokenStream&, bool pasting = false, bool expanded = false);
     void UngetToken(int token, TPpToken*);
 
     class tTokenInput : public tInput {
     public:
-        tTokenInput(TPpContext* pp, TokenStream* t, bool prepasting) : tInput(pp), tokens(t), lastTokenPastes(prepasting) { }
-        virtual int scan(TPpToken *ppToken) override { return tokens->getToken(pp->parseContext, ppToken); }
+        tTokenInput(TPpContext* pp, TokenStream* t, bool prepasting, bool expanded) :
+            tInput(pp),
+            tokens(t),
+            lastTokenPastes(prepasting),
+            preExpanded(expanded) { }
+        virtual int scan(TPpToken *ppToken) override {
+            int token = tokens->getToken(pp->parseContext, ppToken);
+            ppToken->fullyExpanded = preExpanded;
+            if (tokens->atEnd() && token == PpAtomIdentifier) {
+                int macroAtom = pp->atomStrings.getAtom(ppToken->name);
+                MacroSymbol* macro = macroAtom == 0 ? nullptr : pp->lookupMacroDef(macroAtom);
+                if (macro && macro->functionLike)
+                    ppToken->fullyExpanded = false;
+            }
+            return token;
+        }
         virtual int getch() override { assert(0); return EndOfInput; }
         virtual void ungetch() override { assert(0); }
         virtual bool peekPasting() override { return tokens->peekTokenizedPasting(lastTokenPastes); }
+        bool peekContinuedPasting(int a) override { return tokens->peekContinuedPasting(a); }
     protected:
         TokenStream* tokens;
-        bool lastTokenPastes;     // true if the last token in the input is to be pasted, rather than consumed as a token
+        bool lastTokenPastes; // true if the last token in the input is to be pasted, rather than consumed as a token
+        bool preExpanded;
     };
 
     class tUngotTokenInput : public tInput {
@@ -533,7 +615,7 @@ protected:
               prologue_(prologue),
               epilogue_(epilogue),
               includedFile_(includedFile),
-              scanner(3, strings, lengths, names, 0, 0, true),
+              scanner(3, strings, lengths, nullptr, 0, 0, true),
               prevScanner(nullptr),
               stringInput(pp, scanner)
         {
@@ -548,9 +630,9 @@ protected:
               scanner.setLine(startLoc.line);
               scanner.setString(startLoc.string);
 
-              scanner.setFile(startLoc.name, 0);
-              scanner.setFile(startLoc.name, 1);
-              scanner.setFile(startLoc.name, 2);
+              scanner.setFile(startLoc.getFilenameStr(), 0);
+              scanner.setFile(startLoc.getFilenameStr(), 1);
+              scanner.setFile(startLoc.getFilenameStr(), 2);
         }
 
         // tInput methods:
@@ -590,8 +672,6 @@ protected:
         const char* strings[3];
         // Length of str_, passed to scanner constructor.
         size_t lengths[3];
-        // String names
-        const char* names[3];
         // Scans over str_.
         TInputScanner scanner;
         // The previous effective scanner before the scanner in this instance
@@ -630,6 +710,7 @@ protected:
     std::string currentSourceFile;
 
     std::istringstream strtodStream;
+    bool disableEscapeSequences;
 };
 
 } // end namespace glslang

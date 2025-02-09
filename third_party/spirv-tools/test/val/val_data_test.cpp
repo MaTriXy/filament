@@ -290,6 +290,17 @@ TEST_F(ValidateData, storage_input_output_16_good) {
   ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
 }
 
+TEST_F(ValidateData, amd_gpu_shader_half_float_fetch_16_good) {
+  std::string str = R"(
+     OpCapability Shader
+     OpCapability Linkage
+     OpExtension "SPV_AMD_gpu_shader_half_float_fetch"
+     OpMemoryModel Logical GLSL450
+     %2 = OpTypeFloat 16)";
+  CompileSuccessfully(str.c_str());
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
 TEST_F(ValidateData, int16_bad) {
   std::string str = header + "%2 = OpTypeInt 16 1";
   CompileSuccessfully(str.c_str());
@@ -375,7 +386,8 @@ TEST_F(ValidateData, ids_should_be_validated_before_data) {
 )";
   CompileSuccessfully(str.c_str());
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
-  EXPECT_THAT(getDiagnosticString(), HasSubstr("ID 3 has not been defined"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Operand '3[%3]' requires a previous definition"));
 }
 
 TEST_F(ValidateData, matrix_bad_column_type) {
@@ -507,15 +519,26 @@ TEST_F(ValidateData, specialize_boolean) {
   ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
 }
 
-TEST_F(ValidateData, specialize_boolean_to_int) {
+TEST_F(ValidateData, specialize_boolean_true_to_int) {
   std::string str = header + R"(
 %2 = OpTypeInt 32 1
-%3 = OpSpecConstantTrue %2
+%3 = OpSpecConstantTrue %2)";
+  CompileSuccessfully(str.c_str());
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("OpSpecConstantTrue Result Type <id> '1[%int]' is not "
+                        "a boolean type"));
+}
+
+TEST_F(ValidateData, specialize_boolean_false_to_int) {
+  std::string str = header + R"(
+%2 = OpTypeInt 32 1
 %4 = OpSpecConstantFalse %2)";
   CompileSuccessfully(str.c_str());
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("Specialization constant must be a boolean"));
+              HasSubstr("OpSpecConstantFalse Result Type <id> '1[%int]' is not "
+                        "a boolean type"));
 }
 
 TEST_F(ValidateData, missing_forward_pointer_decl) {
@@ -526,7 +549,7 @@ TEST_F(ValidateData, missing_forward_pointer_decl) {
   CompileSuccessfully(str.c_str());
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("must first be declared using OpTypeForwardPointer"));
+              HasSubstr("Operand '3[%3]' requires a previous definition"));
 }
 
 TEST_F(ValidateData, missing_forward_pointer_decl_self_reference) {
@@ -536,8 +559,9 @@ TEST_F(ValidateData, missing_forward_pointer_decl_self_reference) {
 )";
   CompileSuccessfully(str.c_str());
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
-  EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("must first be declared using OpTypeForwardPointer"));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("Operand '2[%_struct_2]' requires a previous definition"));
 }
 
 TEST_F(ValidateData, forward_pointer_missing_definition) {
@@ -562,8 +586,8 @@ OpTypeForwardPointer %_ptr_Generic_struct_A Generic
   CompileSuccessfully(str.c_str());
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("Found a forward reference to a non-pointer type in "
-                        "OpTypeStruct instruction."));
+              HasSubstr("Pointer type in OpTypeForwardPointer is not a pointer "
+                        "type.\n  OpTypeForwardPointer %float Generic\n"));
 }
 
 TEST_F(ValidateData, forward_ref_points_to_non_struct) {
@@ -576,9 +600,7 @@ OpTypeForwardPointer %_ptr_Generic_struct_A Generic
   CompileSuccessfully(str.c_str());
   ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("A forward reference operand in an OpTypeStruct must "
-                        "be an OpTypePointer that points to an OpTypeStruct. "
-                        "Found OpTypePointer that points to OpTypeInt."));
+              HasSubstr("Forward pointers must point to a structure"));
 }
 
 TEST_F(ValidateData, struct_forward_pointer_good) {
@@ -595,19 +617,31 @@ OpTypeForwardPointer %_ptr_Generic_struct_A Generic
 }
 
 TEST_F(ValidateData, ext_16bit_storage_caps_allow_free_fp_rounding_mode) {
-  for (const char* cap : {"StorageUniform16", "StorageUniformBufferBlock16",
-                          "StoragePushConstant16", "StorageInputOutput16"}) {
+  for (const char* cap : {"StorageUniform16", "StorageUniformBufferBlock16"}) {
     for (const char* mode : {"RTE", "RTZ", "RTP", "RTN"}) {
       std::string str = std::string(R"(
         OpCapability Shader
         OpCapability Linkage
         OpCapability )") +
                         cap + R"(
+        OpExtension "SPV_KHR_storage_buffer_storage_class"
+        OpExtension "SPV_KHR_variable_pointers"
         OpExtension "SPV_KHR_16bit_storage"
         OpMemoryModel Logical GLSL450
-        OpDecorate %2 FPRoundingMode )" + mode + R"(
-        %1 = OpTypeFloat 32
-        %2 = OpConstant %1 1.25
+        OpDecorate %_ FPRoundingMode )" + mode + R"(
+        %half = OpTypeFloat 16
+        %float = OpTypeFloat 32
+        %float_1_25 = OpConstant %float 1.25
+        %half_ptr = OpTypePointer StorageBuffer %half
+        %half_ptr_var = OpVariable %half_ptr StorageBuffer
+        %void = OpTypeVoid
+        %func = OpTypeFunction %void
+        %main = OpFunction %void None %func
+        %main_entry = OpLabel
+        %_ = OpFConvert %half %float_1_25
+        OpStore %half_ptr_var %_
+        OpReturn
+        OpFunctionEnd
       )";
       CompileSuccessfully(str.c_str());
       ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
@@ -620,21 +654,178 @@ TEST_F(ValidateData, vulkan_disallow_free_fp_rounding_mode) {
     for (const auto env : {SPV_ENV_VULKAN_1_0, SPV_ENV_VULKAN_1_1}) {
       std::string str = std::string(R"(
         OpCapability Shader
+        OpExtension "SPV_KHR_storage_buffer_storage_class"
+        OpExtension "SPV_KHR_variable_pointers"
         OpMemoryModel Logical GLSL450
-        OpDecorate %2 FPRoundingMode )") +
+        OpDecorate %_ FPRoundingMode )") +
                         mode + R"(
-        %1 = OpTypeFloat 32
-        %2 = OpConstant %1 1.25
+        %half = OpTypeFloat 16
+        %float = OpTypeFloat 32
+        %float_1_25 = OpConstant %float 1.25
+        %half_ptr = OpTypePointer StorageBuffer %half
+        %half_ptr_var = OpVariable %half_ptr StorageBuffer
+        %void = OpTypeVoid
+        %func = OpTypeFunction %void
+        %main = OpFunction %void None %func
+        %main_entry = OpLabel
+        %_ = OpFConvert %half %float_1_25
+        OpStore %half_ptr_var %_
+        OpReturn
+        OpFunctionEnd
       )";
       CompileSuccessfully(str.c_str());
       ASSERT_EQ(SPV_ERROR_INVALID_CAPABILITY, ValidateInstructions(env));
       EXPECT_THAT(
           getDiagnosticString(),
-          HasSubstr("Operand 2 of Decorate requires one of these capabilities: "
-                    "StorageBuffer16BitAccess StorageUniform16 "
-                    "StoragePushConstant16 StorageInputOutput16"));
+          HasSubstr(
+              "Operand 2 of Decorate requires one of these capabilities: "
+              "StorageBuffer16BitAccess UniformAndStorageBuffer16BitAccess "
+              "StoragePushConstant16 StorageInputOutput16"));
     }
   }
+}
+
+TEST_F(ValidateData, void_array) {
+  std::string str = header + R"(
+   %void = OpTypeVoid
+    %int = OpTypeInt 32 0
+  %int_5 = OpConstant %int 5
+  %array = OpTypeArray %void %int_5
+  )";
+
+  CompileSuccessfully(str.c_str());
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("OpTypeArray Element Type <id> '1[%void]' is a void type."));
+}
+
+TEST_F(ValidateData, void_runtime_array) {
+  std::string str = header + R"(
+   %void = OpTypeVoid
+  %array = OpTypeRuntimeArray %void
+  )";
+
+  CompileSuccessfully(str.c_str());
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions());
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "OpTypeRuntimeArray Element Type <id> '1[%void]' is a void type."));
+}
+
+TEST_F(ValidateData, vulkan_RTA_array_at_end_of_struct) {
+  std::string str = R"(
+              OpCapability Shader
+              OpMemoryModel Logical GLSL450
+              OpEntryPoint Fragment %func "func"
+              OpExecutionMode %func OriginUpperLeft
+              OpDecorate %array_t ArrayStride 4
+              OpMemberDecorate %struct_t 0 Offset 0
+              OpMemberDecorate %struct_t 1 Offset 4
+              OpDecorate %struct_t Block
+     %uint_t = OpTypeInt 32 0
+   %array_t = OpTypeRuntimeArray %uint_t
+  %struct_t = OpTypeStruct %uint_t %array_t
+%struct_ptr = OpTypePointer StorageBuffer %struct_t
+         %2 = OpVariable %struct_ptr StorageBuffer
+      %void = OpTypeVoid
+    %func_t = OpTypeFunction %void
+      %func = OpFunction %void None %func_t
+         %1 = OpLabel
+              OpReturn
+              OpFunctionEnd
+)";
+
+  CompileSuccessfully(str.c_str(), SPV_ENV_VULKAN_1_1);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+}
+
+TEST_F(ValidateData, vulkan_RTA_not_at_end_of_struct) {
+  std::string str = R"(
+              OpCapability Shader
+              OpMemoryModel Logical GLSL450
+              OpEntryPoint Fragment %func "func"
+              OpExecutionMode %func OriginUpperLeft
+              OpDecorate %array_t ArrayStride 4
+              OpMemberDecorate %struct_t 0 Offset 0
+              OpMemberDecorate %struct_t 1 Offset 4
+              OpDecorate %struct_t Block
+     %uint_t = OpTypeInt 32 0
+   %array_t = OpTypeRuntimeArray %uint_t
+  %struct_t = OpTypeStruct %array_t %uint_t
+%struct_ptr = OpTypePointer StorageBuffer %struct_t
+         %2 = OpVariable %struct_ptr StorageBuffer
+      %void = OpTypeVoid
+    %func_t = OpTypeFunction %void
+      %func = OpFunction %void None %func_t
+         %1 = OpLabel
+              OpReturn
+              OpFunctionEnd
+)";
+
+  CompileSuccessfully(str.c_str(), SPV_ENV_VULKAN_1_1);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_1));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-OpTypeRuntimeArray-04680"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("In Vulkan, OpTypeRuntimeArray must only be used for "
+                        "the last member of an OpTypeStruct\n  %_struct_3 = "
+                        "OpTypeStruct %_runtimearr_uint %uint\n"));
+}
+
+TEST_F(ValidateData, TypeForwardReference) {
+  std::string test = R"(
+OpCapability Shader
+OpCapability PhysicalStorageBufferAddresses
+OpCapability Linkage
+OpMemoryModel Logical GLSL450
+OpTypeForwardPointer %1 PhysicalStorageBuffer
+%2 = OpTypeStruct
+%3 = OpTypeRuntimeArray %1
+%1 = OpTypePointer PhysicalStorageBuffer %2
+)";
+
+  CompileSuccessfully(test, SPV_ENV_UNIVERSAL_1_5);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_5));
+}
+
+TEST_F(ValidateData, VulkanTypeForwardStorageClass) {
+  std::string test = R"(
+OpCapability Shader
+OpCapability PhysicalStorageBufferAddresses
+OpMemoryModel Logical GLSL450
+OpTypeForwardPointer %1 Uniform
+%2 = OpTypeStruct
+%3 = OpTypeRuntimeArray %1
+%1 = OpTypePointer Uniform %2
+)";
+
+  CompileSuccessfully(test, SPV_ENV_VULKAN_1_2);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_VULKAN_1_2));
+  EXPECT_THAT(getDiagnosticString(),
+              AnyVUID("VUID-StandaloneSpirv-OpTypeForwardPointer-04711"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("In Vulkan, OpTypeForwardPointer must have "
+                        "a storage class of PhysicalStorageBuffer."));
+}
+
+TEST_F(ValidateData, TypeForwardReferenceMustBeForwardPointer) {
+  std::string test = R"(
+OpCapability Shader
+OpCapability PhysicalStorageBufferAddresses
+OpCapability Linkage
+OpMemoryModel Logical GLSL450
+%1 = OpTypeStruct
+%2 = OpTypeRuntimeArray %3
+%3 = OpTypePointer PhysicalStorageBuffer %1
+)";
+
+  CompileSuccessfully(test, SPV_ENV_UNIVERSAL_1_5);
+  ASSERT_EQ(SPV_ERROR_INVALID_ID, ValidateInstructions(SPV_ENV_UNIVERSAL_1_5));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("Operand '3[%_ptr_PhysicalStorageBuffer__struct_1]' "
+                        "requires a previous definition"));
 }
 
 }  // namespace

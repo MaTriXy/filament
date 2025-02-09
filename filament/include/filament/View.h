@@ -19,23 +19,33 @@
 #ifndef TNT_FILAMENT_VIEW_H
 #define TNT_FILAMENT_VIEW_H
 
-#include <filament/Camera.h>
-#include <filament/Color.h>
-#include <filament/Viewport.h>
 #include <filament/FilamentAPI.h>
-
-#include <backend/DriverEnums.h>
+#include <filament/Options.h>
 
 #include <utils/compiler.h>
+#include <utils/Entity.h>
+#include <utils/FixedCapacityVector.h>
 
-#include <math/vec2.h>
-#include <math/vec3.h>
+#include <math/mathfwd.h>
+
+#include <utility>
+
+#include <stddef.h>
+#include <stdint.h>
 
 namespace filament {
 
+namespace backend {
+class CallbackHandler;
+} // namespace backend
+
 class Camera;
+class ColorGrading;
+class Engine;
 class MaterialInstance;
+class RenderTarget;
 class Scene;
+class Viewport;
 
 /**
  * A View encompasses all the state needed for rendering a Scene.
@@ -48,7 +58,7 @@ class Scene;
  *  - Some rendering parameters
  *
  * \note
- * View instances are heavy objects that internally cache a lot of date needed for Rendering.
+ * View instances are heavy objects that internally cache a lot of data needed for rendering.
  * It is not advised for an application to use many View objects.
  *
  * For example, in a game, a View could be used for the main scene and another one for the
@@ -56,191 +66,36 @@ class Scene;
  * a View is akin to a rendering pass).
  *
  *
- * @see Renderer, Scene, Camera
+ * @see Renderer, Scene, Camera, RenderTarget
  */
 class UTILS_PUBLIC View : public FilamentAPI {
 public:
-    using TargetBufferFlags = backend::TargetBufferFlags;
+    using QualityLevel = filament::QualityLevel;
+    using BlendMode = filament::BlendMode;
+    using AntiAliasing = filament::AntiAliasing;
+    using Dithering = filament::Dithering;
+    using ShadowType = filament::ShadowType;
 
-    /**
-     * Dynamic resolution can be used to either reach a desired target frame rate
-     * by lowering the resolution of a View, or to increase the quality when the
-     * rendering is faster than the target frame rate.
-     *
-     * This structure can be used to specify the minimum scale factor used when
-     * lowering the resolution of a View and the maximum scale factor used when
-     * increasing the resolution for higher quality rendering. By scale factors
-     * can be controlled on each X and Y axis independently. By default, all scale
-     * factors are set to 1.0.
-     *
-     * enabled:   enable or disables dynamic resolution on a View
-     * homogeneousScaling: by default the system scales the major axis first. Set this to true
-     *                     to force homogeneous scaling.
-     * scaleRate: rate at which the scale will change to reach the target frame rate
-     *            This value can be computed as 1 / N, where N is the number of frames
-     *            needed to reach 64% of the target scale factor.
-     *            Higher values make the dynamic resolution react faster.
-     * targetFrameTimeMilli: desired frame time in milliseconds
-     * headRoomRatio: additional headroom for the GPU as a ratio of the targetFrameTime.
-     *                Useful for taking into account constant costs like post-processing or
-     *                GPU drivers on different platforms.
-     * history:   History size. higher values, tend to filter more (clamped to 30)
-     * minScale:  the minimum scale in X and Y this View should use
-     * maxScale:  the maximum scale in X and Y this View should use
-     *
-     * \note
-     * Dynamic resolution is only supported on platforms where the time to render
-     * a frame can be measured accurately. Dynamic resolution is currently only
-     * supported on Android.
-     */
-    struct DynamicResolutionOptions {
-        DynamicResolutionOptions() = default;
-
-        DynamicResolutionOptions(bool enabled, float scaleRate,
-                math::float2 minScale, math::float2 maxScale)
-                : minScale(minScale), maxScale(maxScale),
-                  scaleRate(scaleRate), enabled(enabled) {
-            // this one exists for backward compatibility
-        }
-
-        explicit DynamicResolutionOptions(bool enabled) : enabled(enabled) { }
-
-        math::float2 minScale = math::float2(0.5f);     //!< minimum scale factors in x and y
-        math::float2 maxScale = math::float2(1.0f);     //!< maximum scale factors in x and y
-        float scaleRate = 0.125f;                       //!< rate at which the scale will change
-        float targetFrameTimeMilli = 1000.0f / 60.0f;   //!< desired frame time, or budget.
-        float headRoomRatio = 0.0f;                     //!< additional headroom for the GPU
-        uint8_t history = 9;                            //!< history size
-        bool enabled = false;                           //!< enable or disable dynamic resolution
-        bool homogeneousScaling = false;                //!< set to true to force homogeneous scaling
-    };
-
-    enum class QualityLevel : int8_t {
-        LOW,
-        MEDIUM,
-        HIGH,
-        ULTRA
-    };
-
-    /**
-     * Structure used to set the quality of the rendering of a View. This structure
-     * offers separate quality settings for different parts of the rendering pipeline:
-     *
-     * hdrColorBuffer: sets the quality of the HDR color buffer. A quality of HIGH or ULTRA means
-     *              using an RGB16F or RGBA16F color buffer. This means colors in the LDR
-     *              range (0..1) have a 10 bit precision. A quality of LOW or MEDIUM means
-     *              using an R11G11B10F opaque color buffer or an RGBA16F transparent color
-     *              buffer. With R11G11B10F colors in the LDR range have a precision of either
-     *              6 bits (red and green channels) or 5 bits (blue channel).
-     *
-     * @see setRenderQuality, getAntiAliasing
-     */
-    struct RenderQuality {
-        QualityLevel hdrColorBuffer = QualityLevel::HIGH; //!< quality of the color buffer
-    };
-
-    /**
-     * Options for Ambient Occlusion
-     * @see setAmbientOcclusion()
-     */
-    struct AmbientOcclusionOptions {
-        float radius = 0.3f;    //!< Ambient Occlusion radius in meters, between 0 and ~10.
-        float bias = 0.005f;    //!< Self-occlusion bias in meters. Use to avoid self-occlusion. Between 0 and a few mm.
-        float power = 0.0f;     //!< Controls ambient occlusion's contrast. Between 0 (linear) and 1 (squared)
-    };
-
-    /**
-     * List of available ambient occlusion techniques
-    */
-    enum class AmbientOcclusion : uint8_t {
-        NONE = 0,       //!< No Ambient Occlusion
-        SSAO = 1        //!< Basic, sampling SSAO
-    };
-
-    /**
-     * List of available post-processing anti-aliasing techniques.
-     * @see setAntiAliasing, getAntiAliasing
-     */
-    enum class AntiAliasing : uint8_t {
-        NONE = 0,   //!< no anti aliasing performed as part of post-processing
-        FXAA = 1    //!< FXAA is a low-quality but very efficient type of anti-aliasing. (default).
-    };
-
-    /** @see setDepthPrepass */
-    enum class DepthPrepass : int8_t {
-        DEFAULT = -1,
-        DISABLED,
-        ENABLED,
-    };
-
-    /**
-     * List of available post-processing dithering techniques.
-     */
-    enum class Dithering : uint8_t {
-        NONE = 0,       //!< No dithering
-        TEMPORAL = 1    //!< Temporal dithering (default)
-    };
-
-    /**
-     * List of available tone-mapping operators
-     */
-    enum class ToneMapping : uint8_t {
-        LINEAR = 0,     //!< Linear tone mapping (i.e. no tone mapping)
-        ACES = 1,       //!< ACES tone mapping
-    };
-
-    /**
-     * Activates or deactivates ambient occlusion.
-     *
-     * @param ambientOcclusion Type of ambient occlusion to use.
-     */
-    void setAmbientOcclusion(AmbientOcclusion ambientOcclusion) noexcept;
-
-    /**
-     * Query the type of ambient occlusion active for this View.
-     *
-     * @return ambient occlusion type.
-     */
-    AmbientOcclusion getAmbientOcclusion() const noexcept;
-
-    /**
-     * Sets ambient occlusion options.
-     *
-     * @param options Options for ambient occlusion.
-     */
-    void setAmbientOcclusionOptions(AmbientOcclusionOptions const& options) noexcept;
-
-    /**
-     * Gets the ambient occlusion options.
-     *
-     * @return ambient occlusion options currently set.
-     */
-    AmbientOcclusionOptions const& getAmbientOcclusionOptions() const noexcept;
-
-    /**
-     * Sets whether this view is rendered with or without a depth pre-pass.
-     *
-     * By default, the system picks the most appropriate strategy, this method lets the
-     * application override that strategy.
-     *
-     * When the depth pre-pass is enabled, the renderer will first draw all objects in the
-     * depth buffer from front to back, and then draw the objects again but sorted to minimize
-     * state changes. With the depth pre-pass disabled, objects are draw only once, but it may
-     * result in more state changes or more overdraw.
-     *
-     * The best strategy may depend on the scene and/or GPU.
-     *
-     * @param prepass   DepthPrepass::DEFAULT uses the most appropriate strategy,
-     *                  DepthPrepass::DISABLED disables the depth pre-pass,
-     *                  DepthPrepass::ENABLE enables the depth pre-pass.
-     */
-    void setDepthPrepass(DepthPrepass prepass) noexcept;
+    using DynamicResolutionOptions = filament::DynamicResolutionOptions;
+    using BloomOptions = filament::BloomOptions;
+    using FogOptions = filament::FogOptions;
+    using DepthOfFieldOptions = filament::DepthOfFieldOptions;
+    using VignetteOptions = filament::VignetteOptions;
+    using RenderQuality = filament::RenderQuality;
+    using AmbientOcclusionOptions = filament::AmbientOcclusionOptions;
+    using TemporalAntiAliasingOptions = filament::TemporalAntiAliasingOptions;
+    using MultiSampleAntiAliasingOptions = filament::MultiSampleAntiAliasingOptions;
+    using VsmShadowOptions = filament::VsmShadowOptions;
+    using SoftShadowOptions = filament::SoftShadowOptions;
+    using ScreenSpaceReflectionsOptions = filament::ScreenSpaceReflectionsOptions;
+    using GuardBandOptions = filament::GuardBandOptions;
+    using StereoscopicOptions = filament::StereoscopicOptions;
 
     /**
      * Sets the View's name. Only useful for debugging.
      * @param name Pointer to the View's name. The string is copied.
      */
-    void setName(const char* name) noexcept;
+    void setName(const char* UTILS_NONNULL name) noexcept;
 
     /**
      * Returns the View's name
@@ -249,7 +104,7 @@ public:
      *
      * @attention Do *not* free the pointer or modify its content.
      */
-    const char* getName() const noexcept;
+    const char* UTILS_NULLABLE getName() const noexcept;
 
     /**
      * Set this View instance's Scene.
@@ -265,24 +120,63 @@ public:
      *  There is no reference-counting.
      *  Make sure to dissociate a Scene from all Views before destroying it.
      */
-    void setScene(Scene* scene);
+    void setScene(Scene* UTILS_NULLABLE scene);
 
     /**
      * Returns the Scene currently associated with this View.
      * @return A pointer to the Scene associated to this View. nullptr if no Scene is set.
      */
-    Scene* getScene() noexcept;
+    Scene* UTILS_NULLABLE getScene() noexcept;
 
     /**
      * Returns the Scene currently associated with this View.
      * @return A pointer to the Scene associated to this View. nullptr if no Scene is set.
      */
-    Scene const* getScene() const noexcept {
+    Scene const* UTILS_NULLABLE getScene() const noexcept {
         return const_cast<View*>(this)->getScene();
     }
 
     /**
-     * Set this View's Camera.
+     * Specifies an offscreen render target to render into.
+     *
+     * By default, the view's associated render target is nullptr, which corresponds to the
+     * SwapChain associated with the engine.
+     *
+     * A view with a custom render target cannot rely on Renderer::ClearOptions, which only apply
+     * to the SwapChain. Such view can use a Skybox instead.
+     *
+     * @param renderTarget Render target associated with view, or nullptr for the swap chain.
+     */
+    void setRenderTarget(RenderTarget* UTILS_NULLABLE renderTarget) noexcept;
+
+    /**
+     * Gets the offscreen render target associated with this view.
+     *
+     * Returns nullptr if the render target is the swap chain (which is default).
+     *
+     * @see setRenderTarget
+     */
+    RenderTarget* UTILS_NULLABLE getRenderTarget() const noexcept;
+
+    /**
+     * Sets the rectangular region to render to.
+     *
+     * The viewport specifies where the content of the View (i.e. the Scene) is rendered in
+     * the render target. The Render target is automatically clipped to the Viewport.
+     *
+     * @param viewport  The Viewport to render the Scene into. The Viewport is a value-type, it is
+     *                  therefore copied. The parameter can be discarded after this call returns.
+     */
+    void setViewport(Viewport const& viewport) noexcept;
+
+    /**
+     * Returns the rectangular region that gets rendered to.
+     * @return A constant reference to View's viewport.
+     */
+    Viewport const& getViewport() const noexcept;
+
+    /**
+     * Sets this View's Camera.
      *
      * @param camera    Associate the specified Camera to this View. A Camera can be associated to
      *                  several View instances.\n
@@ -295,7 +189,14 @@ public:
      *  There is no reference-counting.
      *  Make sure to dissociate a Camera from all Views before destroying it.
      */
-    void setCamera(Camera* camera) noexcept;
+    void setCamera(Camera* UTILS_NONNULL camera) noexcept;
+
+    /**
+     * Returns whether a Camera is set.
+     * @return true if a camera is set.
+     * @see setCamera()
+     */
+    bool hasCamera() const noexcept;
 
     /**
      * Returns the Camera currently associated with this View.
@@ -312,98 +213,85 @@ public:
     }
 
     /**
-     * Set this View Viewport.
+     * Sets the blending mode used to draw the view into the SwapChain.
      *
-     * The viewport specifies where the content of the View (i.e. the Scene) is rendered in
-     * the render target. The Render target is automatically clipped to the Viewport.
-     *
-     * @param viewport  The Viewport to render the Scene into. The Viewport is a value-type, it is
-     *                  therefore copied. The parameter can be discarded after this call returns.
+     * @param blendMode either BlendMode::OPAQUE or BlendMode::TRANSLUCENT
+      * @see getBlendMode
      */
-    void setViewport(Viewport const& viewport) noexcept;
+    void setBlendMode(BlendMode blendMode) noexcept;
 
     /**
-     * Returns this View's viewport.
-     * @return A constant reference to View's viewport.
+     *
+     * @return blending mode set by setBlendMode
+     * @see setBlendMode
      */
-    Viewport const& getViewport() const noexcept;
+    BlendMode getBlendMode() const noexcept;
 
     /**
-     * Sets the color used to clear the Viewport when rendering this View.
-     * @param clearColor The color to use to clear the Viewport.
-     * @see setClearTargets
-     */
-    void setClearColor(LinearColorA const& clearColor) noexcept;
-
-    /**
-     * Returns the View clear color.
-     * @return A constant reference to the View's clear color.
-     */
-    LinearColorA const& getClearColor() const noexcept;
-
-    /**
-     * Set which targets to clear (default: true, true, false)
-     * @param color     Clear the color buffer. The color buffer is cleared with the color set in
-     *                  setClearColor().
-     * @param depth     Clear the depth buffer. The depth buffer is cleared with an implementation
-     *                  defined value representing the farthest depth.
-     *
-     *                  @note
-     *                  Generally the depth clear value is 1.0, but you shouldn't rely on this
-     *                  because filament may use "inverted depth" in some situations.
-     *
-     *
-     * @param stencil   Clear the stencil buffer. The stencil buffer is cleared with 0.
-     *
-     * @see setClearColor
-     */
-    void setClearTargets(bool color, bool depth, bool stencil) noexcept;
-
-    /**
-     * Set which layers are visible.
+     * Sets which layers are visible.
      *
      * Renderable objects can have one or several layers associated to them. Layers are
      * represented with an 8-bits bitmask, where each bit corresponds to a layer.
-     * @see Renderable::setLayer().
      *
-     * This call sets which of those layers are visible, Renderable in invisible layers won't be
+     * This call sets which of those layers are visible. Renderables in invisible layers won't be
      * rendered.
      *
      * @param select    a bitmask specifying which layer to set or clear using \p values.
      * @param values    a bitmask where each bit sets the visibility of the corresponding layer
      *                  (1: visible, 0: invisible), only layers in \p select are affected.
      *
-     * @note By default all layers are visible.
+     * @see RenderableManager::setLayerMask().
+     *
+     * @note By default only layer 0 (bitmask 0x01) is visible.
      * @note This is a convenient way to quickly show or hide sets of Renderable objects.
      */
     void setVisibleLayers(uint8_t select, uint8_t values) noexcept;
 
     /**
-     * Enable or disable shadow mapping. Enabled by default.
+     * Helper function to enable or disable a visibility layer.
+     * @param layer     layer between 0 and 7 to enable or disable
+     * @param enabled   true to enable the layer, false to disable it
+     * @see RenderableManager::setVisibleLayers()
+     */
+    inline void setLayerEnabled(size_t layer, bool enabled) noexcept {
+        const uint8_t mask = 1u << layer;
+        setVisibleLayers(mask, enabled ? mask : 0);
+    }
+
+    /**
+     * Get the visible layers.
+     *
+     * @see View::setVisibleLayers()
+     */
+    uint8_t getVisibleLayers() const noexcept;
+
+    /**
+     * Enables or disables shadow mapping. Enabled by default.
      *
      * @param enabled true enables shadow mapping, false disables it.
      *
-     * @see Light::Builder::castShadows(),
-     *      Renderable::Builder::receiveShadows(),
-     *      Renderable::Builder::castShadows(),
+     * @see LightManager::Builder::castShadows(),
+     *      RenderableManager::Builder::receiveShadows(),
+     *      RenderableManager::Builder::castShadows(),
      */
-    void setShadowsEnabled(bool enabled) noexcept;
+    void setShadowingEnabled(bool enabled) noexcept;
 
     /**
-     * Specifies which buffers can be discarded before rendering.
-     *
-     * For performance reasons, the default is to discard all buffers, which is generally
-     * correct when rendering a single view.
-     *
-     * However, when rendering a View on top of another one on the same render target,
-     * it is necessary to indicate that the color buffer cannot be discarded.
-     *
-     * @param discard Buffers that need to be discarded before rendering.
-     *
-     * @note
-     * In the future this API will also allow to set the render target.
+     * @return whether shadowing is enabled
      */
-    void setRenderTarget(TargetBufferFlags discard = TargetBufferFlags::ALL) noexcept;
+    bool isShadowingEnabled() const noexcept;
+
+    /**
+     * Enables or disables screen space refraction. Enabled by default.
+     *
+     * @param enabled true enables screen space refraction, false disables it.
+     */
+    void setScreenSpaceRefractionEnabled(bool enabled) noexcept;
+
+    /**
+     * @return whether screen space refraction is enabled
+     */
+    bool isScreenSpaceRefractionEnabled() const noexcept;
 
     /**
      * Sets how many samples are to be used for MSAA in the post-process stage.
@@ -419,15 +307,19 @@ public:
      *       cost. See setAntialiasing.
      *
      * @see setAntialiasing
+     * @deprecated use setMultiSampleAntiAliasingOptions instead
      */
+    UTILS_DEPRECATED
     void setSampleCount(uint8_t count = 1) noexcept;
 
     /**
-     * Returns the sample count set by setSampleCount(). Effective sample could be different.
+     * Returns the sample count set by setSampleCount(). Effective sample count could be different.
      * A value of 0 or 1 means MSAA is disabled.
      *
      * @return value set by setSampleCount().
+     * @deprecated use getMultiSampleAntiAliasingOptions instead
      */
+    UTILS_DEPRECATED
     uint8_t getSampleCount() const noexcept;
 
     /**
@@ -451,17 +343,153 @@ public:
     AntiAliasing getAntiAliasing() const noexcept;
 
     /**
-     * Enables or disables tone-mapping in the post-processing stage. Enabled by default.
+     * Enables or disable temporal anti-aliasing (TAA). Disabled by default.
      *
-     * @param type Tone-mapping function.
+     * @param options temporal anti-aliasing options
      */
-    void setToneMapping(ToneMapping type) noexcept;
+    void setTemporalAntiAliasingOptions(TemporalAntiAliasingOptions options) noexcept;
 
     /**
-     * Returns the tone-mapping function.
-     * @return tone-mapping function.
+     * Returns temporal anti-aliasing options.
+     *
+     * @return temporal anti-aliasing options
      */
-    ToneMapping getToneMapping() const noexcept;
+    TemporalAntiAliasingOptions const& getTemporalAntiAliasingOptions() const noexcept;
+
+    /**
+     * Enables or disable screen-space reflections. Disabled by default.
+     *
+     * @param options screen-space reflections options
+     */
+    void setScreenSpaceReflectionsOptions(ScreenSpaceReflectionsOptions options) noexcept;
+
+    /**
+     * Returns screen-space reflections options.
+     *
+     * @return screen-space reflections options
+     */
+    ScreenSpaceReflectionsOptions const& getScreenSpaceReflectionsOptions() const noexcept;
+
+    /**
+     * Enables or disable screen-space guard band. Disabled by default.
+     *
+     * @param options guard band options
+     */
+    void setGuardBandOptions(GuardBandOptions options) noexcept;
+
+    /**
+     * Returns screen-space guard band options.
+     *
+     * @return guard band options
+     */
+    GuardBandOptions const& getGuardBandOptions() const noexcept;
+
+    /**
+     * Enables or disable multi-sample anti-aliasing (MSAA). Disabled by default.
+     *
+     * @param options multi-sample anti-aliasing options
+     */
+    void setMultiSampleAntiAliasingOptions(MultiSampleAntiAliasingOptions options) noexcept;
+
+    /**
+     * Returns multi-sample anti-aliasing options.
+     *
+     * @return multi-sample anti-aliasing options
+     */
+    MultiSampleAntiAliasingOptions const& getMultiSampleAntiAliasingOptions() const noexcept;
+
+    /**
+     * Sets this View's color grading transforms.
+     *
+     * @param colorGrading Associate the specified ColorGrading to this View. A ColorGrading can be
+     *                     associated to several View instances.\n
+     *                     \p colorGrading can be nullptr to dissociate the currently set
+     *                     ColorGrading from this View. Doing so will revert to the use of the
+     *                     default color grading transforms.\n
+     *                     The View doesn't take ownership of the ColorGrading pointer (which
+     *                     acts as a reference).
+     *
+     * @note
+     *  There is no reference-counting.
+     *  Make sure to dissociate a ColorGrading from all Views before destroying it.
+     */
+    void setColorGrading(ColorGrading* UTILS_NULLABLE colorGrading) noexcept;
+
+    /**
+     * Returns the color grading transforms currently associated to this view.
+     * @return A pointer to the ColorGrading associated to this View.
+     */
+    const ColorGrading* UTILS_NULLABLE getColorGrading() const noexcept;
+
+    /**
+     * Sets ambient occlusion options.
+     *
+     * @param options Options for ambient occlusion.
+     */
+    void setAmbientOcclusionOptions(AmbientOcclusionOptions const& options) noexcept;
+
+    /**
+     * Gets the ambient occlusion options.
+     *
+     * @return ambient occlusion options currently set.
+     */
+    AmbientOcclusionOptions const& getAmbientOcclusionOptions() const noexcept;
+
+    /**
+     * Enables or disables bloom in the post-processing stage. Disabled by default.
+     *
+     * @param options options
+     */
+    void setBloomOptions(BloomOptions options) noexcept;
+
+    /**
+     * Queries the bloom options.
+     *
+     * @return the current bloom options for this view.
+     */
+    BloomOptions getBloomOptions() const noexcept;
+
+    /**
+     * Enables or disables fog. Disabled by default.
+     *
+     * @param options options
+     */
+    void setFogOptions(FogOptions options) noexcept;
+
+    /**
+     * Queries the fog options.
+     *
+     * @return the current fog options for this view.
+     */
+    FogOptions getFogOptions() const noexcept;
+
+    /**
+     * Enables or disables Depth of Field. Disabled by default.
+     *
+     * @param options options
+     */
+    void setDepthOfFieldOptions(DepthOfFieldOptions options) noexcept;
+
+    /**
+     * Queries the depth of field options.
+     *
+     * @return the current depth of field options for this view.
+     */
+    DepthOfFieldOptions getDepthOfFieldOptions() const noexcept;
+
+    /**
+     * Enables or disables the vignetted effect in the post-processing stage. Disabled by default.
+     *
+     * @param options options
+     */
+    void setVignetteOptions(VignetteOptions options) noexcept;
+
+    /**
+     * Queries the vignette options.
+     *
+     * @return the current vignette options for this view.
+     */
+    VignetteOptions getVignetteOptions() const noexcept;
 
     /**
      * Enables or disables dithering in the post-processing stage. Enabled by default.
@@ -527,22 +555,92 @@ public:
      */
     void setDynamicLightingOptions(float zLightNear, float zLightFar) noexcept;
 
+    /*
+     * Set the shadow mapping technique this View uses.
+     *
+     * The ShadowType affects all the shadows seen within the View.
+     *
+     * ShadowType::VSM imposes a restriction on marking renderables as only shadow receivers (but
+     * not casters). To ensure correct shadowing with VSM, all shadow participant renderables should
+     * be marked as both receivers and casters. Objects that are guaranteed to not cast shadows on
+     * themselves or other objects (such as flat ground planes) can be set to not cast shadows,
+     * which might improve shadow quality.
+     *
+     * @warning This API is still experimental and subject to change.
+     */
+    void setShadowType(ShadowType shadow) noexcept;
+
     /**
-     * Enable or disable post processing. Enabled by default.
+     * Returns the shadow mapping technique used by this View.
+     *
+     * @return value set by setShadowType().
+     */
+    ShadowType getShadowType() const noexcept;
+
+    /**
+     * Sets VSM shadowing options that apply across the entire View.
+     *
+     * Additional light-specific VSM options can be set with LightManager::setShadowOptions.
+     *
+     * Only applicable when shadow type is set to ShadowType::VSM.
+     *
+     * @param options Options for shadowing.
+     *
+     * @see setShadowType
+     *
+     * @warning This API is still experimental and subject to change.
+     */
+    void setVsmShadowOptions(VsmShadowOptions const& options) noexcept;
+
+    /**
+     * Returns the VSM shadowing options associated with this View.
+     *
+     * @return value set by setVsmShadowOptions().
+     */
+    VsmShadowOptions getVsmShadowOptions() const noexcept;
+
+    /**
+     * Sets soft shadowing options that apply across the entire View.
+     *
+     * Additional light-specific soft shadow parameters can be set with LightManager::setShadowOptions.
+     *
+     * Only applicable when shadow type is set to ShadowType::DPCF or ShadowType::PCSS.
+     *
+     * @param options Options for shadowing.
+     *
+     * @see setShadowType
+     *
+     * @warning This API is still experimental and subject to change.
+     */
+    void setSoftShadowOptions(SoftShadowOptions const& options) noexcept;
+
+    /**
+     * Returns the soft shadowing options associated with this View.
+     *
+     * @return value set by setSoftShadowOptions().
+     */
+    SoftShadowOptions getSoftShadowOptions() const noexcept;
+
+    /**
+     * Enables or disables post processing. Enabled by default.
      *
      * Post-processing includes:
-     *  - Tone-mapping & gamma encoding
+     *  - Depth-of-field
+     *  - Bloom
+     *  - Vignetting
+     *  - Temporal Anti-aliasing (TAA)
+     *  - Color grading & gamma encoding
      *  - Dithering
-     *  - MSAA
      *  - FXAA
      *  - Dynamic scaling
      *
-     * Disabling post-processing forgoes color correctness as well as anti-aliasing and
-     * should only be used experimentally (e.g., for UI overlays).
+     * Disabling post-processing forgoes color correctness as well as some anti-aliasing techniques
+     * and should only be used for debugging, UI overlays or when using custom render targets
+     * (see RenderTarget).
      *
      * @param enabled true enables post processing, false disables it.
      *
-     * @see setToneMapping, setAntiAliasing, setDithering, setSampleCount
+     * @see setBloomOptions, setColorGrading, setAntiAliasing, setDithering, setSampleCount
      */
     void setPostProcessingEnabled(bool enabled) noexcept;
 
@@ -570,6 +668,81 @@ public:
      */
     bool isFrontFaceWindingInverted() const noexcept;
 
+    /**
+     * Enables or disables transparent picking. Disabled by default.
+     *
+     * When transparent picking is enabled, View::pick() will pick from both
+     * transparent and opaque renderables. When disabled, View::pick() will only
+     * pick from opaque renderables.
+     *
+     * @param enabled true enables transparent picking, false disables it.
+     *
+     * @note Transparent picking will create an extra pass for rendering depth
+     *       from both transparent and opaque renderables. 
+     */
+    void setTransparentPickingEnabled(bool enabled) noexcept;
+
+    /**
+     * Returns true if transparent picking is enabled.
+     * See setTransparentPickingEnabled() for more information.
+     */
+    bool isTransparentPickingEnabled() const noexcept;
+
+    /**
+     * Enables use of the stencil buffer.
+     *
+     * The stencil buffer is an 8-bit, per-fragment unsigned integer stored alongside the depth
+     * buffer. The stencil buffer is cleared at the beginning of a frame and discarded after the
+     * color pass.
+     *
+     * Each fragment's stencil value is set during rasterization by specifying stencil operations on
+     * a Material. The stencil buffer can be used as a mask for later rendering by setting a
+     * Material's stencil comparison function and reference value. Fragments that don't pass the
+     * stencil test are then discarded.
+     *
+     * If post-processing is disabled, then the SwapChain must have the CONFIG_HAS_STENCIL_BUFFER
+     * flag set in order to use the stencil buffer.
+     *
+     * A renderable's priority (see RenderableManager::setPriority) is useful to control the order
+     * in which primitives are drawn.
+     *
+     * @param enabled True to enable the stencil buffer, false disables it (default)
+     */
+    void setStencilBufferEnabled(bool enabled) noexcept;
+
+    /**
+     * Returns true if the stencil buffer is enabled.
+     * See setStencilBufferEnabled() for more information.
+     */
+    bool isStencilBufferEnabled() const noexcept;
+
+    /**
+     * Sets the stereoscopic rendering options for this view.
+     *
+     * Currently, only one type of stereoscopic rendering is supported: side-by-side.
+     * Side-by-side stereo rendering splits the viewport into two halves: a left and right half.
+     * Eye 0 will render to the left half, while Eye 1 will render into the right half.
+     *
+     * Currently, the following features are not supported with stereoscopic rendering:
+     * - post-processing
+     * - shadowing
+     * - punctual lights
+     *
+     * Stereo rendering depends on device and platform support. To check if stereo rendering is
+     * supported, use Engine::isStereoSupported(). If stereo rendering is not supported, then the
+     * stereoscopic options have no effect.
+     *
+     * @param options The stereoscopic options to use on this view
+     */
+    void setStereoscopicOptions(StereoscopicOptions const& options) noexcept;
+
+    /**
+     * Returns the stereoscopic options associated with this View.
+     *
+     * @return value set by setStereoscopicOptions().
+     */
+    StereoscopicOptions const& getStereoscopicOptions() const noexcept;
+
     // for debugging...
 
     //! debugging: allows to entirely disable frustum culling. (culling enabled by default).
@@ -579,12 +752,205 @@ public:
     bool isFrustumCullingEnabled() const noexcept;
 
     //! debugging: sets the Camera used for rendering. It may be different from the culling camera.
-    void setDebugCamera(Camera* camera) noexcept;
+    void setDebugCamera(Camera* UTILS_NULLABLE camera) noexcept;
 
     //! debugging: returns a Camera from the point of view of *the* dominant directional light used for shadowing.
-    Camera const* getDirectionalLightCamera() const noexcept;
-};
+    utils::FixedCapacityVector<Camera const*> getDirectionalShadowCameras() const noexcept;
 
+
+    /** Result of a picking query */
+    struct PickingQueryResult {
+        utils::Entity renderable{};     //! RenderableManager Entity at the queried coordinates
+        float depth{};                  //! Depth buffer value (1 (near plane) to 0 (infinity))
+        uint32_t reserved1{};
+        uint32_t reserved2{};
+        /**
+         * screen space coordinates in GL convention, this can be used to compute the view or
+         * world space position of the picking hit. For e.g.:
+         *   clip_space_position  = (fragCoords.xy / viewport.wh, fragCoords.z) * 2.0 - 1.0
+         *   view_space_position  = inverse(projection) * clip_space_position
+         *   world_space_position = model * view_space_position
+         *
+         * The viewport, projection and model matrices can be obtained from Camera. Because
+         * pick() has some latency, it might be more accurate to obtain these values at the
+         * time the View::pick() call is made.
+         *
+         * Note: if the Engine is running at FEATURE_LEVEL_0, the precision or `depth` and
+         *       `fragCoords.z` is only 8-bits.
+         */
+        math::float3 fragCoords;        //! screen space coordinates in GL convention
+    };
+
+    /** User data for PickingQueryResultCallback */
+    struct PickingQuery {
+        // note: this is enough to store a std::function<> -- just saying...
+        void* UTILS_NULLABLE storage[4];
+    };
+
+    /** callback type used for picking queries. */
+    using PickingQueryResultCallback =
+            void(*)(PickingQueryResult const& result, PickingQuery* UTILS_NONNULL pq);
+
+    /**
+     * Helper for creating a picking query from Foo::method, by pointer.
+     * e.g.: pick<Foo, &Foo::bar>(x, y, &foo);
+     *
+     * @tparam T        Class of the method to call (e.g.: Foo)
+     * @tparam method   Method to call on T (e.g.: &Foo::bar)
+     * @param x         Horizontal coordinate to query in the viewport with origin on the left.
+     * @param y         Vertical coordinate to query on the viewport with origin at the bottom.
+     * @param instance  A pointer to an instance of T
+     * @param handler   Handler to dispatch the callback or nullptr for the default handler.
+     */
+    template<typename T, void(T::*method)(PickingQueryResult const&)>
+    void pick(uint32_t x, uint32_t y, T* UTILS_NONNULL instance,
+            backend::CallbackHandler* UTILS_NULLABLE handler = nullptr) noexcept {
+        PickingQuery& query = pick(x, y, [](PickingQueryResult const& result, PickingQuery* pq) {
+            (static_cast<T*>(pq->storage[0])->*method)(result);
+        }, handler);
+        query.storage[0] = instance;
+    }
+
+    /**
+     * Helper for creating a picking query from Foo::method, by copy for a small object
+     * e.g.: pick<Foo, &Foo::bar>(x, y, foo);
+     *
+     * @tparam T        Class of the method to call (e.g.: Foo)
+     * @tparam method   Method to call on T (e.g.: &Foo::bar)
+     * @param x         Horizontal coordinate to query in the viewport with origin on the left.
+     * @param y         Vertical coordinate to query on the viewport with origin at the bottom.
+     * @param instance  An instance of T
+     * @param handler   Handler to dispatch the callback or nullptr for the default handler.
+     */
+    template<typename T, void(T::*method)(PickingQueryResult const&)>
+    void pick(uint32_t x, uint32_t y, T instance,
+            backend::CallbackHandler* UTILS_NULLABLE handler = nullptr) noexcept {
+        static_assert(sizeof(instance) <= sizeof(PickingQuery::storage), "user data too large");
+        PickingQuery& query = pick(x, y, [](PickingQueryResult const& result, PickingQuery* pq) {
+            T* const that = static_cast<T*>(reinterpret_cast<void*>(pq->storage));
+            (that->*method)(result);
+            that->~T();
+        }, handler);
+        new(query.storage) T(std::move(instance));
+    }
+
+    /**
+     * Helper for creating a picking query from a small functor
+     * e.g.: pick(x, y, [](PickingQueryResult const& result){});
+     *
+     * @param x         Horizontal coordinate to query in the viewport with origin on the left.
+     * @param y         Vertical coordinate to query on the viewport with origin at the bottom.
+     * @param functor   A functor, typically a lambda function.
+     * @param handler   Handler to dispatch the callback or nullptr for the default handler.
+     */
+    template<typename T>
+    void pick(uint32_t x, uint32_t y, T functor,
+            backend::CallbackHandler* UTILS_NULLABLE handler = nullptr) noexcept {
+        static_assert(sizeof(functor) <= sizeof(PickingQuery::storage), "functor too large");
+        PickingQuery& query = pick(x, y, handler,
+                (PickingQueryResultCallback)[](PickingQueryResult const& result, PickingQuery* pq) {
+                    T* const that = static_cast<T*>(reinterpret_cast<void*>(pq->storage));
+                    that->operator()(result);
+                    that->~T();
+                });
+        new(query.storage) T(std::move(functor));
+    }
+
+    /**
+     * Creates a picking query. Multiple queries can be created (e.g.: multi-touch).
+     * Picking queries are all executed when Renderer::render() is called on this View.
+     * The provided callback is guaranteed to be called at some point in the future.
+     *
+     * Typically it takes a couple frames to receive the result of a picking query.
+     *
+     * @param x         Horizontal coordinate to query in the viewport with origin on the left.
+     * @param y         Vertical coordinate to query on the viewport with origin at the bottom.
+     * @param callback  User callback, called when the picking query result is available.
+     * @param handler   Handler to dispatch the callback or nullptr for the default handler.
+     * @return          A reference to a PickingQuery structure, which can be used to store up to
+     *                  8*sizeof(void*) bytes of user data. This user data is later accessible
+     *                  in the PickingQueryResultCallback callback 3rd parameter.
+     */
+    PickingQuery& pick(uint32_t x, uint32_t y,
+            backend::CallbackHandler* UTILS_NULLABLE handler,
+            PickingQueryResultCallback UTILS_NONNULL callback) noexcept;
+
+    /**
+     * Set the value of material global variables. There are up-to four such variable each of
+     * type float4. These variables can be read in a user Material with
+     * `getMaterialGlobal{0|1|2|3}()`. All variable start with a default value of { 0, 0, 0, 1 }
+     *
+     * @param index index of the variable to set between 0 and 3.
+     * @param value new value for the variable.
+     * @see getMaterialGlobal
+     */
+    void setMaterialGlobal(uint32_t index, math::float4 const& value);
+
+    /**
+     * Get the value of the material global variables.
+     * All variable start with a default value of { 0, 0, 0, 1 }
+     *
+     * @param index index of the variable to set between 0 and 3.
+     * @return current value of the variable.
+     * @see setMaterialGlobal
+     */
+    math::float4 getMaterialGlobal(uint32_t index) const;
+
+    /**
+     * Get an Entity representing the large scale fog object.
+     * This entity is always inherited by the View's Scene.
+     *
+     * It is for example possible to create a TransformManager component with this
+     * Entity and apply a transformation globally on the fog.
+     *
+     * @return an Entity representing the large scale fog object.
+     */
+    utils::Entity getFogEntity() const noexcept;
+
+
+    /**
+     * When certain temporal features are used (e.g.: TAA or Screen-space reflections), the view
+     * keeps a history of previous frame renders associated with the Renderer the view was last
+     * used with. When switching Renderer, it may be necessary to clear that history by calling
+     * this method. Similarly, if the whole content of the screen change, like when a cut-scene
+     * starts, clearing the history might be needed to avoid artifacts due to the previous frame
+     * being very different.
+     */
+    void clearFrameHistory(Engine& engine) noexcept;
+
+    /**
+     * List of available ambient occlusion techniques
+     * @deprecated use AmbientOcclusionOptions::enabled instead
+     */
+    enum class UTILS_DEPRECATED AmbientOcclusion : uint8_t {
+        NONE = 0,       //!< No Ambient Occlusion
+        SSAO = 1        //!< Basic, sampling SSAO
+    };
+
+    /**
+     * Activates or deactivates ambient occlusion.
+     * @deprecated use setAmbientOcclusionOptions() instead
+     * @see setAmbientOcclusionOptions
+     *
+     * @param ambientOcclusion Type of ambient occlusion to use.
+     */
+    UTILS_DEPRECATED
+    void setAmbientOcclusion(AmbientOcclusion ambientOcclusion) noexcept;
+
+    /**
+     * Queries the type of ambient occlusion active for this View.
+     * @deprecated use getAmbientOcclusionOptions() instead
+     * @see getAmbientOcclusionOptions
+     *
+     * @return ambient occlusion type.
+     */
+    UTILS_DEPRECATED
+    AmbientOcclusion getAmbientOcclusion() const noexcept;
+
+protected:
+    // prevent heap allocation
+    ~View() = default;
+};
 
 } // namespace filament
 

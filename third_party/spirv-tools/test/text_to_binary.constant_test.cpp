@@ -35,27 +35,27 @@ using ::testing::Eq;
 // Test Sampler Addressing Mode enum values
 
 using SamplerAddressingModeTest = spvtest::TextToBinaryTestBase<
-    ::testing::TestWithParam<EnumCase<SpvSamplerAddressingMode>>>;
+    ::testing::TestWithParam<EnumCase<spv::SamplerAddressingMode>>>;
 
 TEST_P(SamplerAddressingModeTest, AnySamplerAddressingMode) {
   const std::string input =
       "%result = OpConstantSampler %type " + GetParam().name() + " 0 Nearest";
   EXPECT_THAT(CompiledInstructions(input),
-              Eq(MakeInstruction(SpvOpConstantSampler,
-                                 {1, 2, GetParam().value(), 0, 0})));
+              Eq(MakeInstruction(spv::Op::OpConstantSampler,
+                                 {1, 2, uint32_t(GetParam().value()), 0, 0})));
 }
 
 // clang-format off
-#define CASE(NAME) { SpvSamplerAddressingMode##NAME, #NAME }
-INSTANTIATE_TEST_CASE_P(
+#define CASE(NAME) { spv::SamplerAddressingMode::NAME, #NAME }
+INSTANTIATE_TEST_SUITE_P(
     TextToBinarySamplerAddressingMode, SamplerAddressingModeTest,
-    ::testing::ValuesIn(std::vector<EnumCase<SpvSamplerAddressingMode>>{
+    ::testing::ValuesIn(std::vector<EnumCase<spv::SamplerAddressingMode>>{
         CASE(None),
         CASE(ClampToEdge),
         CASE(Clamp),
         CASE(Repeat),
         CASE(RepeatMirrored),
-    }),);
+    }));
 #undef CASE
 // clang-format on
 
@@ -67,24 +67,24 @@ TEST_F(SamplerAddressingModeTest, WrongMode) {
 // Test Sampler Filter Mode enum values
 
 using SamplerFilterModeTest = spvtest::TextToBinaryTestBase<
-    ::testing::TestWithParam<EnumCase<SpvSamplerFilterMode>>>;
+    ::testing::TestWithParam<EnumCase<spv::SamplerFilterMode>>>;
 
 TEST_P(SamplerFilterModeTest, AnySamplerFilterMode) {
   const std::string input =
       "%result = OpConstantSampler %type Clamp 0 " + GetParam().name();
   EXPECT_THAT(CompiledInstructions(input),
-              Eq(MakeInstruction(SpvOpConstantSampler,
-                                 {1, 2, 2, 0, GetParam().value()})));
+              Eq(MakeInstruction(spv::Op::OpConstantSampler,
+                                 {1, 2, 2, 0, uint32_t(GetParam().value())})));
 }
 
 // clang-format off
-#define CASE(NAME) { SpvSamplerFilterMode##NAME, #NAME}
-INSTANTIATE_TEST_CASE_P(
+#define CASE(NAME) { spv::SamplerFilterMode::NAME, #NAME}
+INSTANTIATE_TEST_SUITE_P(
     TextToBinarySamplerFilterMode, SamplerFilterModeTest,
-    ::testing::ValuesIn(std::vector<EnumCase<SpvSamplerFilterMode>>{
+    ::testing::ValuesIn(std::vector<EnumCase<spv::SamplerFilterMode>>{
         CASE(Nearest),
         CASE(Linear),
-    }),);
+    }));
 #undef CASE
 // clang-format on
 
@@ -114,125 +114,125 @@ TEST_P(OpConstantValidTest, ValidTypes) {
 }
 
 // clang-format off
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     TextToBinaryOpConstantValid, OpConstantValidTest,
     ::testing::ValuesIn(std::vector<ConstantTestCase>{
       // Check 16 bits
       {"OpTypeInt 16 0", "0x1234",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 0}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0x1234})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 0}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0x1234})})},
       {"OpTypeInt 16 0", "0x8000",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 0}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0x8000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 0}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0x8000})})},
       {"OpTypeInt 16 0", "0",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 0}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 0}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0})})},
       {"OpTypeInt 16 0", "65535",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 0}),
-         MakeInstruction(SpvOpConstant, {1, 2, 65535})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 0}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 65535})})},
       {"OpTypeInt 16 0", "0xffff",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 0}),
-         MakeInstruction(SpvOpConstant, {1, 2, 65535})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 0}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 65535})})},
       {"OpTypeInt 16 1", "0x8000", // Test sign extension.
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0xffff8000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0xffff8000})})},
       {"OpTypeInt 16 1", "-32",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, uint32_t(-32)})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, uint32_t(-32)})})},
       {"OpTypeInt 16 1", "0",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0})})},
       {"OpTypeInt 16 1", "-0",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0})})},
       {"OpTypeInt 16 1", "-0x0",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0})})},
       {"OpTypeInt 16 1", "-32768",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, uint32_t(-32768)})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, uint32_t(-32768)})})},
       // Check 32 bits
       {"OpTypeInt 32 0", "42",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 32, 0}),
-         MakeInstruction(SpvOpConstant, {1, 2, 42})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 32, 0}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 42})})},
       {"OpTypeInt 32 1", "-32",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 32, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, uint32_t(-32)})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 32, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, uint32_t(-32)})})},
       {"OpTypeInt 32 1", "0",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 32, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 32, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0})})},
       {"OpTypeInt 32 1", "-0",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 32, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 32, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0})})},
       {"OpTypeInt 32 1", "-0x0",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 32, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 32, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0})})},
       {"OpTypeInt 32 1", "-0x001",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 32, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, uint32_t(-1)})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 32, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, uint32_t(-1)})})},
       {"OpTypeInt 32 1", "2147483647",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 32, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0x7fffffffu})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 32, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0x7fffffffu})})},
       {"OpTypeInt 32 1", "-2147483648",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 32, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0x80000000u})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 32, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0x80000000u})})},
       {"OpTypeFloat 32", "1.0",
-        Concatenate({MakeInstruction(SpvOpTypeFloat, {1, 32}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0x3f800000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeFloat, {1, 32}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0x3f800000})})},
       {"OpTypeFloat 32", "10.0",
-        Concatenate({MakeInstruction(SpvOpTypeFloat, {1, 32}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0x41200000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeFloat, {1, 32}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0x41200000})})},
       {"OpTypeFloat 32", "-0x1p+128", // -infinity
-        Concatenate({MakeInstruction(SpvOpTypeFloat, {1, 32}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0xFF800000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeFloat, {1, 32}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0xFF800000})})},
       {"OpTypeFloat 32", "0x1p+128", // +infinity
-        Concatenate({MakeInstruction(SpvOpTypeFloat, {1, 32}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0x7F800000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeFloat, {1, 32}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0x7F800000})})},
       {"OpTypeFloat 32", "-0x1.8p+128", // A -NaN
-        Concatenate({MakeInstruction(SpvOpTypeFloat, {1, 32}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0xFFC00000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeFloat, {1, 32}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0xFFC00000})})},
       {"OpTypeFloat 32", "-0x1.0002p+128", // A +NaN
-        Concatenate({MakeInstruction(SpvOpTypeFloat, {1, 32}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0xFF800100})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeFloat, {1, 32}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0xFF800100})})},
       // Check 48 bits
       {"OpTypeInt 48 0", "0x1234",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 48, 0}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0x1234, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 48, 0}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0x1234, 0})})},
       {"OpTypeInt 48 0", "0x800000000001",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 48, 0}),
-         MakeInstruction(SpvOpConstant, {1, 2, 1, 0x00008000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 48, 0}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 1, 0x00008000})})},
       {"OpTypeInt 48 1", "0x800000000000", // Test sign extension.
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 48, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0, 0xffff8000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 48, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0, 0xffff8000})})},
       {"OpTypeInt 48 1", "-32",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 48, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, uint32_t(-32), uint32_t(-1)})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 48, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, uint32_t(-32), uint32_t(-1)})})},
       // Check 64 bits
       {"OpTypeInt 64 0", "0x1234",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 64, 0}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0x1234, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 64, 0}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0x1234, 0})})},
       {"OpTypeInt 64 0", "18446744073709551615",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 64, 0}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0xffffffffu, 0xffffffffu})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 64, 0}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0xffffffffu, 0xffffffffu})})},
       {"OpTypeInt 64 0", "0xffffffffffffffff",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 64, 0}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0xffffffffu, 0xffffffffu})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 64, 0}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0xffffffffu, 0xffffffffu})})},
       {"OpTypeInt 64 1", "0x1234",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 64, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0x1234, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 64, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0x1234, 0})})},
       {"OpTypeInt 64 1", "-42",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 64, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, uint32_t(-42), uint32_t(-1)})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 64, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, uint32_t(-42), uint32_t(-1)})})},
       {"OpTypeInt 64 1", "-0x01",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 64, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0xffffffffu, 0xffffffffu})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 64, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0xffffffffu, 0xffffffffu})})},
       {"OpTypeInt 64 1", "9223372036854775807",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 64, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0xffffffffu, 0x7fffffffu})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 64, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0xffffffffu, 0x7fffffffu})})},
       {"OpTypeInt 64 1", "0x7fffffff",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 64, 1}),
-         MakeInstruction(SpvOpConstant, {1, 2, 0x7fffffffu, 0})})},
-    }),);
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 64, 1}),
+         MakeInstruction(spv::Op::OpConstant, {1, 2, 0x7fffffffu, 0})})},
+    }));
 // clang-format on
 
 // A test case for checking OpConstant with invalid literals with a leading
@@ -255,7 +255,7 @@ TEST_P(OpConstantInvalidLeadingMinusTest, InvalidCase) {
 }
 
 // clang-format off
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     TextToBinaryOpConstantInvalidLeadingMinus, OpConstantInvalidLeadingMinusTest,
     ::testing::ValuesIn(std::vector<InvalidLeadingMinusCase>{
       {"OpTypeInt 16 0", "-0"},
@@ -267,7 +267,7 @@ INSTANTIATE_TEST_CASE_P(
       {"OpTypeInt 64 0", "-0"},
       {"OpTypeInt 64 0", "-0x0"},
       {"OpTypeInt 64 0", "-1"},
-    }),);
+    }));
 // clang-format on
 
 // A test case for invalid floating point literals.
@@ -293,7 +293,7 @@ TEST_P(OpConstantInvalidFloatConstant, Samples) {
 }
 
 // clang-format off
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     TextToBinaryInvalidFloatConstant, OpConstantInvalidFloatConstant,
     ::testing::ValuesIn(std::vector<InvalidFloatConstantCase>{
         {16, "abc"},
@@ -323,12 +323,11 @@ INSTANTIATE_TEST_CASE_P(
         {64, "++1"},
         {32, "1e400"}, // Overflow is an error for 64-bit floats.
         {32, "-1e400"},
-    }),);
+    }));
 // clang-format on
 
 using OpConstantInvalidTypeTest =
     spvtest::TextToBinaryTestBase<::testing::TestWithParam<std::string>>;
-
 TEST_P(OpConstantInvalidTypeTest, InvalidTypes) {
   const std::string input = "%1 = " + GetParam() +
                             "\n"
@@ -339,7 +338,7 @@ TEST_P(OpConstantInvalidTypeTest, InvalidTypes) {
 }
 
 // clang-format off
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     TextToBinaryOpConstantInvalidValidType, OpConstantInvalidTypeTest,
     ::testing::ValuesIn(std::vector<std::string>{
       {"OpTypeVoid",
@@ -360,11 +359,14 @@ INSTANTIATE_TEST_CASE_P(
        "OpTypeReserveId",
        "OpTypeQueue",
        "OpTypePipe ReadOnly",
-       "OpTypeForwardPointer %a UniformConstant",
-        // At least one thing that isn't a type at all
+
+       // Skip OpTypeForwardPointer doesn't even produce a result ID.
+       // The assembler errors out if we try to check it in this scenario.
+
+       // Try at least one thing that isn't a type at all
        "OpNot %a %b"
       },
-    }),);
+    }));
 // clang-format on
 
 using OpSpecConstantValidTest =
@@ -381,59 +383,59 @@ TEST_P(OpSpecConstantValidTest, ValidTypes) {
 }
 
 // clang-format off
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     TextToBinaryOpSpecConstantValid, OpSpecConstantValidTest,
     ::testing::ValuesIn(std::vector<ConstantTestCase>{
       // Check 16 bits
       {"OpTypeInt 16 0", "0x1234",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 0}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, 0x1234})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 0}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, 0x1234})})},
       {"OpTypeInt 16 0", "0x8000",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 0}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, 0x8000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 0}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, 0x8000})})},
       {"OpTypeInt 16 1", "0x8000", // Test sign extension.
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 1}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, 0xffff8000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 1}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, 0xffff8000})})},
       {"OpTypeInt 16 1", "-32",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 16, 1}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, uint32_t(-32)})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 16, 1}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, uint32_t(-32)})})},
       // Check 32 bits
       {"OpTypeInt 32 0", "42",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 32, 0}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, 42})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 32, 0}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, 42})})},
       {"OpTypeInt 32 1", "-32",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 32, 1}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, uint32_t(-32)})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 32, 1}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, uint32_t(-32)})})},
       {"OpTypeFloat 32", "1.0",
-        Concatenate({MakeInstruction(SpvOpTypeFloat, {1, 32}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, 0x3f800000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeFloat, {1, 32}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, 0x3f800000})})},
       {"OpTypeFloat 32", "10.0",
-        Concatenate({MakeInstruction(SpvOpTypeFloat, {1, 32}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, 0x41200000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeFloat, {1, 32}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, 0x41200000})})},
       // Check 48 bits
       {"OpTypeInt 48 0", "0x1234",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 48, 0}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, 0x1234, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 48, 0}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, 0x1234, 0})})},
       {"OpTypeInt 48 0", "0x800000000001",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 48, 0}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, 1, 0x00008000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 48, 0}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, 1, 0x00008000})})},
       {"OpTypeInt 48 1", "0x800000000000", // Test sign extension.
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 48, 1}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, 0, 0xffff8000})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 48, 1}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, 0, 0xffff8000})})},
       {"OpTypeInt 48 1", "-32",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 48, 1}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, uint32_t(-32), uint32_t(-1)})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 48, 1}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, uint32_t(-32), uint32_t(-1)})})},
       // Check 64 bits
       {"OpTypeInt 64 0", "0x1234",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 64, 0}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, 0x1234, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 64, 0}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, 0x1234, 0})})},
       {"OpTypeInt 64 1", "0x1234",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 64, 1}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, 0x1234, 0})})},
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 64, 1}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, 0x1234, 0})})},
       {"OpTypeInt 64 1", "-42",
-        Concatenate({MakeInstruction(SpvOpTypeInt, {1, 64, 1}),
-         MakeInstruction(SpvOpSpecConstant, {1, 2, uint32_t(-42), uint32_t(-1)})})},
-    }),);
+        Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 64, 1}),
+         MakeInstruction(spv::Op::OpSpecConstant, {1, 2, uint32_t(-42), uint32_t(-1)})})},
+    }));
 // clang-format on
 
 using OpSpecConstantInvalidTypeTest =
@@ -449,7 +451,7 @@ TEST_P(OpSpecConstantInvalidTypeTest, InvalidTypes) {
 }
 
 // clang-format off
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     TextToBinaryOpSpecConstantInvalidValidType, OpSpecConstantInvalidTypeTest,
     ::testing::ValuesIn(std::vector<std::string>{
       {"OpTypeVoid",
@@ -470,19 +472,28 @@ INSTANTIATE_TEST_CASE_P(
        "OpTypeReserveId",
        "OpTypeQueue",
        "OpTypePipe ReadOnly",
-       "OpTypeForwardPointer %a UniformConstant",
-        // At least one thing that isn't a type at all
+
+       // Skip testing OpTypeForwardPointer because it doesn't even produce a result ID.
+
+       // Try at least one thing that isn't a type at all
        "OpNot %a %b"
       },
-    }),);
+    }));
 // clang-format on
 
 const int64_t kMaxUnsigned48Bit = (int64_t(1) << 48) - 1;
 const int64_t kMaxSigned48Bit = (int64_t(1) << 47) - 1;
 const int64_t kMinSigned48Bit = -kMaxSigned48Bit - 1;
 
-INSTANTIATE_TEST_CASE_P(
-    OpConstantRoundTrip, RoundTripTest,
+using ConstantRoundTripTest = RoundTripTest;
+
+TEST_P(ConstantRoundTripTest, DisassemblyEqualsAssemblyInput) {
+  const std::string assembly = GetParam();
+  EXPECT_THAT(EncodeAndDecodeSuccessfully(assembly), Eq(assembly)) << assembly;
+}
+
+INSTANTIATE_TEST_SUITE_P(
+    OpConstantRoundTrip, ConstantRoundTripTest,
     ::testing::ValuesIn(std::vector<std::string>{
         // 16 bit
         "%1 = OpTypeInt 16 0\n%2 = OpConstant %1 0\n",
@@ -522,10 +533,10 @@ INSTANTIATE_TEST_CASE_P(
         "%1 = OpTypeFloat 64\n%2 = OpConstant %1 0\n",
         "%1 = OpTypeFloat 64\n%2 = OpConstant %1 1.79767e+308\n",
         "%1 = OpTypeFloat 64\n%2 = OpConstant %1 -1.79767e+308\n",
-    }), );
+    }));
 
-INSTANTIATE_TEST_CASE_P(
-    OpConstantHalfRoundTrip, RoundTripTest,
+INSTANTIATE_TEST_SUITE_P(
+    OpConstantHalfRoundTrip, ConstantRoundTripTest,
     ::testing::ValuesIn(std::vector<std::string>{
         "%1 = OpTypeFloat 16\n%2 = OpConstant %1 -0x0p+0\n",
         "%1 = OpTypeFloat 16\n%2 = OpConstant %1 0x0p+0\n",
@@ -557,12 +568,12 @@ INSTANTIATE_TEST_CASE_P(
         "%1 = OpTypeFloat 16\n%2 = OpConstant %1 -0x1.ffp+16\n",   // -nan
         "%1 = OpTypeFloat 16\n%2 = OpConstant %1 -0x1.ffcp+16\n",  // -nan
         "%1 = OpTypeFloat 16\n%2 = OpConstant %1 -0x1.004p+16\n",  // -nan
-    }), );
+    }));
 
 // clang-format off
 // (Clang-format really wants to break up these strings across lines.
-INSTANTIATE_TEST_CASE_P(
-    OpConstantRoundTripNonFinite, RoundTripTest,
+INSTANTIATE_TEST_SUITE_P(
+    OpConstantRoundTripNonFinite, ConstantRoundTripTest,
     ::testing::ValuesIn(std::vector<std::string>{
   "%1 = OpTypeFloat 32\n%2 = OpConstant %1 -0x1p+128\n",         // -inf
   "%1 = OpTypeFloat 32\n%2 = OpConstant %1 0x1p+128\n",          // inf
@@ -588,11 +599,11 @@ INSTANTIATE_TEST_CASE_P(
   "%1 = OpTypeFloat 64\n%2 = OpConstant %1 0x1.0000000000001p+1024\n",   // -nan
   "%1 = OpTypeFloat 64\n%2 = OpConstant %1 0x1.00003p+1024\n",           // -nan
   "%1 = OpTypeFloat 64\n%2 = OpConstant %1 0x1.fffffffffffffp+1024\n",   // -nan
-    }),);
+    }));
 // clang-format on
 
-INSTANTIATE_TEST_CASE_P(
-    OpSpecConstantRoundTrip, RoundTripTest,
+INSTANTIATE_TEST_SUITE_P(
+    OpSpecConstantRoundTrip, ConstantRoundTripTest,
     ::testing::ValuesIn(std::vector<std::string>{
         // 16 bit
         "%1 = OpTypeInt 16 0\n%2 = OpSpecConstant %1 0\n",
@@ -632,12 +643,12 @@ INSTANTIATE_TEST_CASE_P(
         "%1 = OpTypeFloat 64\n%2 = OpSpecConstant %1 0\n",
         "%1 = OpTypeFloat 64\n%2 = OpSpecConstant %1 1.79767e+308\n",
         "%1 = OpTypeFloat 64\n%2 = OpSpecConstant %1 -1.79767e+308\n",
-    }), );
+    }));
 
 // Test OpSpecConstantOp
 
 using OpSpecConstantOpTestWithIds =
-    spvtest::TextToBinaryTestBase<::testing::TestWithParam<EnumCase<SpvOp>>>;
+    spvtest::TextToBinaryTestBase<::testing::TestWithParam<EnumCase<spv::Op>>>;
 
 // The operands to the OpSpecConstantOp opcode are all Ids.
 TEST_P(OpSpecConstantOpTestWithIds, Assembly) {
@@ -647,7 +658,7 @@ TEST_P(OpSpecConstantOpTestWithIds, Assembly) {
   input << "\n";
 
   EXPECT_THAT(CompiledInstructions(input.str()),
-              Eq(MakeInstruction(SpvOpSpecConstantOp,
+              Eq(MakeInstruction(spv::Op::OpSpecConstantOp,
                                  {1, 2, uint32_t(GetParam().value())},
                                  GetParam().operands())));
 
@@ -656,15 +667,15 @@ TEST_P(OpSpecConstantOpTestWithIds, Assembly) {
 }
 
 // clang-format off
-#define CASE1(NAME) { SpvOp##NAME, #NAME, {3} }
-#define CASE2(NAME) { SpvOp##NAME, #NAME, {3, 4} }
-#define CASE3(NAME) { SpvOp##NAME, #NAME, {3, 4, 5} }
-#define CASE4(NAME) { SpvOp##NAME, #NAME, {3, 4, 5, 6} }
-#define CASE5(NAME) { SpvOp##NAME, #NAME, {3, 4, 5, 6, 7} }
-#define CASE6(NAME) { SpvOp##NAME, #NAME, {3, 4, 5, 6, 7, 8} }
-INSTANTIATE_TEST_CASE_P(
+#define CASE1(NAME) { spv::Op::Op##NAME, #NAME, {3} }
+#define CASE2(NAME) { spv::Op::Op##NAME, #NAME, {3, 4} }
+#define CASE3(NAME) { spv::Op::Op##NAME, #NAME, {3, 4, 5} }
+#define CASE4(NAME) { spv::Op::Op##NAME, #NAME, {3, 4, 5, 6} }
+#define CASE5(NAME) { spv::Op::Op##NAME, #NAME, {3, 4, 5, 6, 7} }
+#define CASE6(NAME) { spv::Op::Op##NAME, #NAME, {3, 4, 5, 6, 7, 8} }
+INSTANTIATE_TEST_SUITE_P(
     TextToBinaryOpSpecConstantOp, OpSpecConstantOpTestWithIds,
-    ::testing::ValuesIn(std::vector<EnumCase<SpvOp>>{
+    ::testing::ValuesIn(std::vector<EnumCase<spv::Op>>{
         // Conversion
         CASE1(SConvert),
         CASE1(FConvert),
@@ -738,7 +749,7 @@ INSTANTIATE_TEST_CASE_P(
         CASE2(InBoundsPtrAccessChain),
         CASE3(InBoundsPtrAccessChain),
         CASE6(InBoundsPtrAccessChain),
-    }),);
+    }));
 #undef CASE1
 #undef CASE2
 #undef CASE3
@@ -748,7 +759,7 @@ INSTANTIATE_TEST_CASE_P(
 // clang-format on
 
 using OpSpecConstantOpTestWithTwoIdsThenLiteralNumbers =
-    spvtest::TextToBinaryTestBase<::testing::TestWithParam<EnumCase<SpvOp>>>;
+    spvtest::TextToBinaryTestBase<::testing::TestWithParam<EnumCase<spv::Op>>>;
 
 // The operands to the OpSpecConstantOp opcode are two Ids followed by a
 // sequence of literal numbers.
@@ -759,7 +770,7 @@ TEST_P(OpSpecConstantOpTestWithTwoIdsThenLiteralNumbers, Assembly) {
   input << "\n";
 
   EXPECT_THAT(CompiledInstructions(input.str()),
-              Eq(MakeInstruction(SpvOpSpecConstantOp,
+              Eq(MakeInstruction(spv::Op::OpSpecConstantOp,
                                  {1, 2, uint32_t(GetParam().value()), 3, 4},
                                  GetParam().operands())));
 
@@ -767,11 +778,11 @@ TEST_P(OpSpecConstantOpTestWithTwoIdsThenLiteralNumbers, Assembly) {
   EXPECT_THAT(EncodeAndDecodeSuccessfully(input.str()), input.str());
 }
 
-#define CASE(NAME) SpvOp##NAME, #NAME
-INSTANTIATE_TEST_CASE_P(
+#define CASE(NAME) spv::Op::Op##NAME, #NAME
+INSTANTIATE_TEST_SUITE_P(
     TextToBinaryOpSpecConstantOp,
     OpSpecConstantOpTestWithTwoIdsThenLiteralNumbers,
-    ::testing::ValuesIn(std::vector<EnumCase<SpvOp>>{
+    ::testing::ValuesIn(std::vector<EnumCase<spv::Op>>{
         // For VectorShuffle, there are two vector operands, and at least
         // two selector Ids.  OpenCL can have up to 16-element vectors.
         {CASE(VectorShuffle), {0, 0}},
@@ -783,10 +794,10 @@ INSTANTIATE_TEST_CASE_P(
         // composite, and then literal indices.
         {CASE(CompositeInsert), {0}},
         {CASE(CompositeInsert), {4, 3, 99, 1}},
-    }), );
+    }));
 
 using OpSpecConstantOpTestWithOneIdThenLiteralNumbers =
-    spvtest::TextToBinaryTestBase<::testing::TestWithParam<EnumCase<SpvOp>>>;
+    spvtest::TextToBinaryTestBase<::testing::TestWithParam<EnumCase<spv::Op>>>;
 
 // The operands to the OpSpecConstantOp opcode are one Id followed by a
 // sequence of literal numbers.
@@ -797,7 +808,7 @@ TEST_P(OpSpecConstantOpTestWithOneIdThenLiteralNumbers, Assembly) {
   input << "\n";
 
   EXPECT_THAT(CompiledInstructions(input.str()),
-              Eq(MakeInstruction(SpvOpSpecConstantOp,
+              Eq(MakeInstruction(spv::Op::OpSpecConstantOp,
                                  {1, 2, uint32_t(GetParam().value()), 3},
                                  GetParam().operands())));
 
@@ -805,16 +816,16 @@ TEST_P(OpSpecConstantOpTestWithOneIdThenLiteralNumbers, Assembly) {
   EXPECT_THAT(EncodeAndDecodeSuccessfully(input.str()), input.str());
 }
 
-#define CASE(NAME) SpvOp##NAME, #NAME
-INSTANTIATE_TEST_CASE_P(
+#define CASE(NAME) spv::Op::Op##NAME, #NAME
+INSTANTIATE_TEST_SUITE_P(
     TextToBinaryOpSpecConstantOp,
     OpSpecConstantOpTestWithOneIdThenLiteralNumbers,
-    ::testing::ValuesIn(std::vector<EnumCase<SpvOp>>{
+    ::testing::ValuesIn(std::vector<EnumCase<spv::Op>>{
         // For CompositeExtract, the universal limit permits up to 255 literal
         // indices.  Let's only test a few.
         {CASE(CompositeExtract), {0}},
         {CASE(CompositeExtract), {0, 99, 42, 16, 17, 12, 19}},
-    }), );
+    }));
 
 // TODO(dneto): OpConstantTrue
 // TODO(dneto): OpConstantFalse

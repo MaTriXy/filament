@@ -16,6 +16,8 @@
 
 #include <atomic>
 #include <fstream>
+#include <iomanip>
+#include <iostream>
 #include <map>
 #include <memory>
 #include <string>
@@ -34,6 +36,7 @@
 #include <filament/LightManager.h>
 #include <filament/Material.h>
 #include <filament/MaterialInstance.h>
+#include <filament/Renderer.h>
 #include <filament/RenderableManager.h>
 #include <filament/Scene.h>
 #include <filament/Skybox.h>
@@ -48,10 +51,10 @@
 #include <math/vec4.h>
 #include <math/norm.h>
 
-#include "app/Config.h"
-#include "app/IBL.h"
-#include "app/FilamentApp.h"
-#include "app/MeshAssimp.h"
+#include <filamentapp/Config.h>
+#include <filamentapp/IBL.h>
+#include <filamentapp/FilamentApp.h>
+#include <filamentapp/MeshAssimp.h>
 
 using namespace filament::math;
 using namespace filament;
@@ -73,6 +76,7 @@ static Path g_materialPath;
 static Path g_paramsPath;
 static bool g_lightOn = false;
 static bool g_skyboxOn = true;
+static Skybox* g_skybox = nullptr;
 static int g_materialVariantCount = 1;
 static int g_currentFrame = 0;
 static std::atomic_int g_savedFrames(0);
@@ -93,7 +97,7 @@ static void printUsage(char* name) {
     std::string usage(
             "SAMPLE_FRAME_GENERATOR tests a material by varying float parameters\n"
             "Usage:\n"
-            "    SAMPLE_FRAME_GENERATOR [options] <mesh files (.obj, .fbx, COLLADA)>\n"
+            "    SAMPLE_FRAME_GENERATOR [options] <mesh files (.obj, .fbx)>\n"
             "\n"
             "This tool loads an object, applies the specified material and renders N\n"
             "frames as specified by the -c flag. For each frame rendered, the material\n"
@@ -225,6 +229,10 @@ static void cleanup(Engine* engine, View*, Scene*) {
         engine->destroy(material.second);
     }
 
+    if (g_skybox) {
+        engine->destroy(g_skybox);
+    }
+
     engine->destroy(g_materialInstance);
     engine->destroy(g_material);
 
@@ -326,29 +334,15 @@ static void setup(Engine* engine, View* view, Scene* scene) {
     if (!g_skyboxOn) {
         auto ibl = FilamentApp::get().getIBL();
         if (ibl) ibl->getSkybox()->setLayerMask(0xff, 0x00);
+    } else {
+        g_skybox = Skybox::Builder().color({
+                ((g_clearColor >> 16) & 0xFF) / 255.0f,
+                ((g_clearColor >>  8) & 0xFF) / 255.0f,
+                ((g_clearColor      ) & 0xFF) / 255.0f,
+                1.0f
+        }).build(*engine);
+        scene->setSkybox(g_skybox);
     }
-
-    view->setClearColor(Color::toLinear({
-        ((g_clearColor >> 16) & 0xFF) / 255.0f,
-        ((g_clearColor >>  8) & 0xFF) / 255.0f,
-        ((g_clearColor      ) & 0xFF) / 255.0f,
-        1.0f
-    }));
-}
-
-template<typename T>
-static LinearImage toLinear(size_t w, size_t h, size_t bpr, const uint8_t* src) {
-    LinearImage result(w, h, 3);
-    filament::math::float3* d = reinterpret_cast<filament::math::float3*>(result.getPixelRef(0, 0));
-    for (size_t y = 0; y < h; ++y) {
-        T const* p = reinterpret_cast<T const*>(src + y * bpr);
-        for (size_t x = 0; x < w; ++x, p += 3) {
-            filament::math::float3 sRGB(p[0], p[1], p[2]);
-            sRGB /= std::numeric_limits<T>::max();
-            *d++ = sRGB;
-        }
-    }
-    return result;
 }
 
 static void render(Engine*, View*, Scene*, Renderer*) {
@@ -436,6 +430,7 @@ int main(int argc, char* argv[]) {
     }
 
     g_config.title = "Frame Generator";
+    g_config.headless = true;
     FilamentApp& filamentApp = FilamentApp::get();
     filamentApp.run(g_config,
             setup, cleanup, FilamentApp::ImGuiCallback(), render, postRender, 512, 512);

@@ -1,5 +1,9 @@
-cmake_minimum_required(VERSION 3.1)
+cmake_minimum_required(VERSION 3.19)
 project(filament-samples C ASM)
+
+if (FILAMENT_SKIP_SAMPLES)
+    return()
+endif()
 
 set(ROOT_DIR ${CMAKE_CURRENT_SOURCE_DIR}/..)
 set(GENERATION_ROOT ${CMAKE_CURRENT_BINARY_DIR})
@@ -9,43 +13,34 @@ set(TEXTURE_DIR "${GENERATION_ROOT}/generated/texture")
 set(RESOURCE_BINS)
 
 # ==================================================================================================
-# Convert OBJ files into filamesh files.
-# ==================================================================================================
-
-function(add_mesh SOURCE TARGET)
-    set(source_mesh "${ROOT_DIR}/${SOURCE}")
-    set(target_mesh "${RESOURCE_DIR}/${TARGET}")
-    set(RESOURCE_BINS ${RESOURCE_BINS} ${target_mesh} PARENT_SCOPE)
-    add_custom_command(
-        OUTPUT ${target_mesh}
-        COMMAND filamesh --compress ${source_mesh} ${target_mesh}
-        MAIN_DEPENDENCY ${source_mesh}
-        DEPENDS filamesh)
-endfunction()
-
-add_mesh("assets/models/monkey/monkey.obj" "suzanne.filamesh")
-
-# ==================================================================================================
 # Build materials
 # ==================================================================================================
 
 set(MATERIAL_SRCS
+        materials/aiDefaultMat.mat
         materials/bakedColor.mat
         materials/bakedTexture.mat
+        materials/pointSprites.mat
         materials/aoPreview.mat
-        materials/aiDefaultMat.mat
-        materials/aiDefaultTrans.mat
-        materials/depthVisualizer.mat
+        materials/arrayTexture.mat
         materials/groundShadow.mat
+        materials/heightfield.mat
+        materials/image.mat
+        materials/mirror.mat
+        materials/overdraw.mat
         materials/sandboxCloth.mat
         materials/sandboxLit.mat
         materials/sandboxLitFade.mat
         materials/sandboxLitTransparent.mat
+        materials/sandboxLitThinRefraction.mat
+        materials/sandboxLitThinRefractionSsr.mat
+        materials/sandboxLitSolidRefraction.mat
+        materials/sandboxLitSolidRefractionSsr.mat
         materials/sandboxSpecGloss.mat
         materials/sandboxSubsurface.mat
         materials/sandboxUnlit.mat
         materials/texturedLit.mat
-        materials/transparentColor.mat)
+)
 
 if (CMAKE_CROSSCOMPILING)
     include(${IMPORT_EXECUTABLES})
@@ -53,13 +48,14 @@ endif()
 
 file(MAKE_DIRECTORY ${MATERIAL_DIR})
 
-set(MATC_TARGET desktop)
-
-# Optimize materials for performance in Release mode.
-set(MATC_FLAGS -a all)
-if (NOT CMAKE_BUILD_TYPE MATCHES Release)
-    set(MATC_FLAGS -g ${MATC_FLAGS})
-endif()
+set (MATC_FLAGS ${MATC_BASE_FLAGS})
+if (FILAMENT_SAMPLES_STEREO_TYPE STREQUAL "instanced")
+    set (MATC_FLAGS ${MATC_FLAGS} -PstereoscopicType=instanced)
+    add_definitions(-DFILAMENT_SAMPLES_STEREO_TYPE_INSTANCED)
+elseif (FILAMENT_SAMPLES_STEREO_TYPE STREQUAL "multiview")
+    set (MATC_FLAGS ${MATC_FLAGS} -PstereoscopicType=multiview)
+    add_definitions(-DFILAMENT_SAMPLES_STEREO_TYPE_MULTIVIEW)
+endif ()
 
 foreach (mat_src ${MATERIAL_SRCS})
     get_filename_component(localname "${mat_src}" NAME_WE)
@@ -67,8 +63,7 @@ foreach (mat_src ${MATERIAL_SRCS})
     set(output_path "${MATERIAL_DIR}/${localname}.filamat")
     add_custom_command(
             OUTPUT ${output_path}
-            COMMAND matc ${MATC_FLAGS} -p ${MATC_TARGET} -m material
-                    -o ${output_path} ${fullname}
+            COMMAND matc ${MATC_FLAGS} -o ${output_path} ${fullname}
             MAIN_DEPENDENCY ${mat_src}
             DEPENDS matc
             COMMENT "Compiling material ${mat_src} to ${output_path}"
@@ -77,7 +72,7 @@ foreach (mat_src ${MATERIAL_SRCS})
 endforeach()
 
 # ==================================================================================================
-# Build common resources
+# Build sample resources
 # ==================================================================================================
 
 file(MAKE_DIRECTORY ${RESOURCE_DIR})
@@ -99,7 +94,32 @@ endif()
 set(DUMMY_SRC "${RESOURCE_DIR}/dummy.c")
 add_custom_command(OUTPUT ${DUMMY_SRC} COMMAND echo "//" > ${DUMMY_SRC})
 
-add_library(common-resources ${DUMMY_SRC} ${RESGEN_SOURCE})
+add_library(sample-resources ${DUMMY_SRC} ${RESGEN_SOURCE})
+set_target_properties(sample-resources PROPERTIES FOLDER Samples/Resources)
+
+# ==================================================================================================
+# Invoke cmgen to build KTX files for the default IBL and skybox
+# ==================================================================================================
+
+set(CMGEN_ARGS --quiet --format=ktx --size=256 --extract-blur=0.1)
+
+function(add_envmap SOURCE TARGET)
+    set(source_envmap "${ROOT_DIR}/${SOURCE}")
+
+    set(target_skybox "${PROJECT_BINARY_DIR}/assets/ibl/${TARGET}/${TARGET}_skybox.ktx")
+    set(target_envmap "${PROJECT_BINARY_DIR}/assets/ibl/${TARGET}/${TARGET}_ibl.ktx")
+
+    set(target_envmaps ${target_envmaps} ${target_skybox} PARENT_SCOPE)
+    set(target_envmaps ${target_envmaps} ${target_envmap} PARENT_SCOPE)
+
+    add_custom_command(OUTPUT ${target_skybox} ${target_envmap}
+        COMMAND cmgen -x assets/ibl/${TARGET} ${CMGEN_ARGS} ${source_envmap}
+        MAIN_DEPENDENCY ${source_envmap}
+        DEPENDS cmgen
+        COMMENT "Generating environment map ${target_envmap}")
+endfunction()
+
+add_envmap("third_party/environments/lightroom_14b.hdr" "lightroom_14b")
 
 # ==================================================================================================
 # Build suzanne resources
@@ -108,38 +128,53 @@ add_library(common-resources ${DUMMY_SRC} ${RESGEN_SOURCE})
 function(add_ktxfiles SOURCE TARGET EXTRA_ARGS)
     set(source_path "${ROOT_DIR}/${SOURCE}")
     set(target_path "${TEXTURE_DIR}/${TARGET}")
-    set(TEXTURE_FILES ${TEXTURE_FILES} ${target_path} PARENT_SCOPE)
+    set(MONKEY_FILES ${MONKEY_FILES} ${target_path} PARENT_SCOPE)
     add_custom_command(
         OUTPUT ${target_path}
-        COMMAND mipgen --strip-alpha ${EXTRA_ARGS} ${source_path} ${target_path}
+        COMMAND mipgen --quiet ${EXTRA_ARGS} ${source_path} ${target_path}
         MAIN_DEPENDENCY ${source_path}
-        DEPENDS mipgen)
+        DEPENDS mipgen
+        COMMENT "Generating mip levels for ${source_path}")
 endfunction()
 
 function(add_pngfile SOURCE TARGET)
     set(source_path "${ROOT_DIR}/${SOURCE}")
     set(target_path "${TEXTURE_DIR}/${TARGET}")
-    set(TEXTURE_FILES ${TEXTURE_FILES} ${target_path} PARENT_SCOPE)
+    set(MONKEY_FILES ${MONKEY_FILES} ${target_path} PARENT_SCOPE)
     add_custom_command(
         OUTPUT ${target_path}
-        COMMAND cmake -E copy ${source_path} ${target_path}
+        COMMAND ${CMAKE_COMMAND} -E copy ${source_path} ${target_path}
         MAIN_DEPENDENCY ${source_path})
 endfunction()
 
-add_ktxfiles("assets/models/monkey/albedo.png" "albedo_s3tc.ktx" "--compression=s3tc_rgb_dxt1")
-add_ktxfiles("assets/models/monkey/roughness.png" "roughness.ktx" "--grayscale")
-add_ktxfiles("assets/models/monkey/metallic.png" "metallic.ktx" "--grayscale")
-add_ktxfiles("assets/models/monkey/ao.png" "ao.ktx" "--grayscale")
+function(add_mesh SOURCE TARGET)
+    set(source_mesh "${ROOT_DIR}/${SOURCE}")
+    set(target_mesh "${RESOURCE_DIR}/${TARGET}")
+    set(MONKEY_FILES ${MESH_BINS} ${target_mesh} PARENT_SCOPE)
+    add_custom_command(
+        OUTPUT ${target_mesh}
+        COMMAND filamesh --compress ${source_mesh} ${target_mesh}
+        MAIN_DEPENDENCY ${source_mesh}
+        DEPENDS filamesh)
+endfunction()
+
+add_mesh("assets/models/monkey/monkey.obj" "suzanne.filamesh")
+
+set (COMPRESSION "--compression=uastc")
+add_ktxfiles("assets/models/monkey/color.png" "albedo.ktx2" "${COMPRESSION}")
+add_ktxfiles("assets/models/monkey/roughness.png" "roughness.ktx2" "${COMPRESSION};--grayscale;--linear")
+add_ktxfiles("assets/models/monkey/metallic.png" "metallic.ktx2" "${COMPRESSION};--grayscale;--linear")
+add_ktxfiles("assets/models/monkey/ao.png" "ao.ktx2" "${COMPRESSION};--grayscale;--linear")
 
 add_pngfile("assets/models/monkey/normal.png" "normal.png")
 
-get_resgen_vars(${RESOURCE_DIR} textures)
+get_resgen_vars(${RESOURCE_DIR} monkey)
 
 add_custom_command(
         OUTPUT ${RESGEN_OUTPUTS}
-        COMMAND resgen ${RESGEN_FLAGS} ${TEXTURE_FILES}
-        DEPENDS resgen ${TEXTURE_FILES}
-        COMMENT "Aggregating textures"
+        COMMAND resgen ${RESGEN_FLAGS} ${MONKEY_FILES}
+        DEPENDS resgen ${MONKEY_FILES}
+        COMMENT "Aggregating monkey resources"
 )
 
 if (DEFINED RESGEN_SOURCE_FLAGS)
@@ -147,161 +182,123 @@ if (DEFINED RESGEN_SOURCE_FLAGS)
 endif()
 
 add_library(suzanne-resources ${DUMMY_SRC} ${RESGEN_SOURCE})
+set_target_properties(suzanne-resources PROPERTIES FOLDER Samples/Resources)
 
 # ==================================================================================================
-# Resources for gltf_viewer
+# Resources for gltf_viewer and gltf_instances
 # ==================================================================================================
 
-get_resgen_vars(${RESOURCE_DIR} gltf)
+add_library(gltf-demo-resources ${DUMMY_SRC})
+set_target_properties(gltf-demo-resources PROPERTIES FOLDER Samples/Resources)
 
-set(GLTF_RESOURCE_FILES
+set(GLTF_DEMO_RESOURCES
     ${ROOT_DIR}/third_party/models/DamagedHelmet/DamagedHelmet.glb
+    ${MATERIAL_DIR}/groundShadow.filamat
+    ${MATERIAL_DIR}/overdraw.filamat
 )
+
+get_resgen_vars(${RESOURCE_DIR} gltf_demo)
 
 add_custom_command(
         OUTPUT ${RESGEN_OUTPUTS}
-        COMMAND resgen ${RESGEN_FLAGS} ${GLTF_RESOURCE_FILES}
-        DEPENDS resgen ${TEXTURE_FILES}
+        COMMAND resgen ${RESGEN_FLAGS} ${GLTF_DEMO_RESOURCES}
+        DEPENDS resgen ${GLTF_DEMO_RESOURCES}
 )
 
 if (DEFINED RESGEN_SOURCE_FLAGS)
     set_source_files_properties(${RESGEN_SOURCE} PROPERTIES COMPILE_FLAGS ${RESGEN_SOURCE_FLAGS})
 endif()
 
-add_library(gltf-resources ${DUMMY_SRC} ${RESGEN_SOURCE})
-
-# ==================================================================================================
-# Common library
-# ==================================================================================================
-
-set(APP_LIBS filament sdl2 stb math filamat utils getopt imgui filagui image common-resources)
-if (WIN32)
-    list(APPEND APP_LIBS sdl2main)
-endif()
-
-set(APP_SRCS
-        app/CameraManipulator.cpp
-        app/Cube.cpp
-        app/FilamentApp.cpp
-        app/IBL.cpp
-        app/IcoSphere.cpp
-        app/Sphere.cpp)
-
-if (APPLE)
-    list(APPEND APP_SRCS app/NativeWindowHelperCocoa.mm)
-    list(APPEND APP_LIBS "-framework Cocoa -framework QuartzCore")
-endif()
-
-if (LINUX)
-    list(APPEND APP_SRCS app/NativeWindowHelperLinux.cpp)
-endif()
-
-if (WIN32)
-    list(APPEND APP_SRCS app/NativeWindowHelperWindows.cpp)
-endif()
-
-include_directories(app)
-
-add_library(sample-app ${APP_SRCS})
-target_include_directories(sample-app PUBLIC app)
-
-target_link_libraries(sample-app PRIVATE ${APP_LIBS})
-
-list(APPEND APP_LIBS sample-app)
+target_sources(gltf-demo-resources PRIVATE ${RESGEN_SOURCE})
 
 # ==================================================================================================
 # Compiler flags
 # ==================================================================================================
 
-set(COMPILER_FLAGS
-        -Wno-extern-c-compat
-        $<$<NOT:$<PLATFORM_ID:Linux>>:-Wno-address-of-packed-member>)
-
-if (MSVC OR CLANG_CL)
-    set(COMPILER_FLAGS ${COMPILER_FLAGS} $<$<CONFIG:Release>:/fp:fast>)
+if (MSVC)
 else()
-    set(COMPILER_FLAGS ${COMPILER_FLAGS} $<$<CONFIG:Release>:-ffast-math>)
+    set(COMPILER_FLAGS
+            -Wno-extern-c-compat
+            $<$<NOT:$<PLATFORM_ID:Linux>>:-Wno-address-of-packed-member>)
 endif()
 
 # ==================================================================================================
 # Test apps
 # ==================================================================================================
 
-function(add_assimp_demo NAME)
+function(add_demo NAME)
     include_directories(${GENERATION_ROOT})
-    add_executable(
-            ${NAME}
-            ${NAME}.cpp
-            app/MeshAssimp.cpp)
-    target_link_libraries(${NAME} PRIVATE ${APP_LIBS} assimp)
+    add_executable(${NAME} ${NAME}.cpp)
+    target_link_libraries(${NAME} PRIVATE sample-resources filamentapp)
     target_compile_options(${NAME} PRIVATE ${COMPILER_FLAGS})
-endfunction()
+    set_target_properties(${NAME} PROPERTIES FOLDER Samples)
 
-function(add_filamesh_demo NAME)
-    include_directories(${GENERATION_ROOT})
-    add_executable(
-            ${NAME}
-            ${NAME}.cpp)
-    target_link_libraries(${NAME} PRIVATE ${APP_LIBS} filameshio)
-    target_compile_options(${NAME} PRIVATE ${COMPILER_FLAGS})
+    # This is needed after XCode 15.3
+    if (APPLE)
+        set_target_properties(${NAME} PROPERTIES BUILD_WITH_INSTALL_RPATH TRUE)
+        set_target_properties(${NAME} PROPERTIES INSTALL_RPATH /usr/local/lib)
+    endif()
 endfunction()
 
 if (NOT ANDROID)
-    add_assimp_demo(frame_generator)
-    add_assimp_demo(lightbulb)
-    add_assimp_demo(material_sandbox)
-    add_assimp_demo(sample_full_pbr)
-
-    add_filamesh_demo(sample_cloth)
-    add_filamesh_demo(sample_normal_map)
-    add_filamesh_demo(suzanne)
-    add_filamesh_demo(gltf_viewer)
-    add_filamesh_demo(gltf_baker)
+    add_demo(animation)
+    add_demo(depthtesting)
+    add_demo(frame_generator)
+    add_demo(gltf_viewer)
+    add_demo(gltf_instances)
+    add_demo(heightfield)
+    add_demo(hellomorphing)
+    add_demo(hellopbr)
+    add_demo(hellotriangle)
+    add_demo(helloskinning)
+    add_demo(helloskinningbuffer)
+    add_demo(helloskinningbuffer_morebones)
+    add_demo(hellostereo)
+    add_demo(image_viewer)
+    add_demo(lightbulb)
+    add_demo(material_sandbox)
+    add_demo(multiple_windows)
+    add_demo(point_sprites)
+    add_demo(rendertarget)
+    add_demo(sample_cloth)
+    add_demo(sample_full_pbr)
+    add_demo(sample_normal_map)
+    add_demo(shadowtest)
+    add_demo(skinningtest)
+    add_demo(strobecolor)
+    add_demo(suzanne)
+    add_demo(texturedquad)
+    add_demo(vbotest)
+    add_demo(viewtest)
 
     # Sample app specific
     target_link_libraries(frame_generator PRIVATE imageio)
-    target_link_libraries(suzanne PRIVATE suzanne-resources)
-    target_link_libraries(gltf_viewer PRIVATE gltf-resources gltfio)
-    target_link_libraries(gltf_baker PRIVATE gltf-resources gltfio imageio)
-endif()
+    target_link_libraries(gltf_viewer PRIVATE gltf-demo-resources uberarchive gltfio viewer)
+    target_link_libraries(gltf_instances PRIVATE gltf-demo-resources uberarchive gltfio viewer)
+    target_link_libraries(hellopbr PRIVATE filameshio suzanne-resources)
+    target_link_libraries(hellostereo PRIVATE filameshio suzanne-resources)
+    target_link_libraries(image_viewer PRIVATE viewer imageio)
+    target_link_libraries(multiple_windows PRIVATE filameshio suzanne-resources)
+    target_link_libraries(rendertarget PRIVATE filameshio suzanne-resources)
+    target_link_libraries(sample_cloth PRIVATE filameshio)
+    target_link_libraries(sample_normal_map PRIVATE filameshio)
+    target_link_libraries(suzanne PRIVATE filameshio suzanne-resources)
 
-# ==================================================================================================
-# Copy the MoltenVK dylibs and JSON on MacOS
-# ==================================================================================================
+    if (FILAMENT_DISABLE_MATOPT)
+        add_definitions(-DFILAMENT_DISABLE_MATOPT=1)
+    else()
+        add_definitions(-DFILAMENT_DISABLE_MATOPT=0)
+    endif()
 
-if (APPLE AND NOT Vulkan_LIBRARY)
-    message(STATUS "No Vulkan SDK was found, using prebuilt MoltenVK.")
-    set(MOLTENVK_DIR "../third_party/moltenvk")
-    configure_file(
-            ${MOLTENVK_DIR}/libvulkan.1.dylib
-            ${PROJECT_BINARY_DIR}/libvulkan.1.dylib COPYONLY)
-    configure_file(
-            ${MOLTENVK_DIR}/MoltenVK_icd.json
-            ${PROJECT_BINARY_DIR}/MoltenVK_icd.json COPYONLY)
-    configure_file(
-            ${MOLTENVK_DIR}/libMoltenVK.dylib
-            ${PROJECT_BINARY_DIR}/libMoltenVK.dylib COPYONLY)
-    list(APPEND APP_SRCS
-            ${PROJECT_BINARY_DIR}/libvulkan.1.dylib
-            ${PROJECT_BINARY_DIR}/MoltenVK_icd.json
-            ${PROJECT_BINARY_DIR}/libMoltenVK.dylib)
-endif()
+    # ==============================================================================================
+    # Installation
+    # ==============================================================================================
+    install(TARGETS gltf_viewer RUNTIME DESTINATION bin)
+    install(TARGETS material_sandbox RUNTIME DESTINATION bin)
 
-# ==================================================================================================
-# Build Vulkan Executables
-# ==================================================================================================
-
-if (FILAMENT_SUPPORTS_VULKAN)
-    add_assimp_demo(vk_shadowtest)
-    add_filamesh_demo(vk_animation)
-    add_filamesh_demo(vk_depthtesting)
-    add_filamesh_demo(vk_hellopbr)
-    add_filamesh_demo(vk_hellotriangle)
-    add_filamesh_demo(vk_imgui)
-    add_filamesh_demo(vk_strobecolor)
-    add_filamesh_demo(vk_texturedquad)
-    add_filamesh_demo(vk_vbotest)
-    add_filamesh_demo(vk_viewtest)
+    # Install resources
+    install(DIRECTORY ${PROJECT_BINARY_DIR}/assets/fonts DESTINATION bin/assets)
+    install(DIRECTORY ${PROJECT_BINARY_DIR}/assets/ibl/ DESTINATION bin/assets/ibl)
 endif()
 
 # ==================================================================================================
@@ -313,20 +310,21 @@ endif()
 #    /assets/fonts     copied from REPO/assets
 #    /assets/models    copied from REPO/assets
 #    /textures         copied from REPO/third_party
-#    /envs             copied from REPO/samples/envs
 #
 # ==================================================================================================
 
 file(COPY ../third_party/textures DESTINATION ${PROJECT_BINARY_DIR})
 add_custom_target(textures ALL DEPENDS textures)
 add_dependencies(filament textures)
+set_target_properties(textures PROPERTIES FOLDER Samples/Assets)
 
 file(COPY ../assets DESTINATION ${PROJECT_BINARY_DIR}
         PATTERN "reference" EXCLUDE
         PATTERN "environments" EXCLUDE)
 add_custom_target(assets ALL DEPENDS assets)
 add_dependencies(filament assets)
+set_target_properties(assets PROPERTIES FOLDER Samples/Assets)
 
-file(COPY ../samples/envs DESTINATION ${PROJECT_BINARY_DIR})
-add_custom_target(envs ALL DEPENDS envs)
+add_custom_target(envs DEPENDS ${target_envmaps})
 add_dependencies(filament envs)
+set_target_properties(envs PROPERTIES FOLDER Samples/Assets)

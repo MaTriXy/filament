@@ -14,10 +14,9 @@
 
 #include "source/val/validate.h"
 
+#include <algorithm>
 #include <cassert>
 #include <cstdio>
-
-#include <algorithm>
 #include <functional>
 #include <iterator>
 #include <memory>
@@ -42,34 +41,15 @@
 #include "source/val/validation_state.h"
 #include "spirv-tools/libspirv.h"
 
+namespace {
+// TODO(issue 1950): The validator only returns a single message anyway, so no
+// point in generating more than 1 warning.
+static uint32_t kDefaultMaxNumOfWarnings = 1;
+}  // namespace
+
 namespace spvtools {
 namespace val {
 namespace {
-
-spv_result_t spvValidateIDs(const spv_instruction_t* pInsts,
-                            const uint64_t count,
-                            const ValidationState_t& state,
-                            spv_position position) {
-  position->index = SPV_INDEX_INSTRUCTION;
-  if (auto error = spvValidateInstructionIDs(pInsts, count, state, position))
-    return error;
-  return SPV_SUCCESS;
-}
-
-// TODO(umar): Validate header
-// TODO(umar): The binary parser validates the magic word, and the length of the
-// header, but nothing else.
-spv_result_t setHeader(void* user_data, spv_endianness_t, uint32_t,
-                       uint32_t version, uint32_t generator, uint32_t id_bound,
-                       uint32_t) {
-  // Record the ID bound so that the validator can ensure no ID is out of bound.
-  ValidationState_t& _ = *(reinterpret_cast<ValidationState_t*>(user_data));
-  _.setIdBound(id_bound);
-  _.setGenerator(generator);
-  _.setVersion(version);
-
-  return SPV_SUCCESS;
-}
 
 // Parses OpExtension instruction and registers extension.
 void RegisterExtension(ValidationState_t& _,
@@ -86,15 +66,15 @@ void RegisterExtension(ValidationState_t& _,
 
 // Parses the beginning of the module searching for OpExtension instructions.
 // Registers extensions if recognized. Returns SPV_REQUESTED_TERMINATION
-// once an instruction which is not SpvOpCapability and SpvOpExtension is
-// encountered. According to the SPIR-V spec extensions are declared after
-// capabilities and before everything else.
+// once an instruction which is not spv::Op::OpCapability and
+// spv::Op::OpExtension is encountered. According to the SPIR-V spec extensions
+// are declared after capabilities and before everything else.
 spv_result_t ProcessExtensions(void* user_data,
                                const spv_parsed_instruction_t* inst) {
-  const SpvOp opcode = static_cast<SpvOp>(inst->opcode);
-  if (opcode == SpvOpCapability) return SPV_SUCCESS;
+  const spv::Op opcode = static_cast<spv::Op>(inst->opcode);
+  if (opcode == spv::Op::OpCapability) return SPV_SUCCESS;
 
-  if (opcode == SpvOpExtension) {
+  if (opcode == spv::Op::OpExtension) {
     ValidationState_t& _ = *(reinterpret_cast<ValidationState_t*>(user_data));
     RegisterExtension(_, inst);
     return SPV_SUCCESS;
@@ -112,48 +92,6 @@ spv_result_t ProcessInstruction(void* user_data,
   _.RegisterDebugInstruction(instruction);
 
   return SPV_SUCCESS;
-}
-
-void printDot(const ValidationState_t& _, const BasicBlock& other) {
-  std::string block_string;
-  if (other.successors()->empty()) {
-    block_string += "end ";
-  } else {
-    for (auto block : *other.successors()) {
-      block_string += _.getIdOrName(block->id()) + " ";
-    }
-  }
-  printf("%10s -> {%s\b}\n", _.getIdOrName(other.id()).c_str(),
-         block_string.c_str());
-}
-
-void PrintBlocks(ValidationState_t& _, Function func) {
-  assert(func.first_block());
-
-  printf("%10s -> %s\n", _.getIdOrName(func.id()).c_str(),
-         _.getIdOrName(func.first_block()->id()).c_str());
-  for (const auto& block : func.ordered_blocks()) {
-    printDot(_, *block);
-  }
-}
-
-#ifdef __clang__
-#define UNUSED(func) [[gnu::unused]] func
-#elif defined(__GNUC__)
-#define UNUSED(func)            \
-  func __attribute__((unused)); \
-  func
-#elif defined(_MSC_VER)
-#define UNUSED(func) func
-#endif
-
-UNUSED(void PrintDotGraph(ValidationState_t& _, Function func)) {
-  if (func.first_block()) {
-    std::string func_name(_.getIdOrName(func.id()));
-    printf("digraph %s {\n", func_name.c_str());
-    PrintBlocks(_, func);
-    printf("}\n");
-  }
 }
 
 spv_result_t ValidateForwardDecls(ValidationState_t& _) {
@@ -179,20 +117,35 @@ spv_result_t ValidateForwardDecls(ValidationState_t& _) {
 //   capability is being used.
 // * No function can be targeted by both an OpEntryPoint instruction and an
 //   OpFunctionCall instruction.
+//
+// Additionally enforces that entry points for Vulkan should not have recursion.
 spv_result_t ValidateEntryPoints(ValidationState_t& _) {
   _.ComputeFunctionToEntryPointMapping();
+  _.ComputeRecursiveEntryPoints();
 
-  if (_.entry_points().empty() && !_.HasCapability(SpvCapabilityLinkage)) {
+  if (_.entry_points().empty() && !_.HasCapability(spv::Capability::Linkage)) {
     return _.diag(SPV_ERROR_INVALID_BINARY, nullptr)
            << "No OpEntryPoint instruction was found. This is only allowed if "
               "the Linkage capability is being used.";
   }
+
   for (const auto& entry_point : _.entry_points()) {
     if (_.IsFunctionCallTarget(entry_point)) {
       return _.diag(SPV_ERROR_INVALID_BINARY, _.FindDef(entry_point))
              << "A function (" << entry_point
              << ") may not be targeted by both an OpEntryPoint instruction and "
                 "an OpFunctionCall instruction.";
+    }
+
+    // For Vulkan, the static function-call graph for an entry point
+    // must not contain cycles.
+    if (spvIsVulkanEnv(_.context()->target_env)) {
+      if (_.recursive_entry_points().find(entry_point) !=
+          _.recursive_entry_points().end()) {
+        return _.diag(SPV_ERROR_INVALID_BINARY, _.FindDef(entry_point))
+               << _.VkErrorID(4634)
+               << "Entry points may not have a call graph with cycles.";
+      }
     }
   }
 
@@ -230,32 +183,48 @@ spv_result_t ValidateBinaryUsingContextAndValidationState(
            << spvTargetEnvDescription(context.target_env) << ".";
   }
 
+  if (header.bound > vstate->options()->universal_limits_.max_id_bound) {
+    return DiagnosticStream(position, context.consumer, "",
+                            SPV_ERROR_INVALID_BINARY)
+           << "Invalid SPIR-V.  The id bound is larger than the max id bound "
+           << vstate->options()->universal_limits_.max_id_bound << ".";
+  }
+
   // Look for OpExtension instructions and register extensions.
-  spvBinaryParse(&context, vstate, words, num_words,
+  // This parse should not produce any error messages. Hijack the context and
+  // replace the message consumer so that we do not pollute any state in input
+  // consumer.
+  spv_context_t hijacked_context = context;
+  hijacked_context.consumer = [](spv_message_level_t, const char*,
+                                 const spv_position_t&, const char*) {};
+  spvBinaryParse(&hijacked_context, vstate, words, num_words,
                  /* parsed_header = */ nullptr, ProcessExtensions,
                  /* diagnostic = */ nullptr);
 
   // Parse the module and perform inline validation checks. These checks do
-  // not require the the knowledge of the whole module.
-  if (auto error = spvBinaryParse(&context, vstate, words, num_words, setHeader,
+  // not require the knowledge of the whole module.
+  if (auto error = spvBinaryParse(&context, vstate, words, num_words,
+                                  /*parsed_header =*/nullptr,
                                   ProcessInstruction, pDiagnostic)) {
     return error;
   }
 
+  bool has_mask_task_nv = false;
+  bool has_mask_task_ext = false;
+  std::vector<Instruction*> visited_entry_points;
   for (auto& instruction : vstate->ordered_instructions()) {
     {
       // In order to do this work outside of Process Instruction we need to be
       // able to, briefly, de-const the instruction.
       Instruction* inst = const_cast<Instruction*>(&instruction);
 
-      if (inst->opcode() == SpvOpEntryPoint) {
+      if (inst->opcode() == spv::Op::OpEntryPoint) {
         const auto entry_point = inst->GetOperandAs<uint32_t>(1);
-        const auto execution_model = inst->GetOperandAs<SpvExecutionModel>(0);
-        const char* str = reinterpret_cast<const char*>(
-            inst->words().data() + inst->operand(2).offset);
+        const auto execution_model = inst->GetOperandAs<spv::ExecutionModel>(0);
+        const std::string desc_name = inst->GetOperandAs<std::string>(2);
 
         ValidationState_t::EntryPointDescription desc;
-        desc.name = str;
+        desc.name = desc_name;
 
         std::vector<uint32_t> interfaces;
         for (size_t j = 3; j < inst->operands().size(); ++j)
@@ -263,14 +232,37 @@ spv_result_t ValidateBinaryUsingContextAndValidationState(
 
         vstate->RegisterEntryPoint(entry_point, execution_model,
                                    std::move(desc));
+
+        if (visited_entry_points.size() > 0) {
+          for (const Instruction* check_inst : visited_entry_points) {
+            const auto check_execution_model =
+                check_inst->GetOperandAs<spv::ExecutionModel>(0);
+            const std::string check_name =
+                check_inst->GetOperandAs<std::string>(2);
+
+            if (desc_name == check_name &&
+                execution_model == check_execution_model) {
+              return vstate->diag(SPV_ERROR_INVALID_DATA, inst)
+                     << "2 Entry points cannot share the same name and "
+                        "ExecutionMode.";
+            }
+          }
+        }
+        visited_entry_points.push_back(inst);
+
+        has_mask_task_nv |= (execution_model == spv::ExecutionModel::TaskNV ||
+                             execution_model == spv::ExecutionModel::MeshNV);
+        has_mask_task_ext |= (execution_model == spv::ExecutionModel::TaskEXT ||
+                              execution_model == spv::ExecutionModel::MeshEXT);
       }
-      if (inst->opcode() == SpvOpFunctionCall) {
+      if (inst->opcode() == spv::Op::OpFunctionCall) {
         if (!vstate->in_function_body()) {
           return vstate->diag(SPV_ERROR_INVALID_LAYOUT, &instruction)
                  << "A FunctionCall must happen within a function body.";
         }
 
-        vstate->AddFunctionCallTarget(inst->GetOperandAs<uint32_t>(2));
+        const auto called_id = inst->GetOperandAs<uint32_t>(2);
+        vstate->AddFunctionCallTarget(called_id);
       }
 
       if (vstate->in_function_body()) {
@@ -286,7 +278,6 @@ spv_result_t ValidateBinaryUsingContextAndValidationState(
     }
 
     if (auto error = CapabilityPass(*vstate, &instruction)) return error;
-    if (auto error = DataRulesPass(*vstate, &instruction)) return error;
     if (auto error = ModuleLayoutPass(*vstate, &instruction)) return error;
     if (auto error = CfgPass(*vstate, &instruction)) return error;
     if (auto error = InstructionPass(*vstate, &instruction)) return error;
@@ -295,8 +286,10 @@ spv_result_t ValidateBinaryUsingContextAndValidationState(
     {
       Instruction* inst = const_cast<Instruction*>(&instruction);
       vstate->RegisterInstruction(inst);
+      if (inst->opcode() == spv::Op::OpTypeForwardPointer) {
+        vstate->RegisterForwardPointer(inst->GetOperandAs<uint32_t>(0));
+      }
     }
-    if (auto error = UpdateIdUse(*vstate, &instruction)) return error;
   }
 
   if (!vstate->has_memory_model_specified())
@@ -307,8 +300,36 @@ spv_result_t ValidateBinaryUsingContextAndValidationState(
     return vstate->diag(SPV_ERROR_INVALID_LAYOUT, nullptr)
            << "Missing OpFunctionEnd at end of module.";
 
+  if (vstate->HasCapability(spv::Capability::BindlessTextureNV) &&
+      !vstate->has_samplerimage_variable_address_mode_specified())
+    return vstate->diag(SPV_ERROR_INVALID_LAYOUT, nullptr)
+           << "Missing required OpSamplerImageAddressingModeNV instruction.";
+
+  if (has_mask_task_ext && has_mask_task_nv)
+    return vstate->diag(SPV_ERROR_INVALID_LAYOUT, nullptr)
+           << vstate->VkErrorID(7102)
+           << "Module can't mix MeshEXT/TaskEXT with MeshNV/TaskNV Execution "
+              "Model.";
+
   // Catch undefined forward references before performing further checks.
   if (auto error = ValidateForwardDecls(*vstate)) return error;
+
+  // Calculate reachability after all the blocks are parsed, but early that it
+  // can be relied on in subsequent pases.
+  ReachabilityPass(*vstate);
+
+  // ID usage needs be handled in its own iteration of the instructions,
+  // between the two others. It depends on the first loop to have been
+  // finished, so that all instructions have been registered. And the following
+  // loop depends on all of the usage data being populated. Thus it cannot live
+  // in either of those iterations.
+  // It should also live after the forward declaration check, since it will
+  // have problems with missing forward declarations, but give less useful error
+  // messages.
+  for (size_t i = 0; i < vstate->ordered_instructions().size(); ++i) {
+    auto& instruction = vstate->ordered_instructions()[i];
+    if (auto error = UpdateIdUse(*vstate, &instruction)) return error;
+  }
 
   // Validate individual opcodes.
   for (size_t i = 0; i < vstate->ordered_instructions().size(); ++i) {
@@ -316,15 +337,14 @@ spv_result_t ValidateBinaryUsingContextAndValidationState(
 
     // Keep these passes in the order they appear in the SPIR-V specification
     // sections to maintain test consistency.
-    // Miscellaneous
+    if (auto error = MiscPass(*vstate, &instruction)) return error;
     if (auto error = DebugPass(*vstate, &instruction)) return error;
     if (auto error = AnnotationPass(*vstate, &instruction)) return error;
-    if (auto error = ExtInstPass(*vstate, &instruction)) return error;
+    if (auto error = ExtensionPass(*vstate, &instruction)) return error;
     if (auto error = ModeSettingPass(*vstate, &instruction)) return error;
     if (auto error = TypePass(*vstate, &instruction)) return error;
     if (auto error = ConstantPass(*vstate, &instruction)) return error;
-    if (auto error = ValidateMemoryInstructions(*vstate, &instruction))
-      return error;
+    if (auto error = MemoryPass(*vstate, &instruction)) return error;
     if (auto error = FunctionPass(*vstate, &instruction)) return error;
     if (auto error = ImagePass(*vstate, &instruction)) return error;
     if (auto error = ConversionPass(*vstate, &instruction)) return error;
@@ -343,10 +363,16 @@ spv_result_t ValidateBinaryUsingContextAndValidationState(
     if (auto error = NonUniformPass(*vstate, &instruction)) return error;
 
     if (auto error = LiteralsPass(*vstate, &instruction)) return error;
-    // Validate the preconditions involving adjacent instructions. e.g. SpvOpPhi
-    // must only be preceeded by SpvOpLabel, SpvOpPhi, or SpvOpLine.
-    if (auto error = ValidateAdjacency(*vstate, i)) return error;
+    if (auto error = RayQueryPass(*vstate, &instruction)) return error;
+    if (auto error = RayTracingPass(*vstate, &instruction)) return error;
+    if (auto error = RayReorderNVPass(*vstate, &instruction)) return error;
+    if (auto error = MeshShadingPass(*vstate, &instruction)) return error;
   }
+
+  // Validate the preconditions involving adjacent instructions. e.g.
+  // spv::Op::OpPhi must only be preceded by spv::Op::OpLabel, spv::Op::OpPhi,
+  // or spv::Op::OpLine.
+  if (auto error = ValidateAdjacency(*vstate)) return error;
 
   if (auto error = ValidateEntryPoints(*vstate)) return error;
   // CFG checks are performed after the binary has been parsed
@@ -360,31 +386,10 @@ spv_result_t ValidateBinaryUsingContextAndValidationState(
   if (auto error = ValidateBuiltIns(*vstate)) return error;
   // These checks must be performed after individual opcode checks because
   // those checks register the limitation checked here.
-  for (const auto inst : vstate->ordered_instructions()) {
+  for (const auto& inst : vstate->ordered_instructions()) {
     if (auto error = ValidateExecutionLimitations(*vstate, &inst)) return error;
+    if (auto error = ValidateSmallTypeUses(*vstate, &inst)) return error;
   }
-
-  // NOTE: Copy each instruction for easier processing
-  std::vector<spv_instruction_t> instructions;
-  // Expect average instruction length to be a bit over 2 words.
-  instructions.reserve(binary->wordCount / 2);
-  uint64_t index = SPV_INDEX_INSTRUCTION;
-  while (index < binary->wordCount) {
-    uint16_t wordCount;
-    uint16_t opcode;
-    spvOpcodeSplit(spvFixWord(binary->code[index], endian), &wordCount,
-                   &opcode);
-    spv_instruction_t inst;
-    spvInstructionCopy(&binary->code[index], static_cast<SpvOp>(opcode),
-                       wordCount, endian, &inst);
-    instructions.emplace_back(std::move(inst));
-    index += wordCount;
-  }
-
-  position.index = SPV_INDEX_INSTRUCTION;
-  if (auto error = spvValidateIDs(instructions.data(), instructions.size(),
-                                  *vstate, &position))
-    return error;
 
   return SPV_SUCCESS;
 }
@@ -401,8 +406,8 @@ spv_result_t ValidateBinaryAndKeepValidationState(
     UseDiagnosticAsMessageConsumer(&hijack_context, pDiagnostic);
   }
 
-  vstate->reset(
-      new ValidationState_t(&hijack_context, options, words, num_words));
+  vstate->reset(new ValidationState_t(&hijack_context, options, words,
+                                      num_words, kDefaultMaxNumOfWarnings));
 
   return ValidateBinaryUsingContextAndValidationState(
       hijack_context, words, num_words, pDiagnostic, vstate->get());
@@ -432,7 +437,8 @@ spv_result_t spvValidateBinary(const spv_const_context context,
 
   // Create the ValidationState using the context and default options.
   spvtools::val::ValidationState_t vstate(&hijack_context, default_options,
-                                          words, num_words);
+                                          words, num_words,
+                                          kDefaultMaxNumOfWarnings);
 
   spv_result_t result =
       spvtools::val::ValidateBinaryUsingContextAndValidationState(
@@ -454,7 +460,8 @@ spv_result_t spvValidateWithOptions(const spv_const_context context,
 
   // Create the ValidationState using the context.
   spvtools::val::ValidationState_t vstate(&hijack_context, options,
-                                          binary->code, binary->wordCount);
+                                          binary->code, binary->wordCount,
+                                          kDefaultMaxNumOfWarnings);
 
   return spvtools::val::ValidateBinaryUsingContextAndValidationState(
       hijack_context, binary->code, binary->wordCount, pDiagnostic, &vstate);

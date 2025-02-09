@@ -58,14 +58,14 @@ TEST_P(GoodMaskParseTest, GoodMaskExpressions) {
   spvContextDestroy(context);
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     ParseMask, GoodMaskParseTest,
     ::testing::ValuesIn(std::vector<MaskCase>{
         {SPV_OPERAND_TYPE_FP_FAST_MATH_MODE, 0, "None"},
         {SPV_OPERAND_TYPE_FP_FAST_MATH_MODE, 1, "NotNaN"},
         {SPV_OPERAND_TYPE_FP_FAST_MATH_MODE, 2, "NotInf"},
         {SPV_OPERAND_TYPE_FP_FAST_MATH_MODE, 3, "NotNaN|NotInf"},
-        // Mask experssions are symmetric.
+        // Mask expressions are symmetric.
         {SPV_OPERAND_TYPE_FP_FAST_MATH_MODE, 3, "NotInf|NotNaN"},
         // Repeating a value has no effect.
         {SPV_OPERAND_TYPE_FP_FAST_MATH_MODE, 3, "NotInf|NotNaN|NotInf"},
@@ -87,7 +87,7 @@ INSTANTIATE_TEST_CASE_P(
         {SPV_OPERAND_TYPE_FUNCTION_CONTROL, 4, "Pure"},
         {SPV_OPERAND_TYPE_FUNCTION_CONTROL, 8, "Const"},
         {SPV_OPERAND_TYPE_FUNCTION_CONTROL, 0xd, "Inline|Const|Pure"},
-    }), );
+    }));
 
 using BadFPFastMathMaskParseTest = ::testing::TestWithParam<const char*>;
 
@@ -102,12 +102,12 @@ TEST_P(BadFPFastMathMaskParseTest, BadMaskExpressions) {
   spvContextDestroy(context);
 }
 
-INSTANTIATE_TEST_CASE_P(ParseMask, BadFPFastMathMaskParseTest,
-                        ::testing::ValuesIn(std::vector<const char*>{
-                            nullptr, "", "NotValidEnum", "|", "NotInf|",
-                            "|NotInf", "NotInf||NotNaN",
-                            "Unroll"  // A good word, but for the wrong enum
-                        }), );
+INSTANTIATE_TEST_SUITE_P(ParseMask, BadFPFastMathMaskParseTest,
+                         ::testing::ValuesIn(std::vector<const char*>{
+                             nullptr, "", "NotValidEnum", "|", "NotInf|",
+                             "|NotInf", "NotInf||NotNaN",
+                             "Unroll"  // A good word, but for the wrong enum
+                         }));
 
 TEST_F(TextToBinaryTest, InvalidText) {
   ASSERT_EQ(SPV_ERROR_INVALID_TEXT,
@@ -180,9 +180,10 @@ TEST_F(TextToBinaryTest, WrongOpCode) {
 TEST_F(TextToBinaryTest, CRLF) {
   const std::string input =
       "%i32 = OpTypeInt 32 1\r\n%c = OpConstant %i32 123\r\n";
-  EXPECT_THAT(CompiledInstructions(input),
-              Eq(Concatenate({MakeInstruction(SpvOpTypeInt, {1, 32, 1}),
-                              MakeInstruction(SpvOpConstant, {1, 2, 123})})));
+  EXPECT_THAT(
+      CompiledInstructions(input),
+      Eq(Concatenate({MakeInstruction(spv::Op::OpTypeInt, {1, 32, 1}),
+                      MakeInstruction(spv::Op::OpConstant, {1, 2, 123})})));
 }
 
 using TextToBinaryFloatValueTest = spvtest::TextToBinaryTestBase<
@@ -192,12 +193,12 @@ TEST_P(TextToBinaryFloatValueTest, Samples) {
   const std::string input =
       "%1 = OpTypeFloat 32\n%2 = OpConstant %1 " + GetParam().first;
   EXPECT_THAT(CompiledInstructions(input),
-              Eq(Concatenate({MakeInstruction(SpvOpTypeFloat, {1, 32}),
-                              MakeInstruction(SpvOpConstant,
+              Eq(Concatenate({MakeInstruction(spv::Op::OpTypeFloat, {1, 32}),
+                              MakeInstruction(spv::Op::OpConstant,
                                               {1, 2, GetParam().second})})));
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     FloatValues, TextToBinaryFloatValueTest,
     ::testing::ValuesIn(std::vector<std::pair<std::string, uint32_t>>{
         {"0.0", 0x00000000},          // +0
@@ -213,7 +214,7 @@ INSTANTIATE_TEST_CASE_P(
         {"-2.5", 0xc0200000},
         {"!0xff800000", 0xff800000},  // -inf
         {"!0xff800001", 0xff800001},  // NaN
-    }), );
+    }));
 
 using TextToBinaryHalfValueTest = spvtest::TextToBinaryTestBase<
     ::testing::TestWithParam<std::pair<std::string, uint32_t>>>;
@@ -222,12 +223,12 @@ TEST_P(TextToBinaryHalfValueTest, Samples) {
   const std::string input =
       "%1 = OpTypeFloat 16\n%2 = OpConstant %1 " + GetParam().first;
   EXPECT_THAT(CompiledInstructions(input),
-              Eq(Concatenate({MakeInstruction(SpvOpTypeFloat, {1, 16}),
-                              MakeInstruction(SpvOpConstant,
+              Eq(Concatenate({MakeInstruction(spv::Op::OpTypeFloat, {1, 16}),
+                              MakeInstruction(spv::Op::OpConstant,
                                               {1, 2, GetParam().second})})));
 }
 
-INSTANTIATE_TEST_CASE_P(
+INSTANTIATE_TEST_SUITE_P(
     HalfValues, TextToBinaryHalfValueTest,
     ::testing::ValuesIn(std::vector<std::pair<std::string, uint32_t>>{
         {"0.0", 0x00000000},
@@ -245,13 +246,7 @@ INSTANTIATE_TEST_CASE_P(
         {"0x1.8p4", 0x00004e00},
         {"0x1.801p4", 0x00004e00},
         {"0x1.804p4", 0x00004e01},
-    }), );
-
-TEST(CreateContext, InvalidEnvironment) {
-  spv_target_env env;
-  std::memset(&env, 99, sizeof(env));
-  EXPECT_THAT(spvContextCreate(env), IsNull());
-}
+    }));
 
 TEST(CreateContext, UniversalEnvironment) {
   auto c = spvContextCreate(SPV_ENV_UNIVERSAL_1_0);

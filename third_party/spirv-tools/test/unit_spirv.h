@@ -105,7 +105,7 @@ inline void PrintTo(const WordVector& words, ::std::ostream* os) {
 // Returns a vector of words representing a single instruction with the
 // given opcode and operand words as a vector.
 inline std::vector<uint32_t> MakeInstruction(
-    SpvOp opcode, const std::vector<uint32_t>& args) {
+    spv::Op opcode, const std::vector<uint32_t>& args) {
   std::vector<uint32_t> result{
       spvOpcodeMake(uint16_t(args.size() + 1), opcode)};
   result.insert(result.end(), args.begin(), args.end());
@@ -116,7 +116,7 @@ inline std::vector<uint32_t> MakeInstruction(
 // given opcode and whose operands are the concatenation of the two given
 // argument lists.
 inline std::vector<uint32_t> MakeInstruction(
-    SpvOp opcode, std::vector<uint32_t> args,
+    spv::Op opcode, std::vector<uint32_t> args,
     const std::vector<uint32_t>& extra_args) {
   args.insert(args.end(), extra_args.begin(), extra_args.end());
   return MakeInstruction(opcode, args);
@@ -129,29 +129,6 @@ inline std::vector<uint32_t> Concatenate(
   std::vector<uint32_t> result;
   for (const auto& instruction : instructions) {
     result.insert(result.end(), instruction.begin(), instruction.end());
-  }
-  return result;
-}
-
-// Encodes a string as a sequence of words, using the SPIR-V encoding.
-inline std::vector<uint32_t> MakeVector(std::string input) {
-  std::vector<uint32_t> result;
-  uint32_t word = 0;
-  size_t num_bytes = input.size();
-  // SPIR-V strings are null-terminated.  The byte_index == num_bytes
-  // case is used to push the terminating null byte.
-  for (size_t byte_index = 0; byte_index <= num_bytes; byte_index++) {
-    const auto new_byte =
-        (byte_index < num_bytes ? uint8_t(input[byte_index]) : uint8_t(0));
-    word |= (new_byte << (8 * (byte_index % sizeof(uint32_t))));
-    if (3 == (byte_index % sizeof(uint32_t))) {
-      result.push_back(word);
-      word = 0;
-    }
-  }
-  // Emit a trailing partial word.
-  if ((num_bytes + 1) % sizeof(uint32_t)) {
-    result.push_back(word);
   }
   return result;
 }
@@ -218,15 +195,15 @@ inline std::vector<spv_target_env> AllTargetEnvironments() {
       SPV_ENV_OPENGL_4_1,    SPV_ENV_OPENGL_4_2,
       SPV_ENV_OPENGL_4_3,    SPV_ENV_OPENGL_4_5,
       SPV_ENV_UNIVERSAL_1_2, SPV_ENV_UNIVERSAL_1_3,
-      SPV_ENV_VULKAN_1_1,    SPV_ENV_WEBGPU_0,
+      SPV_ENV_VULKAN_1_1,
   };
 }
 
 // Returns the capabilities in a CapabilitySet as an ordered vector.
-inline std::vector<SpvCapability> ElementsIn(
+inline std::vector<spv::Capability> ElementsIn(
     const spvtools::CapabilitySet& capabilities) {
-  std::vector<SpvCapability> result;
-  capabilities.ForEach([&result](SpvCapability c) { result.push_back(c); });
+  std::vector<spv::Capability> result;
+  capabilities.ForEach([&result](spv::Capability c) { result.push_back(c); });
   return result;
 }
 

@@ -57,7 +57,7 @@ void check_dominance(const DominatorAnalysisBase& dom_tree, const Function* fn,
   }
 }
 
-// Check that x does not dominates y and vise versa
+// Check that x does not dominates y and vice versa
 void check_no_dominance(const DominatorAnalysisBase& dom_tree,
                         const Function* fn, uint32_t x, uint32_t y) {
   SCOPED_TRACE("Check no domination for Basic Block " + std::to_string(x) +
@@ -892,6 +892,126 @@ TEST_F(PassClassTest, DominatorUnreachableFromEntry) {
               cfg.pseudo_exit_block());
     EXPECT_EQ(dom_tree.ImmediateDominator(spvtest::GetBasicBlock(fn, 10)),
               spvtest::GetBasicBlock(fn, 9));
+  }
+}
+
+TEST_F(PassClassTest, DominationForInstructions) {
+  const std::string text = R"(
+               OpCapability Shader
+          %1 = OpExtInstImport "GLSL.std.450"
+               OpMemoryModel Logical GLSL450
+               OpEntryPoint Fragment %4 "main"
+               OpExecutionMode %4 OriginUpperLeft
+               OpSource ESSL 310
+          %2 = OpTypeVoid
+          %3 = OpTypeFunction %2
+          %6 = OpTypeInt 32 1
+          %7 = OpTypeBool
+          %8 = OpConstantTrue %7
+          %9 = OpConstant %6 37
+         %10 = OpConstant %6 3
+         %13 = OpConstant %6 5
+          %4 = OpFunction %2 None %3
+          %5 = OpLabel
+         %12 = OpIAdd %6 %9 %10
+         %15 = OpISub %6 %12 %13
+               OpSelectionMerge %18 None
+               OpBranchConditional %8 %16 %17
+         %16 = OpLabel
+         %20 = OpISub %6 %12 %13
+               OpBranch %18
+         %17 = OpLabel
+         %21 = OpISub %6 %12 %13
+               OpBranch %18
+         %18 = OpLabel
+         %22 = OpISub %6 %12 %13
+               OpReturn
+               OpFunctionEnd
+  )";
+
+  // clang-format on
+  std::unique_ptr<IRContext> context =
+      BuildModule(SPV_ENV_UNIVERSAL_1_0, nullptr, text,
+                  SPV_TEXT_TO_BINARY_OPTION_PRESERVE_NUMERIC_IDS);
+  EXPECT_NE(nullptr, context->module()) << "Assembling failed for shader:\n"
+                                        << text << std::endl;
+
+  {
+    const DominatorAnalysis* dominator_analysis = context->GetDominatorAnalysis(
+        spvtest::GetFunction(context->module(), 4));
+
+    EXPECT_TRUE(
+        dominator_analysis->Dominates(context->get_def_use_mgr()->GetDef(12),
+                                      context->get_def_use_mgr()->GetDef(15)));
+    EXPECT_FALSE(
+        dominator_analysis->Dominates(context->get_def_use_mgr()->GetDef(15),
+                                      context->get_def_use_mgr()->GetDef(12)));
+    EXPECT_TRUE(
+        dominator_analysis->Dominates(context->get_def_use_mgr()->GetDef(5),
+                                      context->get_def_use_mgr()->GetDef(12)));
+    EXPECT_FALSE(
+        dominator_analysis->Dominates(context->get_def_use_mgr()->GetDef(12),
+                                      context->get_def_use_mgr()->GetDef(5)));
+    EXPECT_TRUE(
+        dominator_analysis->Dominates(context->get_def_use_mgr()->GetDef(15),
+                                      context->get_def_use_mgr()->GetDef(16)));
+    EXPECT_TRUE(
+        dominator_analysis->Dominates(context->get_def_use_mgr()->GetDef(15),
+                                      context->get_def_use_mgr()->GetDef(21)));
+    EXPECT_TRUE(
+        dominator_analysis->Dominates(context->get_def_use_mgr()->GetDef(15),
+                                      context->get_def_use_mgr()->GetDef(18)));
+    EXPECT_TRUE(
+        dominator_analysis->Dominates(context->get_def_use_mgr()->GetDef(15),
+                                      context->get_def_use_mgr()->GetDef(22)));
+    EXPECT_FALSE(
+        dominator_analysis->Dominates(context->get_def_use_mgr()->GetDef(20),
+                                      context->get_def_use_mgr()->GetDef(22)));
+    EXPECT_FALSE(
+        dominator_analysis->Dominates(context->get_def_use_mgr()->GetDef(21),
+                                      context->get_def_use_mgr()->GetDef(22)));
+    EXPECT_TRUE(
+        dominator_analysis->Dominates(context->get_def_use_mgr()->GetDef(15),
+                                      context->get_def_use_mgr()->GetDef(15)));
+  }
+  {
+    const PostDominatorAnalysis* post_dominator_analysis =
+        context->GetPostDominatorAnalysis(
+            spvtest::GetFunction(context->module(), 4));
+
+    EXPECT_TRUE(post_dominator_analysis->Dominates(
+        context->get_def_use_mgr()->GetDef(15),
+        context->get_def_use_mgr()->GetDef(12)));
+    EXPECT_FALSE(post_dominator_analysis->Dominates(
+        context->get_def_use_mgr()->GetDef(12),
+        context->get_def_use_mgr()->GetDef(15)));
+    EXPECT_TRUE(post_dominator_analysis->Dominates(
+        context->get_def_use_mgr()->GetDef(12),
+        context->get_def_use_mgr()->GetDef(5)));
+    EXPECT_FALSE(post_dominator_analysis->Dominates(
+        context->get_def_use_mgr()->GetDef(5),
+        context->get_def_use_mgr()->GetDef(12)));
+    EXPECT_FALSE(post_dominator_analysis->Dominates(
+        context->get_def_use_mgr()->GetDef(16),
+        context->get_def_use_mgr()->GetDef(15)));
+    EXPECT_FALSE(post_dominator_analysis->Dominates(
+        context->get_def_use_mgr()->GetDef(21),
+        context->get_def_use_mgr()->GetDef(15)));
+    EXPECT_TRUE(post_dominator_analysis->Dominates(
+        context->get_def_use_mgr()->GetDef(18),
+        context->get_def_use_mgr()->GetDef(15)));
+    EXPECT_TRUE(post_dominator_analysis->Dominates(
+        context->get_def_use_mgr()->GetDef(22),
+        context->get_def_use_mgr()->GetDef(15)));
+    EXPECT_TRUE(post_dominator_analysis->Dominates(
+        context->get_def_use_mgr()->GetDef(22),
+        context->get_def_use_mgr()->GetDef(20)));
+    EXPECT_TRUE(post_dominator_analysis->Dominates(
+        context->get_def_use_mgr()->GetDef(22),
+        context->get_def_use_mgr()->GetDef(21)));
+    EXPECT_TRUE(post_dominator_analysis->Dominates(
+        context->get_def_use_mgr()->GetDef(15),
+        context->get_def_use_mgr()->GetDef(15)));
   }
 }
 

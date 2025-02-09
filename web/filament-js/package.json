@@ -1,6 +1,6 @@
 {
   "name": "filament",
-  "version": "1.2.0",
+  "version": "1.56.8",
   "description": "Real-time physically based rendering engine",
   "main": "filament.js",
   "module": "filament.js",
@@ -11,10 +11,14 @@
     "type": "git",
     "url": "https://github.com/google/filament.git"
   },
+  "dependencies": {
+    "gl-matrix": "^3.2.1"
+  },
   "files": [
     "filament.d.ts",
     "filament.js",
     "filament.wasm",
+    "filament-viewer.js",
     "README.md"
   ],
   "keywords": [

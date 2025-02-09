@@ -17,26 +17,28 @@
 #include <image/ImageSampler.h>
 #include <image/ImageOps.h>
 
+#include <math/scalar.h>
 #include <math/vec3.h>
 #include <math/vec4.h>
+
 #include <utils/Panic.h>
-#include <utils/CString.h>
 
 #include <memory>
-#include <vector>
+#include <string>
 #include <unordered_map>
+#include <vector>
 
 using namespace image;
 
 namespace {
+
+using namespace filament::math;
 
 struct FilterFunction {
     float (*fn)(float) = nullptr;
     float boundingRadius = 1;
     bool rejectExternalSamples = true;
 };
-
-constexpr float M_PIf = float(M_PI);
 
 const FilterFunction Box {
     .fn = [](float t) { return t <= 0.5f ? 1.0f : 0.0f; },
@@ -48,7 +50,7 @@ const FilterFunction Nearest { Box.fn, 0.0f };
 const FilterFunction Gaussian {
     .fn = [](float t) {
         if (t >= 2.0) return 0.0f;
-        const float scale = 1.0f / std::sqrt(0.5f * M_PIf);
+        const float scale = 1.0f / std::sqrt(0.5f * f::PI);
         return std::exp(-2.0f * t * t) * scale;
     },
     .boundingRadius = 2
@@ -84,7 +86,7 @@ const FilterFunction Mitchell {
 // Not bothering with a fast approximation since we cache results for each row.
 float sinc(float t) {
     if (t <= 0.00001f) return 1.0f;
-    return std::sin(M_PIf * t) / (M_PIf * t);
+    return std::sin(f::PI * t) / (f::PI * t);
 }
 
 const FilterFunction Lanczos {
@@ -215,8 +217,8 @@ void normalizeImpl(LinearImage& image) {
 }
 
 void normalize(LinearImage& image) {
-    ASSERT_PRECONDITION(image.getChannels() == 3 || image.getChannels() == 4,
-                        "Must be a 3 or 4 channel image");
+    FILAMENT_CHECK_PRECONDITION(image.getChannels() == 3 || image.getChannels() == 4)
+            << "Must be a 3 or 4 channel image";
     if (image.getChannels() == 3) {
       normalizeImpl< filament::math::float3>(image);
     } else {
@@ -286,11 +288,10 @@ SingleSample::~SingleSample() {
 
 LinearImage resampleImage(const LinearImage& source, uint32_t width, uint32_t height,
         const ImageSampler& sampler) {
-    ASSERT_PRECONDITION(
-        sampler.east.mode == Boundary::EXCLUDE &&
-        sampler.north.mode == Boundary::EXCLUDE &&
-        sampler.west.mode == Boundary::EXCLUDE &&
-        sampler.south.mode == Boundary::EXCLUDE, "Not yet implemented.");
+    FILAMENT_CHECK_PRECONDITION(sampler.east.mode == Boundary::EXCLUDE &&
+            sampler.north.mode == Boundary::EXCLUDE && sampler.west.mode == Boundary::EXCLUDE &&
+            sampler.south.mode == Boundary::EXCLUDE)
+            << "Not yet implemented.";
     const auto hfilter = sampler.horizontalFilter;
     const auto vfilter = sampler.verticalFilter;
     const float radius = sampler.filterRadiusMultiplier;
@@ -333,6 +334,7 @@ void computeSingleSample(const LinearImage& source, float x, float y, SingleSamp
     }
 }
 
+// Generates the given number of mipmaps (not including the base level) using the given filter.
 // Unlike traditional mipmap generation, our implementation generates all levels from the original
 // image, under the premise that this produces a higher quality result.
 void generateMipmaps(const LinearImage& source, Filter filter, LinearImage* result, uint32_t mips) {
@@ -340,9 +342,9 @@ void generateMipmaps(const LinearImage& source, Filter filter, LinearImage* resu
     uint32_t width = source.getWidth();
     uint32_t height = source.getHeight();
     for (uint32_t n = 0; n < mips; ++n) {
-       width = std::max(width >> 1, 1u);
-       height = std::max(height >> 1, 1u);
-       result[n] = resampleImage(source, width, height, filter);
+        width = std::max(width >> 1u, 1u);
+        height = std::max(height >> 1u, 1u);
+        result[n] = resampleImage(source, width, height, filter);
     }
 }
 
@@ -352,28 +354,27 @@ uint32_t getMipmapCount(const LinearImage& source) {
     uint32_t count = 0;
     while (width > 1 || height > 1) {
         ++count;
-        width = std::max(width >> 1, 1u);
-        height = std::max(height >> 1, 1u);
+        width = std::max(width >> 1u, 1u);
+        height = std::max(height >> 1u, 1u);
     }
     return count;
 }
 
 Filter filterFromString(const char* rawname) {
     using namespace utils;
-    using namespace std;
-    static const unordered_map<StaticString, Filter> map = {
-        { "BOX", Filter::BOX},
-        { "NEAREST", Filter::NEAREST},
-        { "HERMITE", Filter::HERMITE},
-        { "GAUSSIAN", Filter::GAUSSIAN_SCALARS},
-        { "NORMALS", Filter::GAUSSIAN_NORMALS},
-        { "MITCHELL", Filter::MITCHELL},
-        { "LANCZOS", Filter::LANCZOS},
-        { "MINIMUM", Filter::MINIMUM},
+    static const std::unordered_map<std::string_view, Filter> map = {
+            { "BOX",      Filter::BOX },
+            { "NEAREST",  Filter::NEAREST },
+            { "HERMITE",  Filter::HERMITE },
+            { "GAUSSIAN", Filter::GAUSSIAN_SCALARS },
+            { "NORMALS",  Filter::GAUSSIAN_NORMALS },
+            { "MITCHELL", Filter::MITCHELL },
+            { "LANCZOS",  Filter::LANCZOS },
+            { "MINIMUM",  Filter::MINIMUM },
     };
-    string name = rawname;
-    for (auto& c: name) { c = toupper((unsigned char)c); }
-    auto iter = map.find(StaticString::make(name.c_str(), name.size()));
+    std::string name = rawname;
+    for (auto& c: name) { c = (char)toupper((unsigned char)c); }
+    auto iter = map.find(name);
     return iter == map.end() ? Filter::DEFAULT : iter->second;
 }
 

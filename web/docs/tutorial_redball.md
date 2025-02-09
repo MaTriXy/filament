@@ -7,7 +7,9 @@ For starters, create a text file called `redball.html` and copy over the HTML th
 
 Next you'll need to get a couple command-line tools: `matc` and `cmgen`. You can find these in the
 appropriate [Filament release](//github.com/google/filament/releases). You should choose the
-archive that corresponds to your development machine rather than the one for web.
+archive that corresponds to your development machine rather than the one for web, and the version
+that matches the `unpkg.com/filament@x.x.x` url in the script tag of `redball.html` (you may check
+out the last available release of [filament on npm](https://www.npmjs.com/package/filament)).
 
 ## Define plastic material
 
@@ -58,7 +60,7 @@ produce two cubemap files: a mipmapped IBL and a blurry skybox.
 Download [pillars_2k.hdr], then invoke the following command in your terminal.
 
 ```bash
-cmgen -x . --format=ktx --size=256 --extract-blur=0.1 pillars_2k.hdr
+cmgen -x pillars_2k --format=ktx --size=256 --extract-blur=0.1 pillars_2k.hdr
 ```
 
 You should now have a `pillars_2k` folder containing a couple KTX files for the IBL and skybox, as
@@ -103,7 +105,7 @@ class App {
 
     this.swapChain = engine.createSwapChain();
     this.renderer = engine.createRenderer();
-    this.camera = engine.createCamera();
+    this.camera = engine.createCamera(Filament.EntityManager.get().create());
     this.view = engine.createView();
     this.view.setCamera(this.camera);
     this.view.setScene(scene);
@@ -229,12 +231,12 @@ Next we need to create an `IndirectLight` object from the KTX IBL. One way of do
 following (don't type this out, there's an easier way).
 
 ```js
-const format = Filament.PixelDataFormat.RGBM;
-const datatype = Filament.PixelDataType.UBYTE;
+const format = Filament.PixelDataFormat.RGB;
+const datatype = Filament.PixelDataType.UINT_10F_11F_11F_REV;
 
 // Create a Texture object for the mipmapped cubemap.
 const ibl_package = Filament.Buffer(Filament.assets[ibl_url]);
-const iblktx = new Filament.KtxBundle(ibl_package);
+const iblktx = new Filament.Ktx1Bundle(ibl_package);
 
 const ibltex = Filament.Texture.Builder()
   .width(iblktx.info().pixelWidth)
@@ -242,7 +244,6 @@ const ibltex = Filament.Texture.Builder()
   .levels(iblktx.getNumMipLevels())
   .sampler(Filament.Texture$Sampler.SAMPLER_CUBEMAP)
   .format(Filament.Texture$InternalFormat.RGBA8)
-  .rgbm(true)
   .build(engine);
 
 for (let level = 0; level < iblktx.getNumMipLevels(); ++level) {
@@ -269,7 +270,7 @@ Filament provides a JavaScript utility to make this simpler,
 simply replace the **create IBL** comment with the following snippet.
 
 ```js {fragment="create IBL"}
-const indirectLight = engine.createIblFromKtx(ibl_url);
+const indirectLight = engine.createIblFromKtx1(ibl_url);
 indirectLight.setIntensity(50000);
 scene.setIndirectLight(indirectLight);
 ```
@@ -282,14 +283,13 @@ Here's one way to create a texture for the skybox:
 
 ```js
 const sky_package = Filament.Buffer(Filament.assets[sky_url]);
-const skyktx = new Filament.KtxBundle(sky_package);
+const skyktx = new Filament.Ktx1Bundle(sky_package);
 const skytex = Filament.Texture.Builder()
   .width(skyktx.info().pixelWidth)
   .height(skyktx.info().pixelHeight)
   .levels(1)
   .sampler(Filament.Texture$Sampler.SAMPLER_CUBEMAP)
   .format(Filament.Texture$InternalFormat.RGBA8)
-  .rgbm(true)
   .build(engine);
 
 const uint8array = skyktx.getCubeBlob(0).getBytes();
@@ -301,7 +301,7 @@ Filament provides a Javascript utility to make this easier.
 Replace **create skybox** with the following.
 
 ```js {fragment="create skybox"}
-const skybox = engine.createSkyFromKtx(sky_url);
+const skybox = engine.createSkyFromKtx1(sky_url);
 scene.setSkybox(skybox);
 ```
 
@@ -311,7 +311,7 @@ available [here](tutorial_redball.js).
 In the [next tutorial], we'll take a closer look at textures and interaction.
 
 [pillars_2k.hdr]:
-//github.com/google/filament/blob/master/third_party/environments/pillars_2k.hdr
+//github.com/google/filament/blob/main/third_party/environments/pillars_2k.hdr
 
 [next tutorial]: tutorial_suzanne.html
 [previous tutorial]: tutorial_triangle.html

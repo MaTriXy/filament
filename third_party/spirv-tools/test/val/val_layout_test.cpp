@@ -120,7 +120,7 @@ const std::vector<std::string>& getInstructions() {
 static const int kRangeEnd = 1000;
 pred_type All = Range<0, kRangeEnd>();
 
-INSTANTIATE_TEST_CASE_P(InstructionsOrder,
+INSTANTIATE_TEST_SUITE_P(InstructionsOrder,
     ValidateLayout,
     ::testing::Combine(::testing::Range((int)0, (int)getInstructions().size()),
     // Note: Because of ID dependencies between instructions, some instructions
@@ -160,7 +160,7 @@ INSTANTIATE_TEST_CASE_P(InstructionsOrder,
                     , std::make_tuple(std::string("%fLabel   = OpLabel")       , Equals<39>             , All)
                     , std::make_tuple(std::string("OpNop")                     , Equals<40>             , Range<40,kRangeEnd>())
                     , std::make_tuple(std::string("OpReturn ; %func2 return")  , Equals<41>             , All)
-    )),);
+    )));
 // clang-format on
 
 // Creates a new vector which removes the string if the substr is found in the
@@ -181,7 +181,7 @@ std::vector<std::string> GenerateCode(std::string substr, int order) {
 }
 
 // This test will check the logical layout of a binary by removing each
-// instruction in the pair of the INSTANTIATE_TEST_CASE_P call and moving it in
+// instruction in the pair of the INSTANTIATE_TEST_SUITE_P call and moving it in
 // the SPIRV source formed by combining the vector "instructions".
 TEST_P(ValidateLayout, Layout) {
   int order;
@@ -481,6 +481,7 @@ TEST_F(ValidateEntryPoint, FunctionIsTargetOfEntryPointAndFunctionCallBad) {
            OpCapability Shader
            OpMemoryModel Logical GLSL450
            OpEntryPoint Fragment %foo "foo"
+           OpExecutionMode %foo OriginUpperLeft
 %voidt   = OpTypeVoid
 %funct   = OpTypeFunction %voidt
 %foo     = OpFunction %voidt None %funct
@@ -537,7 +538,6 @@ TEST_F(ValidateLayout, ModuleProcessedInvalidIn10) {
            OpMemoryModel Logical GLSL450
            OpName %void "void"
            OpModuleProcessed "this is ok in 1.1 and later"
-           OpDecorate %void Volatile ; bogus, but makes the example short
 %void    = OpTypeVoid
 )";
 
@@ -557,13 +557,32 @@ TEST_F(ValidateLayout, ModuleProcessedValidIn11) {
            OpMemoryModel Logical GLSL450
            OpName %void "void"
            OpModuleProcessed "this is ok in 1.1 and later"
-           OpDecorate %void Volatile ; bogus, but makes the example short
 %void    = OpTypeVoid
 )";
 
   CompileSuccessfully(str, SPV_ENV_UNIVERSAL_1_1);
   ASSERT_EQ(SPV_SUCCESS, ValidateInstructions(SPV_ENV_UNIVERSAL_1_1));
   EXPECT_THAT(getDiagnosticString(), Eq(""));
+}
+
+TEST_F(ValidateLayout, LayoutOrderMixedUp) {
+  char str[] = R"(
+           OpCapability Shader
+           OpCapability Linkage
+           OpMemoryModel Logical GLSL450
+           OpEntryPoint Fragment %fragmentFloat "fragmentFloat"
+           OpExecutionMode %fragmentFloat OriginUpperLeft
+           OpEntryPoint Fragment %fragmentUint "fragmentUint"
+           OpExecutionMode %fragmentUint OriginUpperLeft
+)";
+
+  CompileSuccessfully(str, SPV_ENV_UNIVERSAL_1_1);
+  ASSERT_EQ(SPV_ERROR_INVALID_LAYOUT,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_1));
+  // By the mechanics of the validator, we assume ModuleProcessed is in the
+  // right spot, but then that OpName is in the wrong spot.
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("EntryPoint is in an invalid layout section"));
 }
 
 TEST_F(ValidateLayout, ModuleProcessedBeforeLastNameIsTooEarly) {
@@ -582,7 +601,7 @@ TEST_F(ValidateLayout, ModuleProcessedBeforeLastNameIsTooEarly) {
   // By the mechanics of the validator, we assume ModuleProcessed is in the
   // right spot, but then that OpName is in the wrong spot.
   EXPECT_THAT(getDiagnosticString(),
-              HasSubstr("Name cannot appear in a function declaration"));
+              HasSubstr("Name is in an invalid layout section"));
 }
 
 TEST_F(ValidateLayout, ModuleProcessedInvalidAfterFirstAnnotation) {
@@ -598,9 +617,8 @@ TEST_F(ValidateLayout, ModuleProcessedInvalidAfterFirstAnnotation) {
   CompileSuccessfully(str, SPV_ENV_UNIVERSAL_1_1);
   ASSERT_EQ(SPV_ERROR_INVALID_LAYOUT,
             ValidateInstructions(SPV_ENV_UNIVERSAL_1_1));
-  EXPECT_THAT(
-      getDiagnosticString(),
-      HasSubstr("ModuleProcessed cannot appear in a function declaration"));
+  EXPECT_THAT(getDiagnosticString(),
+              HasSubstr("ModuleProcessed is in an invalid layout section"));
 }
 
 TEST_F(ValidateLayout, ModuleProcessedInvalidInFunctionBeforeLabel) {
@@ -648,6 +666,98 @@ TEST_F(ValidateLayout, ModuleProcessedInvalidInBasicBlock) {
 }
 
 // TODO(umar): Test optional instructions
+
+TEST_F(ValidateLayout, ValidNVBindlessTexturelayout) {
+  std::string str = R"(
+         OpCapability Shader
+         OpCapability BindlessTextureNV
+         OpExtension "SPV_NV_bindless_texture"
+         OpMemoryModel Logical GLSL450
+         OpSamplerImageAddressingModeNV 64
+         OpEntryPoint GLCompute %func "main"
+%voidt = OpTypeVoid
+%uintt = OpTypeInt 32 0
+%funct = OpTypeFunction %voidt
+%func  = OpFunction %voidt None %funct
+%entry = OpLabel
+%udef  = OpUndef %uintt
+         OpReturn
+         OpFunctionEnd
+)";
+
+  CompileSuccessfully(str);
+  ASSERT_EQ(SPV_SUCCESS, ValidateInstructions());
+}
+
+TEST_F(ValidateLayout, InvalidValidNVBindlessTexturelayout) {
+  std::string str = R"(
+         OpCapability Shader
+         OpCapability BindlessTextureNV
+         OpExtension "SPV_NV_bindless_texture"
+         OpMemoryModel Logical GLSL450
+         OpEntryPoint GLCompute %func "main"
+         OpSamplerImageAddressingModeNV 64
+%voidt = OpTypeVoid
+%uintt = OpTypeInt 32 0
+%funct = OpTypeFunction %voidt
+%func  = OpFunction %voidt None %funct
+%entry = OpLabel
+%udef  = OpUndef %uintt
+         OpReturn
+         OpFunctionEnd
+)";
+
+  CompileSuccessfully(str);
+  ASSERT_EQ(SPV_ERROR_INVALID_LAYOUT,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr(
+          "SamplerImageAddressingModeNV is in an invalid layout section"));
+}
+
+TEST_F(ValidateLayout, MissingNVBindlessAddressModeFromLayout) {
+  std::string str = R"(
+         OpCapability Shader
+         OpCapability BindlessTextureNV
+         OpExtension "SPV_NV_bindless_texture"
+         OpMemoryModel Logical GLSL450
+         OpEntryPoint GLCompute %func "main"
+%voidt = OpTypeVoid
+%uintt = OpTypeInt 32 0
+%funct = OpTypeFunction %voidt
+%func  = OpFunction %voidt None %funct
+%entry = OpLabel
+%udef  = OpUndef %uintt
+         OpReturn
+         OpFunctionEnd
+)";
+
+  CompileSuccessfully(str);
+  ASSERT_EQ(SPV_ERROR_INVALID_LAYOUT,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("Missing required OpSamplerImageAddressingModeNV instruction"));
+}
+
+TEST_F(ValidateLayout, NVBindlessAddressModeFromLayoutSpecifiedTwice) {
+  std::string str = R"(
+        OpCapability Shader
+        OpCapability BindlessTextureNV
+        OpExtension "SPV_NV_bindless_texture"
+        OpMemoryModel Logical GLSL450
+        OpSamplerImageAddressingModeNV 64
+        OpSamplerImageAddressingModeNV 64
+)";
+
+  CompileSuccessfully(str);
+  ASSERT_EQ(SPV_ERROR_INVALID_LAYOUT,
+            ValidateInstructions(SPV_ENV_UNIVERSAL_1_3));
+  EXPECT_THAT(
+      getDiagnosticString(),
+      HasSubstr("OpSamplerImageAddressingModeNV should only be provided once"));
+}
 
 }  // namespace
 }  // namespace val

@@ -4,7 +4,7 @@
 
 We organize known future work in GitHub projects. See [Tracking SPIRV-Tools work
 with GitHub
-projects](https://github.com/KhronosGroup/SPIRV-Tools/blob/master/projects.md)
+projects](https://github.com/KhronosGroup/SPIRV-Tools/blob/master/docs/projects.md)
 for more.
 
 To report a new bug or request a new feature, please file a GitHub issue. Please
@@ -98,13 +98,6 @@ should pay particular attention to:
     scenarios? The respective SPIR-V dialects are slightly different.
 *   Changes are made to a container while iterating through it. You have to be
     careful that iterators are not invalidated or that elements are not skipped.
-*   C++11 and VS2013. We generally assume that we have a C++11 compliant
-    compiler. However, on Windows, we still support Visual Studio 2013, which is
-    not fully C++11 compliant. See
-    [here](https://msdn.microsoft.com/en-us/library/hh567368.aspx). In
-    particular, note that it does not provide default move-constructors or
-    move-assignments for classes. In general, r-value references do not work the
-    way you might assume they do.
 *   For SPIR-V transforms: The module is changed, but the analyses are not
     updated. For example, a new instruction is added, but the def-use manager is
     not updated. Later on, it is possible that the def-use manager will be used,

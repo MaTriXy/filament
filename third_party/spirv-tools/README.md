@@ -1,10 +1,5 @@
 # SPIR-V Tools
 
-[![Build status](https://ci.appveyor.com/api/projects/status/gpue87cesrx3pi0d/branch/master?svg=true)](https://ci.appveyor.com/project/Khronoswebmaster/spirv-tools/branch/master)
-<img alt="Linux" src="kokoro/img/linux.png" width="20px" height="20px" hspace="2px"/>![Linux Build Status](https://storage.googleapis.com/spirv-tools/badges/build_status_linux_release.svg)
-<img alt="MacOS" src="kokoro/img/macos.png" width="20px" height="20px" hspace="2px"/>![MacOS Build Status](https://storage.googleapis.com/spirv-tools/badges/build_status_macos_release.svg)
-<img alt="Windows" src="kokoro/img/windows.png" width="20px" height="20px" hspace="2px"/>![Windows Build Status](https://storage.googleapis.com/spirv-tools/badges/build_status_windows_release.svg)
-
 ## Overview
 
 The SPIR-V Tools project provides an API and commands for processing SPIR-V
@@ -24,12 +19,20 @@ SPIR-V is defined by the Khronos Group Inc.
 See the [SPIR-V Registry][spirv-registry] for the SPIR-V specification,
 headers, and XML registry.
 
+## Downloads
+
+<img alt="Linux" src="kokoro/img/linux.png" width="20px" height="20px" hspace="2px"/>[![Linux Build Status](https://storage.googleapis.com/spirv-tools/badges/build_status_linux_clang_release.svg)](https://storage.googleapis.com/spirv-tools/badges/build_link_linux_clang_release.html)
+<img alt="MacOS" src="kokoro/img/macos.png" width="20px" height="20px" hspace="2px"/>[![MacOS Build Status](https://storage.googleapis.com/spirv-tools/badges/build_status_macos_clang_release.svg)](https://storage.googleapis.com/spirv-tools/badges/build_link_macos_clang_release.html)
+<img alt="Windows" src="kokoro/img/windows.png" width="20px" height="20px" hspace="2px"/>[![Windows Build Status](https://storage.googleapis.com/spirv-tools/badges/build_status_windows_release.svg)](https://storage.googleapis.com/spirv-tools/badges/build_link_windows_vs2017_release.html)
+
+[More downloads](docs/downloads.md)
+
 ## Versioning SPIRV-Tools
 
 See [`CHANGES`](CHANGES) for a high level summary of recent changes, by version.
 
 SPIRV-Tools project version numbers are of the form `v`*year*`.`*index* and with
-an optional `-dev` suffix to indicate work in progress.  For exampe, the
+an optional `-dev` suffix to indicate work in progress.  For example, the
 following versions are ordered from oldest to newest:
 
 * `v2016.0`
@@ -41,13 +44,29 @@ following versions are ordered from oldest to newest:
 Use the `--version` option on each command line tool to see the software
 version.  An API call reports the software version as a C-style string.
 
+## Releases
+
+Some versions of SPIRV-Tools are tagged as stable releases (see
+[tags](https://github.com/KhronosGroup/SPIRV-Tools/tags) on github).
+These versions undergo extra testing.
+Releases are not directly related to releases (or versions) of
+[SPIRV-Headers][spirv-headers].
+Releases of SPIRV-Tools are tested against the version of SPIRV-Headers listed
+in the [DEPS](DEPS) file.
+The release generally uses the most recent compatible version of SPIRV-Headers
+available at the time of release.
+No version of SPIRV-Headers other than the one listed in the DEPS file is
+guaranteed to work with the SPIRV-Tools release.
+
 ## Supported features
 
 ### Assembler, binary parser, and disassembler
 
-* Support for SPIR-V 1.0, 1.1, 1.2, and 1.3
+* Support for SPIR-V 1.0, through 1.5
   * Based on SPIR-V syntax described by JSON grammar files in the
-    [SPIRV-Headers](spirv-headers) repository.
+    [SPIRV-Headers](https://github.com/KhronosGroup/SPIRV-Headers) repository.
+  * Usually, support for a new version of SPIR-V is ready within days after
+    publication.
 * Support for extended instruction sets:
   * GLSL std450 version 1.0 Rev 3
   * OpenCL version 1.0 Rev 2
@@ -55,7 +74,7 @@ version.  An API call reports the software version as a C-style string.
   IDs or types is performed, except to check literal arguments to
   `OpConstant`, `OpSpecConstant`, and `OpSwitch`.
 
-See [`syntax.md`](syntax.md) for the assembly language syntax.
+See [`docs/syntax.md`](docs/syntax.md) for the assembly language syntax.
 
 ### Validator
 
@@ -77,21 +96,29 @@ and in-progress work.
 
 *Note*: The validator checks some Universal Limits, from section 2.17 of the SPIR-V spec.
 The validator will fail on a module that exceeds those minimum upper bound limits.
-It is [future work](https://github.com/KhronosGroup/SPIRV-Tools/projects/1#card-1052403)
-to parameterize the validator to allow larger
-limits accepted by a more than minimally capable SPIR-V consumer.
+The validator has been parameterized to allow larger values, for use when targeting 
+a more-than-minimally-capable SPIR-V consumer.
 
+See [`tools/val/val.cpp`](tools/val/val.cpp) or run `spirv-val --help` for the command-line help.
 
 ### Optimizer
 
-*Note:* The optimizer is still under development.
+The optimizer is a collection of code transforms, or "passes".
+Transforms are written for a diverse set of reasons:
 
-Currently supported optimizations:
-* General
+* To restructure, simplify, or normalize the code for further processing.
+* To eliminate undesirable code.
+* To improve code quality in some metric such as size or performance.
+  **Note**: These transforms are not guaranteed to actually improve any
+  given metric. Users should always measure results for their own situation.
+
+As of this writing, there are 67 transforms including examples such as:
+* Simplification
   * Strip debug info
+  * Strip reflection info
 * Specialization Constants
   * Set spec constant default value
-  * Freeze spec constant
+  * Freeze spec constant to default value
   * Fold `OpSpecConstantOp` and `OpSpecConstantComposite`
   * Unify constants
   * Eliminate dead constant
@@ -108,6 +135,28 @@ Currently supported optimizations:
   * Eliminate common uniform loads
   * Remove duplicates: Capabilities, extended instruction imports, types, and
     decorations.
+* Normalization
+  * Compact IDs
+  * CFG cleanup
+  * Flatten decorations
+  * Merge returns
+  * Convert AMD-specific instructions to KHR instructions
+* Code improvement
+  * Conditional constant propagation
+  * If-conversion
+  * Loop fission
+  * Loop fusion
+  * Loop-invariant code motion
+  * Loop unroll
+* Other
+  * Graphics robust access
+  * Upgrade memory model to VulkanKHR
+
+Additionally, certain sets of transformations have been packaged into
+higher-level recipes.  These include:
+
+* Optimization for size (`spirv-opt -Os`)
+* Optimization for performance (`spirv-opt -O`)
 
 For the latest list with detailed documentation, please refer to
 [`include/spirv-tools/optimizer.hpp`](include/spirv-tools/optimizer.hpp).
@@ -127,6 +176,59 @@ Current features:
 See the [CHANGES](CHANGES) file for reports on completed work, and the [General
 sub-project](https://github.com/KhronosGroup/SPIRV-Tools/projects/2) for
 planned and in-progress work.
+
+
+### Reducer
+
+*Note:* The reducer is still under development.
+
+The reducer simplifies and shrinks a SPIR-V module with respect to a
+user-supplied *interestingness function*.  For example, given a large
+SPIR-V module that cause some SPIR-V compiler to fail with a given
+fatal error message, the reducer could be used to look for a smaller
+version of the module that causes the compiler to fail with the same
+fatal error message.
+
+To suggest an additional capability for the reducer, [file an
+issue](https://github.com/KhronosGroup/SPIRV-Tools/issues]) with
+"Reducer:" as the start of its title.
+
+
+### Fuzzer
+
+*Note:* The fuzzer is still under development.
+
+The fuzzer applies semantics-preserving transformations to a SPIR-V binary
+module, to produce an equivalent module.  The original and transformed modules
+should produce essentially identical results when executed on identical inputs:
+their results should differ only due to floating-point round-off, if at all.
+Significant differences in results can pinpoint bugs in tools that process
+SPIR-V binaries, such as miscompilations.  This *metamorphic testing* approach
+is similar to the method used by the [GraphicsFuzz
+project](https://github.com/google/graphicsfuzz) for fuzzing of GLSL shaders.
+
+To suggest an additional capability for the fuzzer, [file an
+issue](https://github.com/KhronosGroup/SPIRV-Tools/issues]) with
+"Fuzzer:" as the start of its title.
+
+
+### Diff
+
+*Note:* The diff tool is still under development.
+
+The diff tool takes two SPIR-V files, either in binary or text format and
+produces a diff-style comparison between the two.  The instructions between the
+src and dst modules are matched as best as the tool can, and output is produced
+(in src id-space) that shows which instructions are removed in src, added in dst
+or modified between them.  The order of instructions are not retained.
+
+Matching instructions between two SPIR-V modules is not trivial, and thus a
+number of heuristics are applied in this tool.  In particular, without debug
+information, match functions is nontrivial as they can be reordered.  As such,
+this tool is primarily useful to produce the diff of two SPIR-V modules derived
+from the same source, for example before and after a modification to the shader,
+before and after a transformation, or SPIR-V produced from different tools.
+
 
 ### Extras
 
@@ -150,7 +252,7 @@ specific work is tracked via issues and sometimes in one of the
 (To provide feedback on the SPIR-V _specification_, file an issue on the
 [SPIRV-Headers][spirv-headers] GitHub repository.)
 
-See [`projects.md`](projects.md) to see how we use the
+See [`docs/projects.md`](docs/projects.md) to see how we use the
 [GitHub Project
 feature](https://help.github.com/articles/tracking-the-progress-of-your-work-with-projects/)
 to organize planned and in-progress work.
@@ -163,10 +265,41 @@ Contributions via merge request are welcome. Changes should:
   other contribution to GitHub.
 * Include tests to cover updated functionality.
 * C++ code should follow the [Google C++ Style Guide][cpp-style-guide].
-* Code should be formatted with `clang-format`.  Settings are defined by
+* Code should be formatted with `clang-format`.
+  [kokoro/check-format/build.sh](kokoro/check-format/build.sh)
+  shows how to download it. Note that we currently use
+  `clang-format version 5.0.0` for SPIRV-Tools. Settings are defined by
   the included [.clang-format](.clang-format) file.
 
 We intend to maintain a linear history on the GitHub `master` branch.
+
+### Getting the source
+
+Example of getting sources, assuming SPIRV-Tools is configured as a standalone project:
+
+    git clone https://github.com/KhronosGroup/SPIRV-Tools.git   spirv-tools
+    cd spirv-tools
+
+    # Check out sources for dependencies, at versions known to work together,
+    # as listed in the DEPS file.
+    python3 utils/git-sync-deps
+
+For some kinds of development, you may need the latest sources from the third-party projects:
+
+    git clone https://github.com/KhronosGroup/SPIRV-Headers.git spirv-tools/external/spirv-headers
+    git clone https://github.com/google/googletest.git          spirv-tools/external/googletest
+    git clone https://github.com/google/effcee.git              spirv-tools/external/effcee
+    git clone https://github.com/google/re2.git                 spirv-tools/external/re2
+
+#### Dependency on Effcee
+
+Some tests depend on the [Effcee][effcee] library for stateful matching.
+Effcee itself depends on [RE2][re2].
+
+* If SPIRV-Tools is configured as part of a larger project that already uses
+  Effcee, then that project should include Effcee before SPIRV-Tools.
+* Otherwise, SPIRV-Tools expects Effcee sources to appear in `external/effcee`
+  and RE2 sources to appear in `external/re2`.
 
 ### Source code organization
 
@@ -175,7 +308,7 @@ We intend to maintain a linear history on the GitHub `master` branch.
   [googletest][googletest] sources, not provided
 * `external/effcee`: Location of [Effcee][effcee] sources, if the `effcee` library
   is not already configured by an enclosing project.
-* `external/re2`: Location of [RE2][re2] sources, if the `effcee` library is not already
+* `external/re2`: Location of [RE2][re2] sources, if the `re2` library is not already
   configured by an enclosing project.
   (The Effcee project already requires RE2.)
 * `include/`: API clients should add this directory to the include search path
@@ -185,14 +318,6 @@ We intend to maintain a linear history on the GitHub `master` branch.
 * `source/`: API implementation
 * `test/`: Tests, using the [googletest][googletest] framework
 * `tools/`: Command line executables
-
-Example of getting sources, assuming SPIRV-Tools is configured as a standalone project:
-
-    git clone https://github.com/KhronosGroup/SPIRV-Tools.git   spirv-tools
-    git clone https://github.com/KhronosGroup/SPIRV-Headers.git spirv-tools/external/spirv-headers
-    git clone https://github.com/google/googletest.git          spirv-tools/external/googletest
-    git clone https://github.com/google/effcee.git              spirv-tools/external/effcee
-    git clone https://github.com/google/re2.git                 spirv-tools/external/re2
 
 ### Tests
 
@@ -207,58 +332,121 @@ tests:
   `googletest` source into the `<spirv-dir>/external/googletest` directory before
   configuring and building the project.
 
-*Note*: You must use a version of googletest that includes
-[a fix][googletest-pull-612] for [googletest issue 610][googletest-issue-610].
-The fix is included on the googletest master branch any time after 2015-11-10.
-In particular, googletest must be newer than version 1.7.0.
-
-### Optional dependency on Effcee
-
-Some tests depend on the [Effcee][effcee] library for stateful matching.
-Effcee itself depends on [RE2][re2].
-
-* If SPIRV-Tools is configured as part of a larger project that already uses
-  Effcee, then that project should include Effcee before SPIRV-Tools.
-* Otherwise, SPIRV-Tools expects Effcee sources to appear in `external/effcee`
-  and RE2 sources to appear in `external/re2`.
-
-Currently Effcee is an optional dependency, but soon it will be required.
-
 ## Build
 
-Instead of building manually, you can also download the binaries for your
-platform directly from the [master-tot release][master-tot-release] on GitHub.
-Those binaries are automatically uploaded by the buildbots after successful
-testing and they always reflect the current top of the tree of the master
-branch.
+*Note*: Prebuilt binaries are available from the [downloads](docs/downloads.md) page.
 
-The project uses [CMake][cmake] to generate platform-specific build
-configurations. Assume that `<spirv-dir>` is the root directory of the checked
-out code:
+First [get the sources](#getting-the-source).
+Then build using CMake, Bazel, Android ndk-build, or the Emscripten SDK.
+
+### Build using CMake
+You can build the project using [CMake][cmake]:
 
 ```sh
 cd <spirv-dir>
-git clone https://github.com/KhronosGroup/SPIRV-Headers.git external/spirv-headers
-git clone https://github.com/google/googletest.git external/googletest # optional
-
 mkdir build && cd build
 cmake [-G <platform-generator>] <spirv-dir>
 ```
 
-Once the build files have been generated, build using your preferred
-development environment.
+Once the build files have been generated, build using the appropriate build
+command (e.g. `ninja`, `make`, `msbuild`, etc.; this depends on the platform
+generator used above), or use your IDE, or use CMake to run the appropriate build
+command for you:
+
+```sh
+cmake --build . [--config Debug]  # runs `make` or `ninja` or `msbuild` etc.
+```
+
+#### Note about the fuzzer
+
+The SPIR-V fuzzer, `spirv-fuzz`, can only be built via CMake, and is disabled by
+default. To build it, clone protobuf and use the `SPIRV_BUILD_FUZZER` CMake
+option, like so:
+
+```sh
+# In <spirv-dir> (the SPIRV-Tools repo root):
+git clone --depth=1 --branch v3.13.0.1 https://github.com/protocolbuffers/protobuf external/protobuf
+
+# In your build directory:
+cmake [-G <platform-generator>] <spirv-dir> -DSPIRV_BUILD_FUZZER=ON
+cmake --build . --config Debug
+```
+
+You can also add `-DSPIRV_ENABLE_LONG_FUZZER_TESTS=ON` to build additional
+fuzzer tests.
+
+
+### Build using Bazel
+You can also use [Bazel](https://bazel.build/) to build the project.
+```sh
+cd <spirv-dir>
+bazel build :all
+```
+### Build a node.js package using Emscripten
+
+The SPIRV-Tools core library can be built to a WebAssembly [node.js](https://nodejs.org)
+module. The resulting `SpirvTools` WebAssembly module only exports methods to
+assemble and disassemble SPIR-V modules.
+
+First, make sure you have the [Emscripten SDK](https://emscripten.org).
+Then:
+
+```sh
+cd <spirv-dir>
+./source/wasm/build.sh
+```
+
+The resulting node package, with JavaScript and TypeScript bindings, is
+written to `<spirv-dir>/out/web`.
+
+Note: This builds the package locally. It does *not* publish it to [npm](https://npmjs.org).
+
+To test the result:
+
+```sh
+node ./test/wasm/test.js
+```
+
+### Tools you'll need
+
+For building and testing SPIRV-Tools, the following tools should be
+installed regardless of your OS:
+
+- [CMake](http://www.cmake.org/): if using CMake for generating compilation
+targets, you need to install CMake Version 2.8.12 or later.
+- [Python 3](http://www.python.org/): for utility scripts and running the test
+suite.
+- [Bazel](https://bazel.build/) (optional): if building the source with Bazel,
+you need to install Bazel Version 5.0.0 on your machine. Other versions may
+also work, but are not verified.
+- [Emscripten SDK](https://emscripten.org) (optional): if building the
+  WebAssembly module.
+
+SPIRV-Tools is regularly tested with the following compilers:
+
+On Linux
+- GCC version 9.3
+- Clang version 10.0
+
+On MacOS
+- AppleClang 11.0
+
+On Windows
+- Visual Studio 2015
+- Visual Studio 2017
+
+Other compilers or later versions may work, but they are not tested.
 
 ### CMake options
 
 The following CMake options are supported:
 
+* `SPIRV_BUILD_FUZZER={ON|OFF}`, default `OFF` - Build the spirv-fuzz tool.
 * `SPIRV_COLOR_TERMINAL={ON|OFF}`, default `ON` - Enables color console output.
 * `SPIRV_SKIP_TESTS={ON|OFF}`, default `OFF`- Build only the library and
   the command line tools.  This will prevent the tests from being built.
 * `SPIRV_SKIP_EXECUTABLES={ON|OFF}`, default `OFF`- Build only the library, not
   the command line tools and tests.
-* `SPIRV_BUILD_COMPRESSION={ON|OFF}`, default `OFF`- Build SPIR-V compressing
-  codec.
 * `SPIRV_USE_SANITIZER=<sanitizer>`, default is no sanitizing - On UNIX
   platforms with an appropriate version of `clang` this option enables the use
   of the sanitizers documented [here][clang-sanitizers].
@@ -269,14 +457,14 @@ The following CMake options are supported:
   See [`CMakeLists.txt`](CMakeLists.txt) for details.
 * `SPIRV_WERROR={ON|OFF}`, default `ON` - Forces a compilation error on any
   warnings encountered by enabling the compiler-specific compiler front-end
-  option.
+  option.  No compiler front-end options are enabled when this option is OFF.
 
 Additionally, you can pass additional C preprocessor definitions to SPIRV-Tools
 via setting `SPIRV_TOOLS_EXTRA_DEFINITIONS`. For example, by setting it to
 `/D_ITERATOR_DEBUG_LEVEL=0` on Windows, you can disable checked iterators and
 iterator debugging.
 
-### Android
+### Android ndk-build
 
 SPIR-V Tools supports building static libraries `libSPIRV-Tools.a` and
 `libSPIRV-Tools-opt.a` for Android:
@@ -295,6 +483,14 @@ $ANDROID_NDK/ndk-build -C ../android_test     \
                       NDK_LIBS_OUT=`pwd`/libs \
                       NDK_APP_OUT=`pwd`/app
 ```
+
+### Updating DEPS
+
+Occasionally the entries in [DEPS](DEPS) will need to be updated. This is done on
+demand when there is a request to do this, often due to downstream breakages.
+To update `DEPS`, run `utils/roll_deps.sh` and confirm that tests pass.
+The script requires Chromium's
+[`depot_tools`](https://chromium.googlesource.com/chromium/tools/depot_tools).
 
 ## Library
 
@@ -351,7 +547,7 @@ assembly and binary files with suffix `.spvasm` and `.spv`, respectively.
 
 The assembler reads the assembly language text, and emits the binary form.
 
-The standalone assembler is the exectuable called `spirv-as`, and is located in
+The standalone assembler is the executable called `spirv-as`, and is located in
 `<spirv-build-dir>/tools/spirv-as`.  The functionality of the assembler is implemented
 by the `spvTextToBinary` library function.
 
@@ -411,6 +607,31 @@ The validator operates on the binary form.
 * `spirv-val` - the standalone validator
   * `<spirv-dir>/tools/val`
 
+### Reducer tool
+
+The reducer shrinks a SPIR-V binary module, guided by a user-supplied
+*interestingness test*.
+
+This is a work in progress, with initially only shrinks a module in a few ways.
+
+* `spirv-reduce` - the standalone reducer
+  * `<spirv-dir>/tools/reduce`
+
+Run `spirv-reduce --help` to see how to specify interestingness.
+
+### Fuzzer tool
+
+The fuzzer transforms a SPIR-V binary module into a semantically-equivalent
+SPIR-V binary module by applying transformations in a randomized fashion.
+
+This is a work in progress, with initially only a few semantics-preserving
+transformations.
+
+* `spirv-fuzz` - the standalone fuzzer
+  * `<spirv-dir>/tools/fuzz`
+
+Run `spirv-fuzz --help` for a detailed list of options.
+
 ### Control flow dumper tool
 
 The control flow dumper prints the control flow graph for a SPIR-V module as a
@@ -420,6 +641,15 @@ This is experimental.
 
 * `spirv-cfg` - the control flow graph dumper
   * `<spirv-dir>/tools/cfg`
+
+### Diff tool
+
+*Warning:* This functionality is under development, and is incomplete.
+
+The diff tool produces a diff-style comparison between two SPIR-V modules.
+
+* `spirv-diff` - the standalone diff tool
+  * `<spirv-dir>`/tools/diff`
 
 ### Utility filters
 
@@ -466,8 +696,32 @@ This is experimental.
 
 ### Tests
 
-Tests are only built when googletest is found. Use `ctest` to run all the
-tests.
+Tests are only built when googletest is found.
+
+#### Running test with CMake
+
+Use `ctest -j <num threads>` to run all the tests. To run tests using all threads:
+```shell
+ctest -j$(nproc)
+```
+
+To run a single test target, use `ctest [-j <N>] -R <test regex>`. For example,
+you can run all `opt` tests with:
+```shell
+ctest -R 'spirv-tools-test_opt'
+```
+
+#### Running test with Bazel
+
+Use `bazel test :all` to run all tests. This will run tests in parallel by default.
+
+To run a single test target, specify `:my_test_target` instead of `:all`. Test target
+names get printed when you run `bazel test :all`. For example, you can run
+`opt_def_use_test` with:
+```shell
+bazel test :opt_def_use_test
+```
+
 
 ## Future Work
 <a name="future"></a>
@@ -528,4 +782,3 @@ limitations under the License.
 [CMake]: https://cmake.org/
 [cpp-style-guide]: https://google.github.io/styleguide/cppguide.html
 [clang-sanitizers]: http://clang.llvm.org/docs/UsersManual.html#controlling-code-generation
-[master-tot-release]: https://github.com/KhronosGroup/SPIRV-Tools/releases/tag/master-tot
